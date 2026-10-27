@@ -1,0 +1,25 @@
+[project]
+name = "loandesk-mock-harness"
+version = "0.1.0"
+description = "Runs every mock system as its own process and plays the platform against them (smoke + integration tests)."
+requires-python = ">=3.13"
+# A client of the systems: the simulator SDK for signatures and seeds, and Venue A's FIX client
+# the way a participant would use it. It imports no system's server code.
+dependencies = ["httpx>=0.27", "asyncpg>=0.29", "loandesk-mockcore", "loandesk-refdata", "loandesk-mock-ngt"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+loandesk-mockcore = { path = "../libs/mockcore" }
+loandesk-refdata = { path = "../libs/refdata" }
+loandesk-mock-ngt = { path = "../ngt" }
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.10", "types-pyyaml"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
