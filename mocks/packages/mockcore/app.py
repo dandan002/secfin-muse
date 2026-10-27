@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -17,7 +18,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import MetaData, select
@@ -34,6 +35,7 @@ from .settings import CoreSettings, settings
 log = logging.getLogger(__name__)
 
 SIM_TIME_HEADER = "x-sim-time"
+ADMIN_TOKEN_HEADER = "x-admin-token"
 ResetHook = Callable[["ServiceContext"], Awaitable[None]]
 
 
@@ -203,6 +205,13 @@ class _SimTimeAndFaults:
         path: str = scope.get("path", "")
         is_admin = path.startswith("/_admin") or path in ("/health", "/", "/docs", "/openapi.json")
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        # Guard every /_admin route here, including ones a service registers on its own app.
+        if path.startswith("/_admin") and not _admin_ok(self.ctx.cfg.admin_token, headers.get(ADMIN_TOKEN_HEADER)):
+            if scope["type"] == "http":
+                await _plain(send, 401, {"detail": "admin token required"})
+            else:
+                await send({"type": "websocket.close", "code": 4401})
+            return
         token = None
         if SIM_TIME_HEADER in headers:
             with contextlib.suppress(ValueError):
@@ -226,6 +235,10 @@ class _SimTimeAndFaults:
         finally:
             if token is not None:
                 clock.unpin(token)
+
+
+def _admin_ok(expected: str, given: str | None) -> bool:
+    return not expected or (given is not None and hmac.compare_digest(given, expected))
 
 
 async def _plain(send: Send, status: int, body: dict) -> None:
@@ -262,10 +275,6 @@ def create_app(ctx: ServiceContext) -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     app.state.ctx = ctx
 
-    def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
-        if ctx.cfg.admin_token and x_admin_token != ctx.cfg.admin_token:
-            raise HTTPException(401, "admin token required")
-
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, Any]:
         return {"service": spec.name, "label": spec.label, "description": spec.description, "disclaimer": DISCLAIMER}
@@ -274,7 +283,7 @@ def create_app(ctx: ServiceContext) -> FastAPI:
     async def health() -> dict[str, Any]:
         return {"ok": True, "service": spec.name, "simTime": clock.iso(clock.clock.live_now())}
 
-    admin = APIRouter(prefix="/_admin", tags=["admin"], dependencies=[Depends(require_admin)])
+    admin = APIRouter(prefix="/_admin", tags=["admin"])  # token checked in _SimTimeAndFaults
 
     @admin.get("/faults")
     async def get_faults() -> dict[str, Any]:

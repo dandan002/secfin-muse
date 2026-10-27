@@ -81,3 +81,38 @@ def test_webhook_signature():
     assert auth.verify("s3cret", b'{"a":1}', sig)
     assert not auth.verify("s3cret", b'{"a":2}', sig)
     assert not auth.verify("other", b'{"a":1}', sig)
+
+
+def test_admin_token_guards_every_admin_route():
+    from types import SimpleNamespace
+
+    import httpx
+    from fastapi import FastAPI
+
+    from mockcore.app import _SimTimeAndFaults
+
+    app = FastAPI()
+
+    @app.get("/_admin/credentials")  # registered on the app, not the shared admin router
+    async def creds() -> dict:
+        return {"apiKey": "k"}
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"ok": True}
+
+    ctx = SimpleNamespace(cfg=SimpleNamespace(admin_token="s3cret"), faults=Faults("t"))
+    guarded = _SimTimeAndFaults(app, ctx)  # type: ignore[arg-type]
+
+    async def go() -> list[int]:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=guarded), base_url="http://t") as c:
+            return [
+                (await c.get("/_admin/credentials")).status_code,
+                (await c.get("/_admin/credentials", headers={"X-Admin-Token": "wrong"})).status_code,
+                (await c.get("/_admin/credentials", headers={"X-Admin-Token": "s3cret"})).status_code,
+                (await c.get("/health")).status_code,
+            ]
+
+    assert asyncio.run(go()) == [401, 401, 200, 200]
+    ctx.cfg.admin_token = ""  # empty token = local dev, no check
+    assert asyncio.run(go())[0] == 200

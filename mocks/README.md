@@ -43,6 +43,8 @@ uv run python scripts/run_all.py             # all seven services; logs in out/l
 cd apps/desk-chat && npm ci && npm run dev   # Desk Chat on http://localhost:5173
 ```
 
+**AWS** (ECS Fargate + Aurora, Terraform): see [`../infra/README.md`](../infra/README.md).
+
 Then drive the demo:
 
 ```bash

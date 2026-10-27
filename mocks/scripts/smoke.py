@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -33,7 +34,8 @@ class Smoke:
     def __init__(self, urls: dict[str, str], fix_port: int, fix_host: str = "127.0.0.1") -> None:
         self.u = urls
         self.fix_port, self.fix_host = fix_port, fix_host
-        self.h = httpx.Client(timeout=120)
+        token = os.environ.get("MOCK_ADMIN_TOKEN")
+        self.h = httpx.Client(timeout=120, headers={"x-admin-token": token} if token else None)
         self.results: list[tuple[str, bool, str]] = []
 
     def check(self, name: str, ok: bool, detail: str = "") -> None:
@@ -196,9 +198,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base-port", type=int, default=8000)
     ap.add_argument("--fix-port", type=int, default=9878)
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--url-template", help="e.g. https://{name}.mocks.example.com (hosted stack; overrides ports)")
     a = ap.parse_args(argv)
     names = ("control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian")
-    urls = {n: f"http://{a.host}:{a.base_port + 10 * i}" for i, n in enumerate(names)}
+    if a.url_template:
+        urls = {n: a.url_template.format(name=n) for n in names}
+    else:
+        urls = {n: f"http://{a.host}:{a.base_port + 10 * i}" for i, n in enumerate(names)}
     return 0 if Smoke(urls, a.fix_port, a.host).run() else 1
 
 
