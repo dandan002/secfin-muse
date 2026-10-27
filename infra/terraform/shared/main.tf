@@ -1,5 +1,5 @@
-# Per-environment pieces that aren't any one system's: the images, the simulator's admin token,
-# and mock-control's fixed egress IP (which every external system allowlists, the way vendors
+# Per-environment pieces that aren't any one system's: the simulator's admin token and
+# mock-control's fixed egress IP (which every external system allowlists, the way vendors
 # whitelist a client's IPs). Nothing here is on a request path.
 #
 #   terraform workspace select -or-create demo   # the environment name
@@ -33,29 +33,6 @@ resource "terraform_data" "env_name" {
       error_message = "Select a workspace named after the environment (1-8 lowercase letters/digits), e.g. demo."
     }
   }
-}
-
-resource "aws_ecr_repository" "this" {
-  for_each             = toset(["mocks", "desk-chat"])
-  name                 = "${local.prefix}/${each.key}"
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-}
-
-resource "aws_ecr_lifecycle_policy" "keep_recent" {
-  for_each   = aws_ecr_repository.this
-  repository = each.value.name
-  policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "keep the last 20 images"
-      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 20 }
-      action       = { type = "expire" }
-    }]
-  })
 }
 
 resource "random_password" "admin_token" {
@@ -119,14 +96,6 @@ resource "aws_budgets_budget" "monthly" {
     notification_type          = "FORECASTED"
     subscriber_email_addresses = [var.budget_email]
   }
-}
-
-output "ecr_mocks" {
-  value = aws_ecr_repository.this["mocks"].repository_url
-}
-
-output "ecr_desk_chat" {
-  value = aws_ecr_repository.this["desk-chat"].repository_url
 }
 
 output "ib_url" {

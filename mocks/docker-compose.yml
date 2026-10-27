@@ -1,5 +1,6 @@
-# LoanDesk AI "market side": every mock is its own service with its own Postgres, like the
-# external systems they stand in for. They share nothing but HTTP; mock-control pushes the sim clock.
+# LoanDesk AI "market side": every mock is its own project (systems/<name>), image and Postgres,
+# like the external systems they stand in for. They share nothing but HTTP; mock-control pushes
+# the sim clock.
 #   docker compose up --build
 # Then open http://localhost:5173 (Desk Chat) and http://localhost:8000/docs (sim control).
 # Synthetic data only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg.
@@ -16,7 +17,6 @@ x-db: &db
     retries: 20
 
 x-mock: &mock
-  build: .
   restart: unless-stopped
   env_file:
     - path: ../.env # optional: META_AI_API for LLM-driven personas
@@ -68,7 +68,7 @@ services:
 
   control:
     <<: *mock
-    command: ["uvicorn", "mock_control.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    build: { context: ., dockerfile: systems/control/Dockerfile }
     depends_on:
       db-control:
         condition: service_healthy
@@ -80,7 +80,7 @@ services:
 
   ib:
     <<: *mock
-    command: ["uvicorn", "mock_ib.app:app", "--host", "0.0.0.0", "--port", "8010"]
+    build: { context: ., dockerfile: systems/ib/Dockerfile }
     depends_on:
       db-ib:
         condition: service_healthy
@@ -92,7 +92,7 @@ services:
 
   gateway:
     <<: *mock
-    command: ["uvicorn", "mock_gateway.app:app", "--host", "0.0.0.0", "--port", "8020"]
+    build: { context: ., dockerfile: systems/gateway/Dockerfile }
     depends_on:
       db-gateway:
         condition: service_healthy
@@ -106,7 +106,7 @@ services:
 
   ngt:
     <<: *mock
-    command: ["uvicorn", "mock_ngt.app:app", "--host", "0.0.0.0", "--port", "8030"]
+    build: { context: ., dockerfile: systems/ngt/Dockerfile }
     depends_on:
       db-ngt:
         condition: service_healthy
@@ -120,7 +120,7 @@ services:
 
   wematch:
     <<: *mock
-    command: ["uvicorn", "mock_wematch.app:app", "--host", "0.0.0.0", "--port", "8040"]
+    build: { context: ., dockerfile: systems/wematch/Dockerfile }
     depends_on:
       db-wematch:
         condition: service_healthy
@@ -132,7 +132,7 @@ services:
 
   sfp:
     <<: *mock
-    command: ["uvicorn", "mock_sfp.app:app", "--host", "0.0.0.0", "--port", "8050"]
+    build: { context: ., dockerfile: systems/sfp/Dockerfile }
     depends_on:
       db-sfp:
         condition: service_healthy
@@ -144,7 +144,7 @@ services:
 
   custodian:
     <<: *mock
-    command: ["uvicorn", "mock_custodian.app:app", "--host", "0.0.0.0", "--port", "8060"]
+    build: { context: ., dockerfile: systems/custodian/Dockerfile }
     depends_on:
       db-custodian:
         condition: service_healthy
@@ -156,7 +156,7 @@ services:
 
   desk-chat:
     build:
-      context: ./apps/desk-chat
+      context: ./systems/ib/desk-chat
       args:
         VITE_IB_URL: ${DESK_CHAT_IB_URL:-http://localhost:8010}
     depends_on: [ib]

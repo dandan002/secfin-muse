@@ -26,9 +26,14 @@ variable "ingress_cidrs" {
   description = "Who may reach this system's endpoints (operators, clients, mock-control's egress IP)."
 }
 
-variable "image" {
+variable "repository_prefix" {
   type        = string
-  description = "Mocks image with tag."
+  description = "ECR namespace, e.g. loandesk-demo; this system's repos are <prefix>/<service>[-desk-chat]."
+}
+
+variable "image_tag" {
+  type        = string
+  description = "Tag of this system's images (its project's last commit)."
 }
 
 variable "port" {
@@ -57,7 +62,7 @@ variable "fix" {
 }
 
 variable "desk_chat" {
-  type        = object({ image = string, hostname = string })
+  type        = object({ hostname = string })
   default     = null
   description = "Also serve the Desk Chat UI (mock-ib's terminal) from this system."
 }

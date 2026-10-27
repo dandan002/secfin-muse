@@ -13,3 +13,8 @@ output "cluster" {
 output "database" {
   value = aws_db_instance.this.address
 }
+
+output "ecr" {
+  description = "This system's image repositories: mock, and desk-chat for mock-ib."
+  value       = { for k, r in aws_ecr_repository.this : k => r.repository_url }
+}

@@ -15,9 +15,6 @@ mock_provider "aws" {
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{}" }
   }
-  mock_data "aws_ecr_repository" {
-    defaults = { repository_url = "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/mocks" }
-  }
   mock_data "aws_secretsmanager_secret" {
     defaults = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:loandesk-demo/admin-token" }
   }
@@ -90,6 +87,10 @@ run "ib_serves_desk_chat" {
   assert {
     condition     = output.urls == { ib = "https://ib.mocks.example.com", chat = "https://chat.mocks.example.com" }
     error_message = "ib API and Desk Chat"
+  }
+  assert {
+    condition     = keys(output.ecr) == ["desk-chat", "mock"]
+    error_message = "ib owns both of its image registries"
   }
 }
 

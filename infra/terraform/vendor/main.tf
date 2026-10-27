@@ -3,7 +3,8 @@
 #   terraform workspace select -or-create demo-ngt
 #   terraform apply -var-file=../demo.tfvars
 #
-# Apply `shared` for the environment first (images, admin token, mock-control's egress IP).
+# Apply `shared` for the environment first (admin token, mock-control's egress IP). Each system
+# owns its image registry; infra/deploy.sh creates it, pushes the project's image, then applies.
 
 terraform {
   required_version = ">= 1.11"
@@ -91,15 +92,6 @@ data "aws_route53_zone" "this" {
   private_zone = false
 }
 
-data "aws_ecr_repository" "mocks" {
-  name = "${local.prefix}/mocks"
-}
-
-data "aws_ecr_repository" "desk_chat" {
-  count = local.is.ib ? 1 : 0
-  name  = "${local.prefix}/desk-chat"
-}
-
 data "aws_secretsmanager_secret" "admin_token" {
   name = "${local.prefix}/admin-token"
 }
@@ -116,26 +108,24 @@ data "aws_eip" "control_egress" {
 module "system" {
   source = "../modules/vendor"
 
-  name        = "ld-${local.env}-${local.service}"
-  service     = local.service
-  region      = var.region
-  hostname    = local.hostname
-  zone_id     = data.aws_route53_zone.this.zone_id
-  image       = "${data.aws_ecr_repository.mocks.repository_url}:${var.image_tag}"
-  port        = local.port
-  app_module  = "mock_${local.service}.app:app"
-  environment = local.environment
-  secrets     = local.secrets
+  name              = "ld-${local.env}-${local.service}"
+  service           = local.service
+  region            = var.region
+  hostname          = local.hostname
+  zone_id           = data.aws_route53_zone.this.zone_id
+  repository_prefix = local.prefix
+  image_tag         = var.image_tag
+  port              = local.port
+  app_module        = "mock_${local.service}.app:app"
+  environment       = local.environment
+  secrets           = local.secrets
 
   ingress_cidrs = local.ingress_cidrs
   # mock-control egresses through a NAT on the shared Elastic IP, so the others can allowlist it.
   nat_eip_allocation_id = local.is.control ? data.aws_eip.control_egress.id : null
 
-  fix = local.is.ngt ? { port = 9878, hostname = "fix.${var.domain_name}" } : null
-  desk_chat = local.is.ib ? {
-    image    = "${data.aws_ecr_repository.desk_chat[0].repository_url}:${var.image_tag}"
-    hostname = "chat.${var.domain_name}"
-  } : null
+  fix       = local.is.ngt ? { port = 9878, hostname = "fix.${var.domain_name}" } : null
+  desk_chat = local.is.ib ? { hostname = "chat.${var.domain_name}" } : null
 
   db_instance_class      = var.db_instance_class
   db_deletion_protection = var.db_deletion_protection
@@ -153,4 +143,8 @@ output "fix_endpoint" {
 
 output "cluster" {
   value = module.system.cluster
+}
+
+output "ecr" {
+  value = module.system.ecr
 }

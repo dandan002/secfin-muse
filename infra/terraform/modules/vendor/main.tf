@@ -379,6 +379,34 @@ resource "aws_route53_record" "fix" {
   }
 }
 
+# -- images: this system's own registry ----------------------------------------------------------
+locals {
+  repos = merge({ mock = var.service }, var.desk_chat == null ? {} : { desk-chat = "${var.service}-desk-chat" })
+}
+
+resource "aws_ecr_repository" "this" {
+  for_each             = local.repos
+  name                 = "${var.repository_prefix}/${each.value}"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "keep_recent" {
+  for_each   = aws_ecr_repository.this
+  repository = each.value.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "keep the last 20 images"
+      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 20 }
+      action       = { type = "expire" }
+    }]
+  })
+}
+
 # -- compute ----------------------------------------------------------------------------------
 resource "aws_ecs_cluster" "this" {
   name = var.name
@@ -453,7 +481,7 @@ locals {
   # Container fields only the Python mock gets (Desk Chat is a static nginx image).
   mock_container = {
     (var.service) = {
-      image = var.image
+      image = "${aws_ecr_repository.this["mock"].repository_url}:${var.image_tag}"
       command = [
         "uvicorn", var.app_module, "--host", "0.0.0.0", "--port", tostring(var.port),
         "--proxy-headers", "--forwarded-allow-ips", "*", # behind the ALB: keep https in redirects
@@ -490,7 +518,7 @@ resource "aws_ecs_task_definition" "app" {
     {
       name         = each.key
       essential    = true
-      image        = try(var.desk_chat.image, "")
+      image        = "${try(aws_ecr_repository.this["desk-chat"].repository_url, "")}:${var.image_tag}"
       portMappings = [{ containerPort = each.value.port, protocol = "tcp" }]
       logConfiguration = {
         logDriver = "awslogs"

@@ -34,24 +34,28 @@ mock_provider "aws" {
   mock_resource "aws_lb_target_group" {
     defaults = { arn = "arn:aws:elasticloadbalancing:us-east-1:111111111111:targetgroup/x/1" }
   }
+  mock_resource "aws_ecr_repository" {
+    defaults = { repository_url = "111111111111.dkr.ecr.us-east-1.amazonaws.com/repo" }
+  }
   mock_resource "aws_acm_certificate" {
     defaults = { arn = "arn:aws:acm:us-east-1:111111111111:certificate/x", domain_validation_options = [] }
   }
 }
 
 variables {
-  name          = "ld-demo-ngt"
-  service       = "ngt"
-  region        = "us-east-1"
-  hostname      = "ngt.mocks.example.com"
-  zone_id       = "Z123"
-  ingress_cidrs = ["203.0.113.0/24", "198.51.100.7/32"]
-  image         = "repo/mocks:abc123"
-  port          = 8030
-  app_module    = "mock_ngt.app:app"
-  environment   = [{ name = "MOCK_SEED", value = "20261027" }]
-  secrets       = [{ name = "MOCK_ADMIN_TOKEN", valueFrom = "arn:aws:secretsmanager:us-east-1:111111111111:secret:admin" }]
-  fix           = { port = 9878, hostname = "fix.mocks.example.com" }
+  name              = "ld-demo-ngt"
+  service           = "ngt"
+  region            = "us-east-1"
+  hostname          = "ngt.mocks.example.com"
+  zone_id           = "Z123"
+  ingress_cidrs     = ["203.0.113.0/24", "198.51.100.7/32"]
+  repository_prefix = "loandesk-demo"
+  image_tag         = "abc123"
+  port              = 8030
+  app_module        = "mock_ngt.app:app"
+  environment       = [{ name = "MOCK_SEED", value = "20261027" }]
+  secrets           = [{ name = "MOCK_ADMIN_TOKEN", valueFrom = "arn:aws:secretsmanager:us-east-1:111111111111:secret:admin" }]
+  fix               = { port = 9878, hostname = "fix.mocks.example.com" }
 }
 
 run "system_with_fix" {
@@ -87,8 +91,9 @@ run "system_with_fix" {
     error_message = "own database URL plus the passed-in secrets"
   }
   assert {
-    condition     = jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].image == "repo/mocks:abc123"
-    error_message = "image"
+    condition = (keys(aws_ecr_repository.this) == ["mock"] && aws_ecr_repository.this["mock"].name == "loandesk-demo/ngt"
+    && endswith(jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].image, "/repo:abc123"))
+    error_message = "its own image registry, tagged with its project's version"
   }
 }
 
@@ -113,7 +118,7 @@ run "with_desk_chat" {
   command = plan
   variables {
     fix       = null
-    desk_chat = { image = "repo/desk-chat:abc123", hostname = "chat.mocks.example.com" }
+    desk_chat = { hostname = "chat.mocks.example.com" }
   }
 
   assert {
@@ -121,7 +126,7 @@ run "with_desk_chat" {
     error_message = "second service on the same ALB and cert"
   }
   assert {
-    condition = (jsondecode(aws_ecs_task_definition.app["chat"].container_definitions)[0].image == "repo/desk-chat:abc123"
+    condition = (aws_ecr_repository.this["desk-chat"].name == "loandesk-demo/ngt-desk-chat"
     && !can(jsondecode(aws_ecs_task_definition.app["chat"].container_definitions)[0].secrets))
     error_message = "Desk Chat: static image, no secrets"
   }
