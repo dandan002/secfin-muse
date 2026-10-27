@@ -65,7 +65,8 @@ class Hub:
     def __init__(self, faults: Faults | None = None) -> None:
         self.subscribers: set[Subscriber] = set()
         self.faults = faults
-        self.seq = 0
+        self.seq = 0  # across all topics: orders events globally
+        self.topic_seq: dict[str, int] = {}  # per topic, contiguous: a gap means lost events
 
     def subscribe(self, topics: Iterable[str] | None = None) -> Subscriber:
         sub = Subscriber(self, set(topics) if topics is not None else None)
@@ -74,7 +75,8 @@ class Hub:
 
     def publish(self, topic: str, msg: dict[str, Any]) -> None:
         self.seq += 1
-        msg = {**msg, "topic": topic, "seq": self.seq}
+        self.topic_seq[topic] = self.topic_seq.get(topic, 0) + 1
+        msg = {**msg, "topic": topic, "seq": self.seq, "topicSeq": self.topic_seq[topic]}
         out = self.faults.outbound(msg) if self.faults else [msg]
         for m in out:
             for sub in list(self.subscribers):

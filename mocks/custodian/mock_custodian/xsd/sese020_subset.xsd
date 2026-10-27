@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Subset of ISO 20022 sese.020 (SecuritiesTransactionCancellationRequest) for the LoanDesk mock
+  custodian: cancel a sese.023 instruction by the account owner's transaction reference. Only the
+  fields the simulator uses; not the official schema (official XSDs are free from iso20022.org).
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:iso:std:iso:20022:tech:xsd:sese.020.001.07"
+           targetNamespace="urn:iso:std:iso:20022:tech:xsd:sese.020.001.07"
+           elementFormDefault="qualified">
+  <xs:simpleType name="Max35Text">
+    <xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="35"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="ISINOct2015Identifier">
+    <xs:restriction base="xs:string"><xs:pattern value="[A-Z]{2}[A-Z0-9]{9}[0-9]{1}"/></xs:restriction>
+  </xs:simpleType>
+  <xs:element name="Document">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="SctiesTxCxlReq">
+          <xs:complexType>
+            <xs:sequence>
+              <!-- The instruction to cancel: its sese.023 TxId, and optionally the custodian's reference. -->
+              <xs:element name="AcctOwnrTxId" type="Max35Text"/>
+              <xs:element name="AcctSvcrTxId" type="Max35Text" minOccurs="0"/>
+              <xs:element name="FinInstrmId" minOccurs="0">
+                <xs:complexType><xs:sequence>
+                  <xs:element name="ISIN" type="ISINOct2015Identifier"/>
+                </xs:sequence></xs:complexType>
+              </xs:element>
+              <xs:element name="SfkpgAcct" minOccurs="0">
+                <xs:complexType><xs:sequence>
+                  <xs:element name="Id" type="Max35Text"/>
+                </xs:sequence></xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

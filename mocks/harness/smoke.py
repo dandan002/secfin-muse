@@ -18,8 +18,8 @@ from datetime import date
 from typing import Any
 
 import httpx
+from ngt_connector import ExecutionReport, FixSession, OrderRequest, TradeCaptureReport
 
-from mock_ngt.fixclient import FixClient
 from refdata.counterparties import OUR_FIRM
 
 TERMS = {"collateralType": "CASH", "collateralCcy": "USD", "marginPct": 102, "legalAgreement": "MSLA",
@@ -171,21 +171,26 @@ class Smoke:
 
     async def _fix_borrow(self, isin: str, qty: int, fee: float) -> dict[str, Any]:
         cred = self.get("ngt", "/_admin/credentials")["fix"]
-        c = FixClient(self.fix_host, self.fix_port, password=cred["password"])
-        await c.connect()
-        await c.send("D", [(11, "SMOKE-1"), (48, isin), (22, 4), (54, 1), (38, qty), (20008, "BID"), (20001, fee),
-                           (20003, "CASH"), (15, "USD"), (20004, 102), (64, "20261028"), (20006, "MSLA"),
-                           (20007, "LOANDESK-US")])
-        await c.wait_for(lambda m: m.get(35) == "8" and m.get(150) in ("0", "8"))
+        fix = FixSession(self.fix_host, self.fix_port, password=cred["password"])
+        await fix.logon(reset_seq_nums=True)
+        await fix.new_order_single(OrderRequest(clientOrderId="SMOKE-1", type="BID", instrument=isin, quantity=qty,
+                                                feeBps=fee, settlementDate=date(2026, 10, 28), **TERMS))
+
+        def report(*kinds: str) -> Any:
+            return fix.wait_for(lambda m: isinstance(m, ExecutionReport) and m.cl_ord_id.startswith("SMOKE-1")
+                                and m.exec_type in kinds)
+
+        await report("NEW", "REJECTED")
         await asyncio.to_thread(self.advance, seconds=30)
-        m = await c.wait_for(lambda m: m.get(35) == "8" and m.get(150) in ("F", "8", "D"))
-        if m.get(150) == "D":  # lender countered (e.g. partial size): take it
-            await c.send("U1", [(41, "SMOKE-1"), (11, "SMOKE-1-ACC")])
-            m = await c.wait_for(lambda m: m.get(35) == "8" and m.get(150) in ("F", "8"))
-        out: dict[str, Any] = {"fee": m.get(31), "qty": m.get(32), "status": m.get(150), "text": m.get(58)}
-        if m.get(150) == "F":
-            out["uti"] = (await c.wait_for(lambda m: m.get(35) == "8" and m.get(150) == "I"))[20013]
-        await c.close()
+        m = await report("TRADE", "REJECTED", "RESTATED")
+        if m.exec_type == "RESTATED":  # lender countered (e.g. partial size): take it
+            await fix.accept("SMOKE-1", "SMOKE-1-ACC")
+            m = await report("TRADE", "REJECTED")
+        out: dict[str, Any] = {"fee": m.last_fee_bps, "qty": m.last_qty, "status": m.exec_type, "text": m.text}
+        if m.exec_type == "TRADE":
+            tcr = await fix.wait_for(lambda t: isinstance(t, TradeCaptureReport) and t.order_id == m.order_id)
+            out["uti"] = tcr.uti
+        await fix.logout()
         return out
 
 

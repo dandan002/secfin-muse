@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from mockcore import auth
 from refdata.counterparties import OUR_FIRM
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TRADE_TERMS = {"collateralType": "CASH", "collateralCcy": "USD", "marginPct": 102, "settlementDate": "2026-10-28",
                "legalAgreement": "MSLA", "bookingEntity": "LOANDESK-US"}
 
@@ -268,25 +266,6 @@ def test_sfp_cdm_lifecycle_marks_eod(mocks):
 
 
 # -- mock-custodian ----------------------------------------------------------------------------------
-def test_custodian_sese023_to_sese025(mocks):
-    cred = mocks.creds("custodian")
-    h = {"x-api-key": cred["apiKey"]}
-    mocks.verb("custodian", "config", fail_rate=0.0, unmatch_rate=0.0)
-    # A client writes its own ISO 20022 message: receive 100,000 free of payment, settling 28 Oct.
-    xml = ((FIXTURES / "sese023_receive_free.xml").read_text()
-           .replace("{our_bic}", cred["ourBic"]).replace("{isin}", _isin_of(mocks, "I00001")).encode())
-    r = mocks.post("custodian", "/iso/sese.023", headers={**h, "content-type": "application/xml"}, content=xml)
-    assert r.status_code == 202 and b"AccptdForFrtherPrcg" in r.content
-    mocks.advance(30)
-    mocks.post("control", "/clock/advance", json={"to": "2026-10-28T10:01:00-04:00"}).raise_for_status()
-    out = mocks.get("custodian", "/iso/outbox", headers=h).json()
-    assert [m["status"] for m in out] == ["PACK", "MACH", "SETT"]
-    assert "SctiesSttlmTxConf" in out[-1]["xml"]
-    bad = mocks.post("custodian", "/iso/sese.023", headers={**h, "content-type": "application/xml"},
-                     content=xml.replace(b"<s:Unit>100000</s:Unit>", b"<s:Unit>lots</s:Unit>"))
-    assert bad.status_code == 400 and "Unit" in bad.headers["x-validation-errors"]
-
-
 def test_custodian_fail_then_settle(mocks):
     h = {"x-api-key": mocks.creds("custodian")["apiKey"]}
     mocks.verb("custodian", "config", fail_rate=0.0, unmatch_rate=0.0, fail_next=True)

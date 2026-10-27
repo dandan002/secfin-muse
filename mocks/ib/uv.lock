@@ -605,8 +605,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "loandesk-mockcore", directory = "../libs/mockcore" },
-    { name = "loandesk-refdata", directory = "../libs/refdata" },
+    { name = "loandesk-mockcore", editable = "../libs/mockcore" },
+    { name = "loandesk-refdata", editable = "../libs/refdata" },
     { name = "openai", specifier = ">=1.40" },
 ]
 
@@ -622,7 +622,7 @@ dev = [
 [[package]]
 name = "loandesk-mockcore"
 version = "0.1.0"
-source = { directory = "../libs/mockcore" }
+source = { editable = "../libs/mockcore" }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },
@@ -656,13 +656,13 @@ dev = [
 [[package]]
 name = "loandesk-refdata"
 version = "0.1.0"
-source = { directory = "../libs/refdata" }
+source = { editable = "../libs/refdata" }
 dependencies = [
     { name = "loandesk-mockcore" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "loandesk-mockcore", directory = "../libs/mockcore" }]
+requires-dist = [{ name = "loandesk-mockcore", editable = "../libs/mockcore" }]
 
 [package.metadata.requires-dev]
 dev = [

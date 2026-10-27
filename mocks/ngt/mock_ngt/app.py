@@ -1,7 +1,7 @@
 """mock-ngt: "Venue A (NGT-style)", an electronic securities-lending venue simulator.
 
 REST + WebSocket for availability, prints, orders and trades, and a FIX 4.4-style TCP
-session (see FIX_SPEC.md). Both front ends share ``engine.py``. API shapes are our own.
+session (see ../API.md). Both front ends share ``engine.py``. API shapes are our own.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ spec = ServiceSpec(
     base=Base,
     description=(
         "Simulated electronic sec-lending venue: lender availability feed, last prints, BID/OFFER/COUNTER/"
-        f"ACCEPT/CANCEL/FIRM_BID orders, execution ledger with UTIs, and a FIX 4.4-style session on port {FIX_PORT}."
+        "ACCEPT/CANCEL/FIRM_BID orders, execution ledger with UTIs, and a FIX 4.4 session (default port 9878)."
     ),
 )
 ctx = ServiceContext(spec)

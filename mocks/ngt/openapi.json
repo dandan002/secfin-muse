@@ -1,0 +1,1681 @@
+{
+  "components": {
+    "schemas": {
+      "ClockPush": {
+        "properties": {
+          "rev": {
+            "title": "Rev",
+            "type": "integer"
+          },
+          "state": {
+            "additionalProperties": true,
+            "title": "State",
+            "type": "object"
+          }
+        },
+        "required": [
+          "state",
+          "rev"
+        ],
+        "title": "ClockPush",
+        "type": "object"
+      },
+      "CounterBody": {
+        "properties": {
+          "feeBps": {
+            "minimum": 0.0,
+            "title": "Feebps",
+            "type": "number"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          }
+        },
+        "required": [
+          "feeBps"
+        ],
+        "title": "CounterBody",
+        "type": "object"
+      },
+      "FaultConfig": {
+        "properties": {
+          "drop_pct": {
+            "default": 0.0,
+            "description": "Outbound messages silently dropped",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Drop Pct",
+            "type": "number"
+          },
+          "dup_pct": {
+            "default": 0.0,
+            "description": "Outbound messages sent twice",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Dup Pct",
+            "type": "number"
+          },
+          "error_pct": {
+            "default": 0.0,
+            "description": "Non-admin requests fail with 500",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Error Pct",
+            "type": "number"
+          },
+          "jitter_ms": {
+            "default": 0,
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Jitter Ms",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "default": 0,
+            "description": "Added latency on every non-admin request",
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "outage": {
+            "default": false,
+            "description": "All non-admin endpoints return 503; sessions refuse logon",
+            "title": "Outage",
+            "type": "boolean"
+          },
+          "reorder_pct": {
+            "default": 0.0,
+            "description": "Outbound messages held and sent after the next",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Reorder Pct",
+            "type": "number"
+          }
+        },
+        "title": "FaultConfig",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "OrderRequest": {
+        "properties": {
+          "bookingEntity": {
+            "maxLength": 64,
+            "title": "Bookingentity",
+            "type": "string"
+          },
+          "clientOrderId": {
+            "maxLength": 64,
+            "title": "Clientorderid",
+            "type": "string"
+          },
+          "collateralCcy": {
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Collateralccy",
+            "type": "string"
+          },
+          "collateralType": {
+            "enum": [
+              "CASH",
+              "NONCASH"
+            ],
+            "title": "Collateraltype",
+            "type": "string"
+          },
+          "counterpartyCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Venue code of the contra; omit to hit the best lender",
+            "title": "Counterpartycode"
+          },
+          "feeBps": {
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Feebps",
+            "type": "number"
+          },
+          "instrument": {
+            "description": "ISIN, SEDOL, CUSIP, FIGI or 'TICK XX'",
+            "title": "Instrument",
+            "type": "string"
+          },
+          "legalAgreement": {
+            "enum": [
+              "MSLA",
+              "GMSLA_2010",
+              "GMSLA_2018"
+            ],
+            "title": "Legalagreement",
+            "type": "string"
+          },
+          "marginPct": {
+            "maximum": 150.0,
+            "minimum": 100.0,
+            "title": "Marginpct",
+            "type": "number"
+          },
+          "quantity": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 500000000.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "settlementDate": {
+            "format": "date",
+            "title": "Settlementdate",
+            "type": "string"
+          },
+          "term": {
+            "default": "OPEN",
+            "enum": [
+              "OPEN",
+              "TERM"
+            ],
+            "title": "Term",
+            "type": "string"
+          },
+          "termEndDate": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Termenddate"
+          },
+          "ttlSeconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 86400.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttlseconds"
+          },
+          "type": {
+            "enum": [
+              "BID",
+              "OFFER",
+              "FIRM_BID"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientOrderId",
+          "type",
+          "instrument",
+          "quantity",
+          "feeBps",
+          "collateralType",
+          "collateralCcy",
+          "marginPct",
+          "settlementDate",
+          "legalAgreement",
+          "bookingEntity"
+        ],
+        "title": "OrderRequest",
+        "type": "object"
+      },
+      "ResetRequest": {
+        "properties": {
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          }
+        },
+        "title": "ResetRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VenueConfig": {
+        "properties": {
+          "counter_band": {
+            "default": 0.8,
+            "description": "Bids at or above ask*band get a counter instead of a reject",
+            "title": "Counter Band",
+            "type": "number"
+          },
+          "default_ttl_s": {
+            "default": 900,
+            "title": "Default Ttl S",
+            "type": "integer"
+          },
+          "feed_every_s": {
+            "default": 5.0,
+            "title": "Feed Every S",
+            "type": "number"
+          },
+          "hot_spread": {
+            "default": [
+              1.05,
+              1.25
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Hot Spread",
+            "type": "array"
+          },
+          "latency_gc_s": {
+            "default": [
+              1.0,
+              3.0
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Latency Gc S",
+            "type": "array"
+          },
+          "latency_special_s": {
+            "default": [
+              5.0,
+              20.0
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Latency Special S",
+            "type": "array"
+          },
+          "max_counters": {
+            "default": 2,
+            "title": "Max Counters",
+            "type": "integer"
+          },
+          "prints_every_s": {
+            "default": 15.0,
+            "title": "Prints Every S",
+            "type": "number"
+          },
+          "warm_spread": {
+            "default": [
+              1.0,
+              1.1
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Warm Spread",
+            "type": "array"
+          }
+        },
+        "title": "VenueConfig",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Simulated electronic sec-lending venue: lender availability feed, last prints, BID/OFFER/COUNTER/ACCEPT/CANCEL/FIRM_BID orders, execution ledger with UTIs, and a FIX 4.4 session (default port 9878).\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
+    "title": "Venue A (NGT-style) \u2014 mock-ngt",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Root  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Root",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/_admin/clock": {
+      "get": {
+        "operationId": "get_clock__admin_clock_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Clock  Admin Clock Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Clock",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "mock-control pushes the sim clock here; the mocks never read each other's databases.",
+        "operationId": "put_clock__admin_clock_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClockPush"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Clock  Admin Clock Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Clock",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/config": {
+      "get": {
+        "operationId": "get_config__admin_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Config  Admin Config Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Config",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "put_config__admin_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VenueConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Config  Admin Config Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Config",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/credentials": {
+      "get": {
+        "operationId": "credentials__admin_credentials_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Credentials  Admin Credentials Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Credentials",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/events": {
+      "get": {
+        "operationId": "events__admin_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 5000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Events  Admin Events Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Events",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/faults": {
+      "get": {
+        "operationId": "get_faults__admin_faults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Faults  Admin Faults Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Faults",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "put_faults__admin_faults_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FaultConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Faults  Admin Faults Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Faults",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/jobs": {
+      "get": {
+        "operationId": "jobs__admin_jobs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Jobs  Admin Jobs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Jobs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/reset": {
+      "post": {
+        "operationId": "reset__admin_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ResetRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Req"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset  Admin Reset Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/scenario": {
+      "get": {
+        "operationId": "list_verbs__admin_scenario_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Verbs  Admin Scenario Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Verbs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/scenario/{verb}": {
+      "post": {
+        "operationId": "run_verb__admin_scenario__verb__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "verb",
+            "required": true,
+            "schema": {
+              "title": "Verb",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Args"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Run Verb  Admin Scenario  Verb  Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Verb",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/tick": {
+      "post": {
+        "operationId": "tick__admin_tick_post",
+        "parameters": [
+          {
+            "description": "Run jobs due up to this sim time",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Run jobs due up to this sim time",
+              "title": "Until"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Tick  Admin Tick Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tick",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/v1/availability": {
+      "get": {
+        "operationId": "get_availability_v1_availability_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "instrument",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Instrument"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lender",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lender"
+            }
+          },
+          {
+            "in": "query",
+            "name": "minQuantity",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Minquantity",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 5000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Availability V1 Availability Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Availability",
+        "tags": [
+          "market"
+        ]
+      }
+    },
+    "/v1/orders": {
+      "get": {
+        "operationId": "list_orders_v1_orders_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 5000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-participant-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Participant-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Orders V1 Orders Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Orders",
+        "tags": [
+          "orders"
+        ]
+      },
+      "post": {
+        "operationId": "place_order_v1_orders_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-participant-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Participant-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Place Order V1 Orders Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Place Order",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}": {
+      "get": {
+        "operationId": "get_order_v1_orders__order_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-participant-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Participant-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Order V1 Orders  Order Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Order",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/accept": {
+      "post": {
+        "operationId": "accept_order_v1_orders__order_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-participant-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Participant-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Accept Order V1 Orders  Order Id  Accept Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Order",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/cancel": {
+      "post": {
+        "operationId": "cancel_order_v1_orders__order_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-participant-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Participant-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Order V1 Orders  Order Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Order",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/counter": {
+      "post": {
+        "operationId": "counter_order_v1_orders__order_id__counter_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-participant-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Participant-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CounterBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Counter Order V1 Orders  Order Id  Counter Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Counter Order",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/v1/participants": {
+      "get": {
+        "description": "Venue participant code table.",
+        "operationId": "participants_v1_participants_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Participants V1 Participants Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Participants",
+        "tags": [
+          "reference"
+        ]
+      }
+    },
+    "/v1/prints": {
+      "get": {
+        "operationId": "prints_v1_prints_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "instrument",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Instrument"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Prints V1 Prints Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prints",
+        "tags": [
+          "market"
+        ]
+      }
+    },
+    "/v1/trades": {
+      "get": {
+        "operationId": "trades_v1_trades_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 5000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-participant-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Participant-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Trades V1 Trades Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trades",
+        "tags": [
+          "trades"
+        ]
+      }
+    },
+    "/v1/trades/{trade_id}": {
+      "get": {
+        "operationId": "trade_v1_trades__trade_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trade_id",
+            "required": true,
+            "schema": {
+              "title": "Trade Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-participant-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Participant-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Trade V1 Trades  Trade Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trade",
+        "tags": [
+          "trades"
+        ]
+      }
+    }
+  }
+}

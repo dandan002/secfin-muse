@@ -3,7 +3,7 @@
 This is our own stand-in (the real venue protocol is proprietary): standard FIX 4.4 session
 handling (Logon, Heartbeat, TestRequest, ResendRequest, SequenceReset, Logout, Reject) and
 standard order messages, with securities-lending economics in user-defined tags 20001+.
-See FIX_SPEC.md for the full tag list.
+See ../API.md for the full tag list.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from sqlalchemy import select
 from mockcore import clock, rng
 from mockcore.app import ServiceContext
 from mockcore.auth import derive_secret
+from refdata.counterparties import OUR_FIRM
+from refdata.universe import instrument_by_id, resolve
 
 from . import engine
 from .models import FixMessage, FixSession
@@ -157,7 +159,7 @@ async def queue_out(ctx: ServiceContext, session_id: str, msg_type: str, fields:
         await s.commit()
     if writer is None:
         return
-    out = [raw] if msg_type != "8" else ctx.faults.outbound(raw)
+    out = ctx.faults.outbound(raw) if msg_type in ("8", "AE") else [raw]  # chaos drills hit order/trade flow
     for m in out:
         writer.write(m.encode())
     await writer.drain()
@@ -175,6 +177,7 @@ class Session:
         self.last_in = self.last_out
         self.closed = False
         self._send_lock = asyncio.Lock()
+        self.md_subs: dict[str, set[str] | None] = {}  # MDReqID -> instrument ids (None = all)
 
     # -- output ------------------------------------------------------------------------------
     async def send(self, msg_type: str, fields: list[tuple[int, Any]], persist: bool = True) -> None:
@@ -277,7 +280,7 @@ class Session:
             s.add(FixMessage(session_id=self.session_id, direction="IN", seq=seq, msg_type=msg_type, raw=raw,
                              ts=clock.now()))
             await s.commit()
-        await self.dispatch(msg_type, f, seq)
+        await self.dispatch(msg_type, f, seq, pairs)
 
     async def logon(self, f: dict[int, str], raw: str) -> None:
         client = f.get(49, "")
@@ -317,7 +320,8 @@ class Session:
             await self.send("2", [(7, expected), (16, 0)], persist=False)
         self.ctx.fix_sessions[self.session_id] = self
 
-    async def dispatch(self, msg_type: str, f: dict[int, str], seq: int) -> None:
+    async def dispatch(self, msg_type: str, f: dict[int, str], seq: int,
+                       pairs: list[tuple[int, str]] | None = None) -> None:
         if msg_type == "0":
             return
         if msg_type == "1":
@@ -337,6 +341,10 @@ class Session:
             await self.cancel(f, seq)
         elif msg_type == "U1":
             await self.accept(f, seq)
+        elif msg_type == "H":
+            await self.order_status(f)
+        elif msg_type == "V":
+            await self.market_data_request(f, pairs or [])
         else:
             await self.reject(seq, 11, f"unsupported MsgType {msg_type}")
 
@@ -436,6 +444,53 @@ class Session:
                 await s.rollback()
                 await self.reject(seq, 99, str(e))
 
+    async def order_status(self, f: dict[int, str]) -> None:
+        """OrderStatusRequest (H) -> ExecutionReport with ExecType I (Order Status)."""
+        ref = f.get(37) or f.get(11, "")
+        async with self.ctx.session() as s:
+            o = await engine._get(s, ref)
+            data = engine.order_json(o) if o else None
+        if data is None:
+            await self.send("8", [(37, "NONE"), (11, f.get(11)), (17, f"STATUS-{ref}"), (150, "I"), (39, "8"),
+                                  (790, f.get(790)), (14, 0), (151, 0), (6, 0), (103, 5),
+                                  (58, f"UNKNOWN_ORDER: no order {ref}"), (60, fix_time())], persist=False)
+            return
+        fields = order_fields({"type": "status", "eventId": f"STATUS-{f.get(790) or ref}", "data": data})
+        fields = [(150, "I") if t == 150 else (t, v) for t, v in fields] + [(790, f.get(790))]
+        await self.send("8", fields, persist=False)
+
+    async def market_data_request(self, f: dict[int, str], pairs: list[tuple[int, str]]) -> None:
+        """MarketDataRequest (V) for lendable supply: W snapshot, X incrementals on subscribe, Y reject."""
+        req_id = f.get(262, "")
+        sub_type = f.get(263, "0")
+        if sub_type == "2":  # unsubscribe
+            self.md_subs.pop(req_id, None)
+            return
+        refs = [v for t, v in pairs if t in (48, 55)] if f.get(146, "0") != "0" else []
+        wanted: list[str] = []
+        for ref in refs:
+            inst = resolve(ref)
+            if inst is None:
+                await self.send("Y", [(262, req_id), (281, 0), (58, f"unknown instrument {ref}")], persist=False)
+                return
+            wanted.append(inst.id)
+        if not wanted and sub_type == "0":
+            await self.send("Y", [(262, req_id), (281, 0), (58, "snapshot needs at least one instrument")],
+                            persist=False)
+            return
+        async with self.ctx.session() as s:
+            for iid in wanted:
+                rows = await engine.availability(s, iid)
+                await self.send("W", md_snapshot(req_id, rows), persist=False)
+        if sub_type == "1":
+            self.md_subs[req_id] = set(wanted) or None
+
+    async def on_availability(self, env: dict[str, Any]) -> None:
+        data = env["data"]
+        for req_id, ids in list(self.md_subs.items()):
+            if ids is None or data["instrumentId"] in ids:
+                await self.send("X", md_incremental(req_id, data), persist=False)
+
     async def _exec_reject(self, f: dict[int, str], text: str) -> None:
         await self.send("8", [(37, "NONE"), (11, f.get(11)), (17, f"REJ-{f.get(11)}"), (150, "8"), (39, "8"),
                               (55, f.get(55)), (48, f.get(48)), (54, f.get(54)), (38, f.get(38)), (14, 0),
@@ -449,7 +504,7 @@ class Session:
         await self.send("8", order_fields(env))
 
     async def on_trade_event(self, env: dict[str, Any]) -> None:
-        await self.send("8", trade_fields(env))
+        await self.send("AE", trade_fields(env))
 
 
 def order_fields(env: dict[str, Any]) -> list[tuple[int, Any]]:
@@ -478,11 +533,49 @@ def order_fields(env: dict[str, Any]) -> list[tuple[int, Any]]:
 
 
 def trade_fields(env: dict[str, Any]) -> list[tuple[int, Any]]:
-    """The UTI rides on a second, trade-confirm style ExecutionReport (ExecType I)."""
+    """TradeCaptureReport (AE): the venue's trade confirmation, carrying the UTI.
+
+    FIX 4.4 has no UTI tag (FIX 5.0 SP2 adds RegulatoryTradeID 1903), so it rides in 20013.
+    """
     t = env["data"]
-    return [(37, t["orderId"]), (11, t["clientOrderId"]), (17, f"{t['tradeId']}-UTI"), (150, "I"), (39, "2"),
-            (48, t["isin"]), (22, 4), (14, t["quantity"]), (151, 0), (6, t["feeBps"]), (20012, t["tradeId"]),
-            (20013, t["uti"]), (60, fix_time())]
+    we_borrow = t["borrower"]["code"] == OUR_FIRM["ngt_code"]
+    contra = t["lender"] if we_borrow else t["borrower"]
+    executed = clock.parse_ts(t["executedAt"])
+    return [
+        (571, t["tradeId"]), (487, 0), (856, 0), (570, "N"),
+        (55, instrument_by_id(t["instrumentId"]).composite), (48, t["isin"]), (22, 4),
+        (32, t["quantity"]), (31, t["feeBps"]), (75, executed.astimezone(UTC).strftime("%Y%m%d")),
+        (60, fix_time(executed)), (64, t["settlementDate"].replace("-", "")),
+        (15, t["collateralCcy"]), (20001, t["feeBps"]), (20002, t["term"]),
+        (20005, (t["termEndDate"] or "").replace("-", "")), (20003, t["collateralType"]),
+        (20004, t["marginPct"]), (20006, t["legalAgreement"]), (20007, t["bookingEntity"]),
+        (20012, t["tradeId"]), (20013, t["uti"]),
+        (552, 1), (54, "1" if we_borrow else "2"), (37, t["orderId"]), (11, t["clientOrderId"]),
+        (453, 1), (448, contra["code"]), (447, "D"), (452, 17),
+    ]
+
+
+def md_snapshot(req_id: str, rows: list[dict[str, Any]]) -> list[tuple[int, Any]]:
+    """MarketDataSnapshotFullRefresh (W): one Offer entry per lender (size = lendable qty, px = fee bps)."""
+    first = rows[0] if rows else None
+    fields: list[tuple[int, Any]] = [(262, req_id)]
+    if first:
+        fields += [(55, first["composite"]), (48, first["isin"]), (22, 4)]
+    live = [r for r in rows if r["quantity"] > 0]
+    fields.append((268, len(live)))
+    for r in live:
+        fields += [(269, 1), (270, r["indicativeFeeBps"]), (271, r["quantity"]), (20010, r["lenderCode"])]
+    return fields
+
+
+def md_incremental(req_id: str, data: dict[str, Any]) -> list[tuple[int, Any]]:
+    """MarketDataIncrementalRefresh (X): every lender's line for the instrument (1 change, 2 delete)."""
+    rows = data["byLender"]
+    fields: list[tuple[int, Any]] = [(262, req_id), (268, len(rows))]
+    for r in rows:
+        fields += [(279, 1 if r["quantity"] > 0 else 2), (269, 1), (55, r["composite"]), (48, r["isin"]),
+                   (22, 4), (270, r["indicativeFeeBps"]), (271, r["quantity"]), (20010, r["lenderCode"])]
+    return fields
 
 
 def _fix_date(s: str) -> date:
@@ -498,11 +591,18 @@ def _first_error(e: Exception) -> str:
 
 
 async def router(ctx: ServiceContext) -> None:
-    """Route order/trade events to the FIX session that owns the order."""
-    sub = ctx.hub.subscribe(["orders", "trades"])
+    """Route order/trade events to the FIX session that owns the order, and availability to
+    market-data subscribers."""
+    sub = ctx.hub.subscribe(["orders", "trades", "availability"])
     try:
         while True:
             env = await sub.get()
+            if env["topic"] == "availability":
+                for sess in list(ctx.fix_sessions.values()):
+                    if sess.md_subs and not sess.closed:
+                        with contextlib.suppress(Exception):
+                            await sess.on_availability(env)
+                continue
             data = env.get("data", {})
             order_id = data.get("orderId")
             if not order_id:
@@ -511,13 +611,13 @@ async def router(ctx: ServiceContext) -> None:
                 o = await engine._get(s, order_id)
             if o is None or o.source != "FIX" or not o.fix_session:
                 continue
-            fields = order_fields(env) if env["topic"] == "orders" else trade_fields(env)
+            msg_type, fields = ("8", order_fields(env)) if env["topic"] == "orders" else ("AE", trade_fields(env))
             sess = ctx.fix_sessions.get(o.fix_session)
             try:
                 if sess is not None and not sess.closed:
-                    await sess.send("8", fields)
+                    await sess.send(msg_type, fields)
                 else:  # stored for the client to recover via ResendRequest after its next logon
-                    await queue_out(ctx, o.fix_session, "8", fields)
+                    await queue_out(ctx, o.fix_session, msg_type, fields)
             except Exception:
                 log.exception("failed to deliver FIX execution report")
     finally:

@@ -472,7 +472,7 @@ wheels = [
 [[package]]
 name = "loandesk-mockcore"
 version = "0.1.0"
-source = { directory = "../mockcore" }
+source = { editable = "../mockcore" }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },
@@ -521,7 +521,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "loandesk-mockcore", directory = "../mockcore" }]
+requires-dist = [{ name = "loandesk-mockcore", editable = "../mockcore" }]
 
 [package.metadata.requires-dev]
 dev = [

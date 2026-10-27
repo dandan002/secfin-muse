@@ -5,7 +5,9 @@ matching against the simulated counterparty's instruction (sese.024 MACH, or NMA
 seeded few) -> settlement on the settlement date at 10:00 New York: sese.025 confirmation,
 or sese.024 pending/failing (LACK of securities, retried next business day, up to 3 tries).
 
-Outbound messages go to an outbox (``GET /iso/outbox``) and the ``/stream`` WebSocket.
+A sese.020 cancellation request is answered with a sese.027 (accepted / rejected) and, when
+accepted, a sese.024 CAND. Outbound messages go to an outbox (``GET /iso/outbox``) and the
+``/stream`` WebSocket. Full reference: ../API.md.
 """
 
 from __future__ import annotations
@@ -284,19 +286,55 @@ async def get_instr(ref: str, who: str = Depends(client)) -> dict:
         return instr_json(await _get(s, ref))
 
 
+async def _cancel(s, i: Instr, request_id: str) -> tuple[bool, dict[str, Any]]:
+    """Cancel an instruction: sese.027 (accepted / rejected), then sese.024 CAND if accepted."""
+    if i.status in ("SETTLED", "CANCELLED", "REJECTED"):
+        out = await _emit_out(s, i, "sese.027", "RJCT", iso.build_sese027(
+            i.sender_bic, f"{i.instruction_id}-X", request_id, i.tx_id, i.instruction_id, False, "NARR",
+            f"instruction is {i.status}"), i.sender_bic)
+        return False, out
+    i.status = "CANCELLED"
+    _hist(i, "CANCELLED", request=request_id)
+    ctx.scheduler.cancel(f"match:{i.instruction_id}")
+    ctx.scheduler.cancel(f"settle:{i.instruction_id}")
+    out = await _emit_out(s, i, "sese.027", "ACCP", iso.build_sese027(
+        i.sender_bic, f"{i.instruction_id}-X", request_id, i.tx_id, i.instruction_id, True), i.sender_bic)
+    await _emit_out(s, i, "sese.024", "CAND", iso.build_sese024(
+        i.sender_bic, f"{i.instruction_id}-C", i.tx_id, i.instruction_id, "CAND"), i.sender_bic)
+    return True, out
+
+
+@app.post("/iso/sese.020", tags=["iso20022"], response_class=Response)
+async def receive_cancellation(request: Request, who: str = Depends(client)) -> Response:
+    """ISO 20022 cancellation request; answered with a sese.027 (and a sese.024 CAND when accepted)."""
+    raw = await request.body()
+    try:
+        req = iso.parse_sese020(raw)
+    except iso.ValidationFailure as e:
+        xml = iso.build_sese027(OUR_FIRM["bic"], "RJCT-SCHEMA", "UNKNOWN", "UNKNOWN", None, False, "NARR", e.errors[0])
+        return Response(xml, status_code=400, media_type="application/xml",
+                        headers={"X-Validation-Errors": " | ".join(e.errors)[:1000]})
+    async with ctx.session() as s:
+        i = (await s.execute(select(Instr).where(Instr.tx_id == req.tx_id).with_for_update())).scalar()
+        if i is None:
+            xml = iso.build_sese027(req.sender_bic, f"CXL-{req.biz_msg_id}"[:35], req.biz_msg_id, req.tx_id,
+                                    req.acct_svcr_tx_id, False, "NARR", f"no instruction with TxId {req.tx_id}")
+            return Response(xml, status_code=404, media_type="application/xml")
+        ok, out = await _cancel(s, i, req.biz_msg_id)
+        await s.commit()
+    return Response(out["xml"], status_code=202 if ok else 409, media_type="application/xml",
+                    headers={"X-Instruction-Id": i.instruction_id})
+
+
 @app.post("/instructions/{ref}/cancel", tags=["json"])
 async def cancel(ref: str, who: str = Depends(client)) -> dict:
+    """JSON convenience form of a sese.020: same flow and messages."""
     async with ctx.session() as s:
         i = await _get(s, ref)
-        if i.status in ("SETTLED", "CANCELLED", "REJECTED"):
-            raise HTTPException(409, f"instruction is {i.status}")
-        i.status = "CANCELLED"
-        _hist(i, "CANCELLED")
-        ctx.scheduler.cancel(f"match:{i.instruction_id}")
-        ctx.scheduler.cancel(f"settle:{i.instruction_id}")
-        await _emit_out(s, i, "sese.024", "CAND", iso.build_sese024(
-            i.sender_bic, f"{i.instruction_id}-C", i.tx_id, i.instruction_id, "CAND"), i.sender_bic)
+        ok, out = await _cancel(s, i, f"J-CXL-{i.tx_id}"[:35])
         await s.commit()
+        if not ok:
+            raise HTTPException(409, f"instruction is {i.status}")
         return instr_json(i)
 
 

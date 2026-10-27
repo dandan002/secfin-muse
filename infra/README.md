@@ -32,6 +32,8 @@ not be separated. Now:
 * Each system stores the last clock it received **in its own database**, so it boots and resumes
   without ever calling mock-control. Pushes carry a revision, so a late one can't overwrite a newer
   clock.
+* Each system documents its API in `mocks/<name>/API.md` and ships a standalone client package in
+  `mocks/<name>/connector/` for the platform to install. The connectors stay out of the server images.
 * Each mock is a separate project (see `mocks/README.md`): own `pyproject.toml`, `uv.lock`,
   Dockerfile and dependencies, built on two small versioned libraries (`mockcore`, `refdata`). No system
   imports another. The harness runs each one from its own environment and talks to them only as a client.
