@@ -34,6 +34,52 @@
   color-scheme: light;
 }
 
+/* Terminal: amber-on-black trading-terminal look (default). */
+[data-theme="terminal"] {
+  --bg: 0 0 0;
+  --panel: 10 10 10;
+  --raised: 30 30 30;
+  --line: 58 58 58;
+  --ink: 251 139 30;
+  --muted: 168 120 62;
+  --accent: 255 184 0;
+  --mention: 255 232 0;
+  --self: 255 255 255;
+  --party: 102 204 255;
+  --gc: 180 180 180;
+  --warm: 255 184 0;
+  --hot: 255 64 64;
+  color-scheme: dark;
+}
+
+:root:not([data-theme="terminal"]) {
+  --self: var(--ink);
+  --party: var(--ink);
+}
+
+[data-theme="terminal"] body,
+[data-theme="terminal"] input,
+[data-theme="terminal"] textarea,
+[data-theme="terminal"] select,
+[data-theme="terminal"] button {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+[data-theme="terminal"] *,
+[data-theme="terminal"] *::before,
+[data-theme="terminal"] *::after {
+  border-radius: 0 !important;
+}
+
+[data-theme="terminal"] ::selection {
+  background: rgb(var(--accent));
+  color: #000;
+}
+
+.fkey {
+  @apply bg-accent px-1 font-mono text-[11px] font-semibold text-black;
+}
+
 html,
 body,
 #root {

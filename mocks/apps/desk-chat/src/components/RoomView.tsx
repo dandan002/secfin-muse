@@ -33,7 +33,9 @@ export function RoomView({ room, highlight }: { room: Room; highlight: number | 
   const users = useStore((s) => s.users);
   const me = useStore((s) => s.me);
   const markRead = useStore((s) => s.markRead);
-  const meUuid = users.find((u) => u.handle === me)?.uuid;
+  const term = useStore((s) => s.theme === "terminal");
+  const meUser = users.find((u) => u.handle === me);
+  const meUuid = meUser?.uuid;
   const scroller = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const prevHeight = useRef<number | null>(null);
@@ -90,6 +92,17 @@ export function RoomView({ room, highlight }: { room: Room; highlight: number | 
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
+      {term ? (
+        <header className="flex items-center gap-3 whitespace-nowrap bg-accent px-2 py-0.5 text-[12px] font-semibold text-black">
+          <span className="shrink-0">{room.name.toUpperCase()}</span>
+          <span className="min-w-0 truncate font-normal">{room.topic}</span>
+          <span className="flex-1" />
+          <span className="hidden shrink-0 font-normal lg:inline" title={room.members.map((m) => `${m.displayName} · ${m.firm}`).join("\n")}>
+            {room.members.length} MEMBERS
+          </span>
+          <span className="shrink-0">{tzLabel(room.tz)} TIME</span>
+        </header>
+      ) : (
       <header className="flex items-center gap-3 border-b border-line px-4 py-2.5">
         <div className="min-w-0">
           <h2 className="truncate text-[14px] font-semibold">{room.name}</h2>
@@ -114,8 +127,13 @@ export function RoomView({ room, highlight }: { room: Room; highlight: number | 
           {tzLabel(room.tz)} time
         </span>
       </header>
+      )}
 
-      <div ref={scroller} onScroll={onScroll} className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div
+        ref={scroller}
+        onScroll={onScroll}
+        className={`scroll-thin min-h-0 flex-1 overflow-y-auto ${term ? "bg-black px-1 py-1 text-[12px]" : "px-4 py-3"}`}
+      >
         {hasMore && (
           <button
             onClick={() => {
@@ -136,6 +154,44 @@ export function RoomView({ room, highlight }: { room: Room; highlight: number | 
           lastSender = m.sender.uuid;
           lastTs = t;
           const mentionsMe = !!meUuid && m.mentions.includes(meUuid);
+          if (term) {
+            const self = m.sender.firm === meUser?.firm;
+            return (
+              <div key={m.messageId}>
+                {dayBreak && (
+                  <div className="my-1 bg-[#262626] px-1 text-[11px] font-semibold text-muted">
+                    {day.toUpperCase()}
+                  </div>
+                )}
+                <article
+                  id={`msg-${m.messageId}`}
+                  className={`flex gap-2 px-1 leading-5 ${highlight === m.messageId ? "flash" : ""} ${
+                    mentionsMe ? "bg-mention/10" : "hover:bg-raised"
+                  }`}
+                >
+                  <span className="num w-16 shrink-0 text-muted">{localTime(m.ts, room.tz)}</span>
+                  <span
+                    className={`w-36 shrink-0 truncate lg:w-60 ${self ? "text-self" : "text-party"}`}
+                    title={`${m.sender.displayName} · ${m.sender.firm}`}
+                  >
+                    {m.sender.displayName.toUpperCase()}
+                    <span className="hidden text-muted lg:inline"> {m.sender.firm.replace(/^Internal:\s*/, "").toUpperCase()}</span>
+                  </span>
+                  <div className="min-w-0 flex-1 text-ink">
+                    {m.via === "bot" && <span className="mr-1 bg-party px-1 text-[10px] font-semibold text-black">AGENT</span>}
+                    {m.blastId && <span className="mr-1 bg-raised px-1 text-[10px] text-muted">BLAST</span>}
+                    <MessageText
+                      text={m.text}
+                      chips={m.chips}
+                      members={room.members}
+                      meUuid={meUuid}
+                      onChip={(c, el) => setChip({ chip: c, rect: el.getBoundingClientRect() })}
+                    />
+                  </div>
+                </article>
+              </div>
+            );
+          }
           return (
             <div key={m.messageId}>
               {dayBreak && (
@@ -200,7 +256,7 @@ export function RoomView({ room, highlight }: { room: Room; highlight: number | 
         })}
       </div>
 
-      <div className="h-5 px-6 text-[12px] italic text-muted">
+      <div className={`h-5 text-[12px] text-muted ${term ? "bg-black px-2 uppercase" : "px-6 italic"}`}>
         {typers.length > 0 && `${typers.join(", ")} ${typers.length > 1 ? "are" : "is"} typing…`}
       </div>
       <Composer room={room} />

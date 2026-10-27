@@ -4,7 +4,8 @@ import { useStore } from "../lib/store";
 
 /** Send one message to many rooms at once. */
 export function BlastDialog() {
-  const { rooms, me, set, ingest } = useStore();
+  const { rooms, me, set, ingest, theme } = useStore();
+  const term = theme === "terminal";
   const [picked, setPicked] = useState<string[]>([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,7 +36,9 @@ export function BlastDialog() {
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-lg rounded-lg border border-line bg-panel p-4 shadow-2xl"
       >
-        <h2 className="text-[15px] font-semibold">Blast</h2>
+        <h2 className={term ? "-mx-4 -mt-4 mb-2 bg-accent px-2 py-0.5 text-[12px] font-semibold text-black" : "text-[15px] font-semibold"}>
+          {term ? "BLAST · SEND TO MANY CHATS" : "Blast"}
+        </h2>
         <p className="mb-3 text-[12px] text-muted">Send the same message to several rooms.</p>
         <div className="scroll-thin mb-3 grid max-h-56 grid-cols-2 gap-1 overflow-y-auto">
           {rooms.map((r) => (

@@ -13,6 +13,8 @@ export default {
         muted: "rgb(var(--muted) / <alpha-value>)",
         accent: "rgb(var(--accent) / <alpha-value>)",
         mention: "rgb(var(--mention) / <alpha-value>)",
+        self: "rgb(var(--self) / <alpha-value>)",
+        party: "rgb(var(--party) / <alpha-value>)",
         gc: "rgb(var(--gc) / <alpha-value>)",
         warm: "rgb(var(--warm) / <alpha-value>)",
         hot: "rgb(var(--hot) / <alpha-value>)",

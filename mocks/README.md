@@ -107,10 +107,13 @@ Every service exposes `GET /_admin/credentials` (derived from the seed). Set `MO
 Juniper (RFQs plus prompt injection). Every persona message stores a gold label (`GET /_admin/labels`).
 `uv run mock-ib-corpus` writes the 300-conversation labelled eval set.
 
-The Desk Chat React app (`apps/desk-chat`) has an original look, not a terminal clone. It has folders, tabs,
-unread and mention badges, Blast (Ctrl+B), search (Ctrl+F), typing indicators, exchange-local timestamps,
-instrument chips with an instrument card, a dark default plus a light theme, and an "acting as" switcher so
-one browser can play any persona. `src/index.ts` exports `<DeskChat/>` for embedding in the trader UI; a
+The Desk Chat React app (`apps/desk-chat`) defaults to an amber-on-black **terminal theme** modelled on
+institutional terminal chat: a command line with `<GO>` (type a chat name, `MSG <handle>`, `SRCH <text>`,
+`BLAST`, `THEME`, `HELP`), a function-key strip (F1 help, F2 chats, F3 command line, F8 Blast, F9 search,
+F10 theme, Esc), dense one-line message rows, and amber title bars. It uses no vendor logo or name.
+F10 (or `THEME`) cycles to the dark and light themes. Every theme has folders, tabs, unread and mention
+badges, typing indicators, exchange-local timestamps, instrument chips with an instrument card, and an
+"acting as" switcher so one browser can play any persona. `src/index.ts` exports `<DeskChat/>` for embedding in the trader UI; a
 chip's "Open ticket" dispatches a `deskchat:ticket` window event.
 
 **LLM personas (optional).** `MOCK_LLM_MODE=off|replay|record|live` (default `off`). `MOCK_LLM_MODEL`

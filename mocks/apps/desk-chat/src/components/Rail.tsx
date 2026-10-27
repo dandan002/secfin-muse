@@ -10,20 +10,9 @@ const ICONS: Record<(typeof FOLDERS)[number], string> = {
 };
 
 export function Rail() {
-  const { folder, setFolder, rooms, theme, connected, set } = useStore();
+  const { folder, setFolder, rooms, theme, connected, cycleTheme } = useStore();
   const unreadBy = (f: string) =>
     rooms.filter((r) => (f === "All" || r.folder === f) && r.unread > 0 && !r.muted).length;
-
-  const toggleTheme = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    try {
-      localStorage.setItem("deskchat.theme", next);
-    } catch {
-      /* private mode */
-    }
-    set({ theme: next });
-  };
 
   return (
     <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-3" aria-label="Folders">
@@ -54,7 +43,7 @@ export function Rail() {
       })}
       <div className="flex-1" />
       <button
-        onClick={toggleTheme}
+        onClick={cycleTheme}
         title="Toggle theme"
         className="grid h-9 w-9 place-items-center rounded-md text-muted hover:bg-raised hover:text-ink"
       >

@@ -4,8 +4,10 @@ import { useStore } from "../lib/store";
 import { localTime } from "../lib/time";
 
 export function SearchPanel({ onJump }: { onJump: (m: Message) => void }) {
-  const { me, rooms, set } = useStore();
-  const [q, setQ] = useState("");
+  const { me, rooms, set, searchSeed, theme } = useStore();
+  const [q, setQ] = useState(searchSeed);
+
+  useEffect(() => setQ(searchSeed), [searchSeed]);
   const [results, setResults] = useState<Message[] | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -26,6 +28,9 @@ export function SearchPanel({ onJump }: { onJump: (m: Message) => void }) {
 
   return (
     <aside className="flex w-96 shrink-0 flex-col border-l border-line bg-panel">
+      {theme === "terminal" && (
+        <div className="bg-accent px-2 py-0.5 text-[12px] font-semibold text-black">SRCH · SEARCH ALL CHATS</div>
+      )}
       <div className="flex items-center gap-2 border-b border-line p-3">
         <input
           ref={input}

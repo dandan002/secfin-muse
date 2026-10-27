@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { api, type Message, type Room, type User } from "./api";
 
 type Typing = Record<string, Record<string, number>>; // roomId -> userId -> expiry ms
+export type Theme = "terminal" | "dark" | "light";
+const THEMES: Theme[] = ["terminal", "dark", "light"];
 
 type State = {
   me: string; // handle we're acting as
@@ -16,8 +18,10 @@ type State = {
   composeDraft: { roomId: string; text: string; nonce: number } | null;
   connected: boolean;
   simTime: string | null;
-  theme: "dark" | "light";
+  theme: Theme;
   searchOpen: boolean;
+  searchSeed: string;
+  helpOpen: boolean;
   blastOpen: boolean;
   setMe: (handle: string) => void;
   setFolder: (f: string) => void;
@@ -30,13 +34,15 @@ type State = {
   setTyping: (roomId: string, userId: string) => void;
   setCompose: (roomId: string, text: string) => void;
   set: (p: Partial<State>) => void;
+  cycleTheme: () => void;
 };
 
-const savedTheme = (() => {
+const savedTheme: Theme = (() => {
   try {
-    return (localStorage.getItem("deskchat.theme") as "dark" | "light" | null) ?? "dark";
+    const t = localStorage.getItem("deskchat.theme") as Theme | null;
+    return t && THEMES.includes(t) ? t : "terminal";
   } catch {
-    return "dark" as const;
+    return "terminal";
   }
 })();
 
@@ -55,9 +61,22 @@ export const useStore = create<State>((set, get) => ({
   simTime: null,
   theme: savedTheme,
   searchOpen: false,
+  searchSeed: "",
+  helpOpen: false,
   blastOpen: false,
 
   set: (p) => set(p),
+
+  cycleTheme: () => {
+    const next = THEMES[(THEMES.indexOf(get().theme) + 1) % THEMES.length];
+    document.documentElement.dataset.theme = next;
+    try {
+      localStorage.setItem("deskchat.theme", next);
+    } catch {
+      /* private mode */
+    }
+    set({ theme: next });
+  },
 
   setMe: (handle) => {
     set({ me: handle, rooms: [], messages: {}, hasMore: {}, activeRoom: null, openTabs: [], composeDraft: null });
