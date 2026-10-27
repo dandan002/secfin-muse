@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LoanDesk mock custodian: a SUBSET of ISO 20022 head.001 + sese.023, written for the simulator.
+  Element names follow ISO 20022 conventions; this is not the official schema and it accepts only
+  the fields the mock needs. Official XSDs are available free from iso20022.org.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:env="urn:loandesk:mock:envelope"
+           xmlns:head="urn:iso:std:iso:20022:tech:xsd:head.001.001.02"
+           xmlns:sese="urn:iso:std:iso:20022:tech:xsd:sese.023.001.09"
+           targetNamespace="urn:loandesk:mock:envelope"
+           elementFormDefault="qualified">
+  <xs:import namespace="urn:iso:std:iso:20022:tech:xsd:head.001.001.02" schemaLocation="head001_subset.xsd"/>
+  <xs:import namespace="urn:iso:std:iso:20022:tech:xsd:sese.023.001.09" schemaLocation="sese023_subset.xsd"/>
+  <xs:element name="BizMsg">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="head:AppHdr"/>
+        <xs:element ref="sese:Document"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
