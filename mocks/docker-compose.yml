@@ -1,0 +1,101 @@
+# LoanDesk AI "market side": every mock is its own service with its own Postgres schema.
+#   docker compose up --build
+# Then open http://localhost:5173 (Desk Chat) and http://localhost:8000/docs (sim control).
+# Synthetic data only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg.
+
+x-mock: &mock
+  build: .
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+  env_file:
+    - path: ../.env # optional: META_AI_API for LLM-driven personas
+      required: false
+  environment: &env
+    MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/loandesk_mocks
+    MOCK_CONTROL_URL: http://control:8000
+    MOCK_IB_URL: http://ib:8010
+    MOCK_GATEWAY_URL: http://gateway:8020
+    MOCK_NGT_URL: http://ngt:8030
+    MOCK_WEMATCH_URL: http://wematch:8040
+    MOCK_SFP_URL: http://sfp:8050
+    MOCK_CUSTODIAN_URL: http://custodian:8060
+    MOCK_SEED: "20261027"
+    MOCK_LLM_MODE: ${MOCK_LLM_MODE:-off}
+  healthcheck:
+    test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ[\"PORT\"]}/health')"]
+    interval: 10s
+    timeout: 3s
+    retries: 10
+
+services:
+  postgres:
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: loandesk_mocks
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d loandesk_mocks"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  control:
+    <<: *mock
+    command: ["uvicorn", "mock_control.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: { <<: *env, PORT: "8000" }
+    ports: ["8000:8000"]
+
+  ib:
+    <<: *mock
+    command: ["uvicorn", "mock_ib.app:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment: { <<: *env, PORT: "8010" }
+    ports: ["8010:8010"]
+
+  gateway:
+    <<: *mock
+    command: ["uvicorn", "mock_gateway.app:app", "--host", "0.0.0.0", "--port", "8020"]
+    environment:
+      <<: *env
+      PORT: "8020"
+      # Point at the LoanDesk platform to have locates pushed instead of pulled from /v1/inbox.
+      MOCK_GATEWAY_DOWNSTREAM_URL: ${MOCK_GATEWAY_DOWNSTREAM_URL:-}
+    ports: ["8020:8020"]
+
+  ngt:
+    <<: *mock
+    command: ["uvicorn", "mock_ngt.app:app", "--host", "0.0.0.0", "--port", "8030"]
+    environment: { <<: *env, PORT: "8030", MOCK_NGT_FIX_PORT: "9878", MOCK_NGT_FIX_HOST: "0.0.0.0" }
+    ports: ["8030:8030", "9878:9878"]
+
+  wematch:
+    <<: *mock
+    command: ["uvicorn", "mock_wematch.app:app", "--host", "0.0.0.0", "--port", "8040"]
+    environment: { <<: *env, PORT: "8040" }
+    ports: ["8040:8040"]
+
+  sfp:
+    <<: *mock
+    command: ["uvicorn", "mock_sfp.app:app", "--host", "0.0.0.0", "--port", "8050"]
+    environment: { <<: *env, PORT: "8050" }
+    ports: ["8050:8050"]
+
+  custodian:
+    <<: *mock
+    command: ["uvicorn", "mock_custodian.app:app", "--host", "0.0.0.0", "--port", "8060"]
+    environment: { <<: *env, PORT: "8060" }
+    ports: ["8060:8060"]
+
+  desk-chat:
+    build:
+      context: ./apps/desk-chat
+      args:
+        VITE_IB_URL: ${DESK_CHAT_IB_URL:-http://localhost:8010}
+    depends_on: [ib]
+    ports: ["5173:80"]
+
+volumes:
+  pgdata:

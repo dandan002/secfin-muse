@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from mock_ngt.fix import FrameReader, as_dict, checksum, decode, encode
+from mock_ngt.fix import FixParseError, FrameReader, as_dict, checksum, decode, encode
 from mock_ngt.fixclient import FixClient
 
 ORDER_TAGS = [(20003, "CASH"), (15, "USD"), (20004, 102), (64, "20261028"), (20006, "MSLA"), (20007, "LOANDESK-US")]
@@ -17,7 +17,7 @@ def test_codec_round_trip_and_framing():
     f = as_dict(decode(raw))
     assert f[35] == "D" and f[34] == "7" and f[11] == "A1"
     assert raw.endswith(f"10={checksum(raw[: raw.rindex('10=')])}\x01")
-    with pytest.raises(Exception):
+    with pytest.raises(FixParseError):
         decode(raw.replace("A1", "A2"))  # checksum no longer matches
     r = FrameReader()
     assert r.feed(raw[:20]) == [] and r.feed(raw[20:] + raw) == [raw, raw]

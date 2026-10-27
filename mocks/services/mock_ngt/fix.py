@@ -18,10 +18,9 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from mockcore import clock
+from mockcore import clock, rng
 from mockcore.app import ServiceContext
 from mockcore.auth import derive_secret
-from mockcore import rng
 
 from . import engine
 from .models import FixMessage, FixSession
@@ -94,7 +93,7 @@ def decode(raw: str) -> list[tuple[int, str]]:
     if pairs[-1][0] != 10:
         raise FixParseError("missing checksum")
     body_start = raw.index(SOH, raw.index(f"{SOH}9=") + 1) + 1
-    body_end = raw.rindex(f"10=")
+    body_end = raw.rindex("10=")
     if int(pairs[1][1]) != len(raw[body_start:body_end].encode()):
         raise FixParseError("BodyLength mismatch")
     if checksum(raw[:body_end]) != pairs[-1][1]:

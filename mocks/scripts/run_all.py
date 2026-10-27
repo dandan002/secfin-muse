@@ -83,7 +83,8 @@ def start_stack(base_port: int = 8000, db_url: str | None = None, fix_port: int 
         for p, (name, _, _) in zip(stack.procs, SERVICES, strict=True):
             if p.poll() is not None:
                 stack.stop()
-                raise RuntimeError(f"{name} exited early; see {stack.logs[name]}:\n{stack.logs[name].read_text()[-3000:]}")
+                tail = stack.logs[name].read_text()[-3000:]
+                raise RuntimeError(f"{name} exited early; see {stack.logs[name]}:\n{tail}")
         time.sleep(0.3)
     if pending:
         stack.stop()

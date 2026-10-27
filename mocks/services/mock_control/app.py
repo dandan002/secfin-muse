@@ -292,7 +292,7 @@ async def _run(run_id: str, scenario: sc.Scenario, req: RunRequest) -> None:
             if req.mode == "stepped":
                 await advance_to(step.at)
             else:
-                while clock.clock.live_now() < step.at:
+                while clock.clock.live_now() < step.at:  # noqa: ASYNC110 - polling the shared sim clock
                     await asyncio.sleep(0.02)
             run["current"] = i
             try:
@@ -304,7 +304,7 @@ async def _run(run_id: str, scenario: sc.Scenario, req: RunRequest) -> None:
             if req.mode == "stepped":
                 await advance_to(scenario.end)
             else:
-                while clock.clock.live_now() < scenario.end:
+                while clock.clock.live_now() < scenario.end:  # noqa: ASYNC110
                     await asyncio.sleep(0.05)
         run["status"] = "completed"
     except asyncio.CancelledError:

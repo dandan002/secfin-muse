@@ -54,14 +54,19 @@ asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 ignore = ["B008"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["mockcore", "refdata", "mock_control", "mock_ib", "mock_gateway", "mock_ngt", "mock_wematch",
+                     "mock_sfp", "mock_custodian", "run_all", "smoke"]
+
 [tool.mypy]
 python_version = "3.13"
 ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
 files = ["packages/mockcore", "packages/refdata"]

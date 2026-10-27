@@ -39,8 +39,8 @@ steps:
 
   - at: "09:02:00"
     do: ib.persona
-    label: Hot-name RFQ (client will pay up to 720 bps)
-    args: {persona: kestrel-hf, action: rfq, instrument: "@hot:0:US", qty: 500000, maxFeeBps: 720}
+    label: Hot-name RFQ (fair ~450 bps on the venue; client will pay up to 720 bps)
+    args: {persona: kestrel-hf, action: rfq, instrument: "@hot:2:US", qty: 500000, maxFeeBps: 720}
 
   - at: "09:03:00"
     do: ib.persona

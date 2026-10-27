@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from mockcore import clock, rng
+from mockcore import rng
 from mockcore.app import ServiceContext, ServiceSpec, create_app
 from mockcore.auth import derive_secret
 from refdata.counterparties import OUR_FIRM, counterparties
@@ -103,7 +103,8 @@ async def upload_list(request: Request, who: str = Depends(member)) -> dict:
 @app.get("/v1/interest-lists", tags=["lists"])
 async def lists(who: str = Depends(member)) -> list[dict]:
     async with ctx.session() as s:
-        return [engine.list_json(x) for x in (await s.execute(select(InterestList).order_by(InterestList.id))).scalars()]
+        rows = (await s.execute(select(InterestList).order_by(InterestList.id))).scalars()
+        return [engine.list_json(x) for x in rows]
 
 
 @app.get("/v1/interest-lists/{list_id}", tags=["lists"])
@@ -112,7 +113,8 @@ async def get_list(list_id: str, who: str = Depends(member)) -> dict:
         lst = (await s.execute(select(InterestList).where(InterestList.list_id == list_id))).scalar()
         if lst is None:
             raise HTTPException(404, "no such list")
-        lines = (await s.execute(select(ListLine).where(ListLine.list_id == list_id).order_by(ListLine.line_no))).scalars()
+        q = select(ListLine).where(ListLine.list_id == list_id).order_by(ListLine.line_no)
+        lines = (await s.execute(q)).scalars()
         return {**engine.list_json(lst), "lineItems": [engine.line_json(ln) for ln in lines]}
 
 

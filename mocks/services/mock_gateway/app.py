@@ -47,7 +47,9 @@ spec = ServiceSpec(
     label="Counterparty Gateway",
     schema="gateway",
     base=Base,
-    description="Counterparty-facing locate/order API with idempotency, rate limits, signed webhooks and a load generator.",
+    description=(
+        "Counterparty-facing locate/order API with idempotency, rate limits, signed webhooks and a load generator."
+    ),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
@@ -478,14 +480,15 @@ async def _arrival() -> None:
     if not _load.get("on"):
         return
     r = rng.stream("gateway", "loadgen")
+    # Re-arm first so one failed arrival doesn't end the stream.
+    rate = _load["base_per_min"] * (_load["burst_mult"] if _in_burst(clock.now()) else 1.0)
+    ctx.scheduler.after(r.expovariate(rate / 60.0), "loadgen", _arrival)
     cp = counterparty_by_code(r.choice(_load["counterparties"]))
     n = r.choices((1, r.randint(2, 5), r.randint(10, 50)), (0.4, 0.4, 0.2))[0]
     lines = _gen_lines(r, n)
     _load["generated"] += 1
     await create_locate(cp, "FLAT", f"{cp.code}-{clock.now():%H%M%S}-{_load['generated']}", None, None, lines, None,
                         hashlib.sha256(json.dumps(lines).encode()).hexdigest(), source="LOADGEN")
-    rate = _load["base_per_min"] * (_load["burst_mult"] if _in_burst(clock.now()) else 1.0)
-    ctx.scheduler.after(r.expovariate(rate / 60.0), "loadgen", _arrival)
 
 
 class LoadgenIn(BaseModel):

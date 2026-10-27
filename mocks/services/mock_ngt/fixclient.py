@@ -63,7 +63,7 @@ class FixClient:
                 self.received.append(m)
                 await self.inbox.put(m)
 
-    async def wait_for(self, pred, timeout: float = 10.0) -> dict[int, str]:
+    async def wait_for(self, pred, timeout: float = 10.0) -> dict[int, str]:  # noqa: ASYNC109
         async def _wait() -> dict[int, str]:
             while True:
                 m = await self.inbox.get()

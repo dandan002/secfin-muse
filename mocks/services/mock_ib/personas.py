@@ -335,7 +335,9 @@ def parse_fee(text: str) -> float | None:
     return None
 
 
-def react(r: random.Random, p: PersonaDef, text: str, state: dict[str, Any] | None) -> tuple[float, Draft, dict | None] | None:
+def react(
+    r: random.Random, p: PersonaDef, text: str, state: dict[str, Any] | None
+) -> tuple[float, Draft, dict | None] | None:
     """How a persona answers one of our messages: (delay seconds, reply, new state or None to clear)."""
     if p.style in ("rfq", "redteam") and state:
         composite = state["composite"]
@@ -364,5 +366,6 @@ def react(r: random.Random, p: PersonaDef, text: str, state: dict[str, Any] | No
         if r.random() < 0.4:
             return r.uniform(3, 15), Draft(r.choice(("ty", "thx", "👍")), _label("CHATTER", p, [])), state
     if p.style == "chatty" and re.search(r"\b(borrow|take|interest|want)\b", text, re.I):
-        return r.uniform(20, 60), Draft("Great - I'll check with the book and come back 🙂", _label("CHATTER", p, [])), state
+        reply = Draft("Great - I'll check with the book and come back 🙂", _label("CHATTER", p, []))
+        return r.uniform(20, 60), reply, state
     return None

@@ -209,7 +209,9 @@ async def send_and_react(room_id: str, sender_handle: str, text: str, chips: lis
 async def _schedule_reactions(room_id: str, text: str) -> None:
     async with ctx.session() as s:
         rows = await s.execute(
-            select(User).join(Member, Member.user_id == User.id).where(Member.room_id == room_id, User.kind == "persona")
+            select(User)
+            .join(Member, Member.user_id == User.id)
+            .where(Member.room_id == room_id, User.kind == "persona")
         )
         for u in rows.scalars():
             p = P.PERSONAS[u.persona]
@@ -233,10 +235,11 @@ async def _restyle(p: P.PersonaDef, draft: P.Draft) -> P.Draft:
         return draft
     out = await llm.complete(
         [
-            {"role": "system", "content": f"You write chat messages for a fictional securities-lending counterparty. "
-                                          f"Persona: {p.llm_brief} Rewrite the user's message in that voice. Keep every "
-                                          "identifier, number and line exactly; never add new securities or numbers. "
-                                          "Output only the message."},
+            {"role": "system", "content": (
+                "You write chat messages for a fictional securities-lending counterparty. "
+                f"Persona: {p.llm_brief} Rewrite the user's message in that voice. Keep every identifier, number "
+                "and line exactly; never add new securities or numbers. Output only the message."
+            )},
             {"role": "user", "content": draft.text},
         ],
         temperature=0.7,
@@ -649,11 +652,10 @@ async def _ambient_tick() -> None:
     if not _ambient["on"]:
         return
     r = rng.stream("ib", "ambient")
-    p = r.choice(list(P.PERSONAS.values()))
-    if p.style == "redteam":
-        return
-    await persona_act(p.key, "auto", {})
+    # Re-arm first so neither a skipped persona nor a failure ends the background traffic.
     ctx.scheduler.after(_ambient["every_s"] * r.uniform(0.5, 1.5), "ambient", _ambient_tick)
+    p = r.choice([p for p in P.PERSONAS.values() if p.style != "redteam"])
+    await persona_act(p.key, "auto", {})
 
 
 @ctx.verb("ambient")

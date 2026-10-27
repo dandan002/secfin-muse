@@ -33,7 +33,9 @@ def test_demo_scenario_inputs(mocks):
     _run(mocks)
     labels = mocks.get("ib", "/_admin/labels?limit=10000").json()
     today = [x for x in labels if x["ts"] >= "2026-10-27T12:55"]
-    pba = [x for x in today if x["label"]["persona"] == "pb-alpha" and x["label"]["intent"] == "LOCATE"]
+    # The 09:00 blast; ambient traffic from 09:10 adds more PB-ALPHA locates later.
+    pba = [x for x in today if x["label"]["persona"] == "pb-alpha" and x["label"]["intent"] == "LOCATE"
+           and x["ts"] < "2026-10-27T13:10"]
     assert sum(len(x["label"]["lines"]) for x in pba) == 40
     intents = {x["label"]["intent"] for x in today}
     assert {"LOCATE", "IOI", "RFQ", "INTERNAL_BORROW", "INJECTION"} <= intents

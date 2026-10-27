@@ -231,7 +231,7 @@ def test_sfp_cdm_lifecycle_marks_eod(mocks):
     mocks.advance(6 * 3600)
     m = mocks.post("sfp", f"/lifecycle/{c['contractId']}", headers=h, json={"event": "MARK"}).json()["mark"]
     assert m["requiredCollateral"] > 0
-    r = mocks.post("sfp", f"/lifecycle/UTI-CDM-1", headers=h, json={"event": "RECALL", "quantity": 40000}).json()
+    r = mocks.post("sfp", "/lifecycle/UTI-CDM-1", headers=h, json={"event": "RECALL", "quantity": 40000}).json()
     assert r["contract"]["openQuantity"] == 60000
     pos = mocks.get("sfp", "/positions", headers=h).json()
     assert pos[0]["openQuantity"] == 60000 and pos[0]["side"] == "LEND"
@@ -245,9 +245,10 @@ def test_custodian_sese023_to_sese025(mocks):
     cred = mocks.creds("custodian")
     h = {"x-api-key": cred["apiKey"]}
     mocks.verb("custodian", "config", fail_rate=0.0, unmatch_rate=0.0)
-    from mockcore import clock
-    from mock_custodian import iso
     from datetime import date
+
+    from mock_custodian import iso
+    from mockcore import clock
 
     ins = iso.Instruction(biz_msg_id="BM-1", sender_bic=cred["ourBic"], tx_id="TX-1", movement="RECE",
                           payment="FREE", common_id="UTI-1", trade_date=date(2026, 10, 27),
