@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the mocks as separate external systems: each is its own project (mocks/systems/<name>),
+# Deploy the mocks as separate external systems: each is its own project (mocks/<name>),
 # image registry, Terraform state and AWS stack.
 #
 #   infra/deploy.sh demo               # shared stack, then every system
@@ -30,7 +30,7 @@ init() {
 
 # A system's version is the last commit touching its project or the simulator libs it builds on.
 project_tag() {
-  local paths=("$mocks/systems/$1" "$mocks/libs")
+  local paths=("$mocks/$1" "$mocks/libs")
   local tag
   tag="$(git -C "$here" log -1 --format=%h -- "${paths[@]}")"
   tag="${tag:-$(git -C "$here" rev-parse --short HEAD)}"  # project not committed yet
@@ -54,14 +54,14 @@ deploy_system() {
   aws ecr get-login-password --region "$(tf_eval "$system" var.region)" \
     | docker login --username AWS --password-stdin "$registry" > /dev/null
 
-  docker build --platform linux/amd64 -f "$mocks/systems/$system/Dockerfile" -t "$repo:$tag" "$mocks"
+  docker build --platform linux/amd64 -f "$mocks/$system/Dockerfile" -t "$repo:$tag" "$mocks"
   docker push "$repo:$tag"
   if [[ "$system" == ib ]]; then
     # The browser calls mock-ib directly, so its public URL is baked into the bundle.
     local chat_repo
     chat_repo="$(tf_eval ib 'module.system.ecr["desk-chat"]')"
     docker build --platform linux/amd64 --build-arg "VITE_IB_URL=https://$(tf_eval ib local.hostname)" \
-      -t "$chat_repo:$tag" "$mocks/systems/ib/desk-chat"
+      -t "$chat_repo:$tag" "$mocks/ib/desk-chat"
     docker push "$chat_repo:$tag"
   fi
 

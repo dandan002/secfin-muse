@@ -1,4 +1,4 @@
-# LoanDesk AI "market side": every mock is its own project (systems/<name>), image and Postgres,
+# LoanDesk AI "market side": every mock is its own project (<name>), image and Postgres,
 # like the external systems they stand in for. They share nothing but HTTP; mock-control pushes
 # the sim clock.
 #   docker compose up --build
@@ -68,7 +68,7 @@ services:
 
   control:
     <<: *mock
-    build: { context: ., dockerfile: systems/control/Dockerfile }
+    build: { context: ., dockerfile: control/Dockerfile }
     depends_on:
       db-control:
         condition: service_healthy
@@ -80,7 +80,7 @@ services:
 
   ib:
     <<: *mock
-    build: { context: ., dockerfile: systems/ib/Dockerfile }
+    build: { context: ., dockerfile: ib/Dockerfile }
     depends_on:
       db-ib:
         condition: service_healthy
@@ -92,7 +92,7 @@ services:
 
   gateway:
     <<: *mock
-    build: { context: ., dockerfile: systems/gateway/Dockerfile }
+    build: { context: ., dockerfile: gateway/Dockerfile }
     depends_on:
       db-gateway:
         condition: service_healthy
@@ -106,7 +106,7 @@ services:
 
   ngt:
     <<: *mock
-    build: { context: ., dockerfile: systems/ngt/Dockerfile }
+    build: { context: ., dockerfile: ngt/Dockerfile }
     depends_on:
       db-ngt:
         condition: service_healthy
@@ -120,7 +120,7 @@ services:
 
   wematch:
     <<: *mock
-    build: { context: ., dockerfile: systems/wematch/Dockerfile }
+    build: { context: ., dockerfile: wematch/Dockerfile }
     depends_on:
       db-wematch:
         condition: service_healthy
@@ -132,7 +132,7 @@ services:
 
   sfp:
     <<: *mock
-    build: { context: ., dockerfile: systems/sfp/Dockerfile }
+    build: { context: ., dockerfile: sfp/Dockerfile }
     depends_on:
       db-sfp:
         condition: service_healthy
@@ -144,7 +144,7 @@ services:
 
   custodian:
     <<: *mock
-    build: { context: ., dockerfile: systems/custodian/Dockerfile }
+    build: { context: ., dockerfile: custodian/Dockerfile }
     depends_on:
       db-custodian:
         condition: service_healthy
@@ -156,7 +156,7 @@ services:
 
   desk-chat:
     build:
-      context: ./systems/ib/desk-chat
+      context: ./ib/desk-chat
       args:
         VITE_IB_URL: ${DESK_CHAT_IB_URL:-http://localhost:8010}
     depends_on: [ib]

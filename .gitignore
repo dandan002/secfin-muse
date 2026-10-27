@@ -7,7 +7,7 @@ __pycache__/
 .mypy_cache/
 node_modules/
 dist/
-mocks/systems/ib/cassettes/*.local.jsonl
+mocks/ib/cassettes/*.local.jsonl
 mocks/out/
 mocks/harness/out/
 infra/out/

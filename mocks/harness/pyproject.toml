@@ -13,7 +13,7 @@ package = false
 [tool.uv.sources]
 loandesk-mockcore = { path = "../libs/mockcore" }
 loandesk-refdata = { path = "../libs/refdata" }
-loandesk-mock-ngt = { path = "../systems/ngt" }
+loandesk-mock-ngt = { path = "../ngt" }
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.10", "types-pyyaml"]

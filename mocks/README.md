@@ -13,13 +13,13 @@ and every mock derives its data from one seed, so a demo replays event for event
 
 | Project | Stands in for | Label in UIs | Port | What it does |
 | --- | --- | --- | --- | --- |
-| `systems/control` | — | Simulation Control | 8000 | Sim clock (live/stepped), seeded resets, fault fan-out, scenario runner |
-| `systems/ib` + Desk Chat | Instant Bloomberg | Desk Chat | 8010 (+5173 UI) | Rooms, Blast, @mentions, search, unread, typing; bot API; 6 scripted/LLM personas with gold labels |
-| `systems/gateway` | Counterparty "smart API" | Counterparty Gateway | 8020 | Locates/orders (CDM-shaped, flat, CSV), idempotency, rate limits, signed webhooks, load generator |
-| `systems/ngt` | EquiLend NGT | Venue A (NGT-style) | 8030, FIX 9878 | Availability feed, prints, BID/OFFER/COUNTER/ACCEPT/CANCEL/FIRM_BID, ledger with UTIs, FIX 4.4-style session |
-| `systems/wematch` | Wematch.live | Venue B (Wematch-style) | 8040 | Interest lists (≤10k lines), optimiser, negotiation, re-rate/return lifecycle |
-| `systems/sfp` | FIS Securities Finance Processor | Processor (FIS-style) | 8050 | Booking (CDM-shaped), positions, compare with field diffs, amend, marks/margin calls, EOD file, ~3% seeded breaks |
-| `systems/custodian` | Custodian | Custodian | 8060 | ISO 20022 `sese.023` in (XSD-validated); `sese.024` status and `sese.025` confirmations out; seeded fails |
+| `control` | — | Simulation Control | 8000 | Sim clock (live/stepped), seeded resets, fault fan-out, scenario runner |
+| `ib` + Desk Chat | Instant Bloomberg | Desk Chat | 8010 (+5173 UI) | Rooms, Blast, @mentions, search, unread, typing; bot API; 6 scripted/LLM personas with gold labels |
+| `gateway` | Counterparty "smart API" | Counterparty Gateway | 8020 | Locates/orders (CDM-shaped, flat, CSV), idempotency, rate limits, signed webhooks, load generator |
+| `ngt` | EquiLend NGT | Venue A (NGT-style) | 8030, FIX 9878 | Availability feed, prints, BID/OFFER/COUNTER/ACCEPT/CANCEL/FIRM_BID, ledger with UTIs, FIX 4.4-style session |
+| `wematch` | Wematch.live | Venue B (Wematch-style) | 8040 | Interest lists (≤10k lines), optimiser, negotiation, re-rate/return lifecycle |
+| `sfp` | FIS Securities Finance Processor | Processor (FIS-style) | 8050 | Booking (CDM-shaped), positions, compare with field diffs, amend, marks/margin calls, EOD file, ~3% seeded breaks |
+| `custodian` | Custodian | Custodian | 8060 | ISO 20022 `sese.023` in (XSD-validated); `sese.024` status and `sese.025` confirmations out; seeded fails |
 
 Every service serves OpenAPI docs at `/docs`.
 
@@ -31,10 +31,12 @@ another. They build on two small versioned libraries, the way vendors build on i
 
 ```
 mocks/
+  control/  ib/  gateway/  ngt/  wematch/  sfp/  custodian/
+                     one external system each: loandesk-mock-<name>, with its own pyproject, uv.lock,
+                     Dockerfile, tests and README-level docs (e.g. ngt/FIX_SPEC.md)
+  ib/desk-chat/      mock-ib's terminal UI (its own npm project)
   libs/mockcore/     loandesk-mockcore: sim clock, scheduler, faults, event log, FastAPI factory
   libs/refdata/      loandesk-refdata: synthetic instruments, identifiers, counterparties, market
-  systems/<name>/    loandesk-mock-<name>: one external system (control, ib, gateway, ngt, wematch, sfp, custodian)
-  systems/ib/desk-chat/   mock-ib's terminal UI (its own npm project)
   harness/           runs every system from its own environment and plays the platform against them
   ruff.toml          shared house style
 ```
@@ -60,10 +62,10 @@ cd mocks/harness
 # {service} becomes each mock's own database (created if missing); this is the default:
 export MOCK_DATABASE_URL='postgresql+asyncpg://postgres@localhost:5432/loandesk_{service}'
 uv run python run_all.py      # syncs each system's own environment, starts all seven; logs in harness/out/logs/
-cd ../systems/ib/desk-chat && npm ci && npm run dev   # Desk Chat on http://localhost:5173
+cd ../ib/desk-chat && npm ci && npm run dev   # Desk Chat on http://localhost:5173
 ```
 
-One system on its own: `cd systems/ngt && uv run uvicorn mock_ngt.app:app --port 8030`.
+One system on its own: `cd ngt && uv run uvicorn mock_ngt.app:app --port 8030`.
 
 **AWS** (each mock its own stack: VPC, RDS, ECS, load balancer; Terraform): see
 [`../infra/README.md`](../infra/README.md).
@@ -95,7 +97,7 @@ Default sim start: **Tue 27 Oct 2026, 08:55 New York**.
 
 ### Scenarios
 
-YAML files in `systems/control/scenarios/` drive the mocks with timed `<service>.<verb>` steps (`GET <svc>/_admin/scenario`
+YAML files in `control/scenarios/` drive the mocks with timed `<service>.<verb>` steps (`GET <svc>/_admin/scenario`
 lists a service's verbs):
 
 * `demo.yaml`: the five-minute demo's inputs. PB-ALPHA blasts 40 locates in chat (34 GC/ETB + 6 Warm),
@@ -134,9 +136,9 @@ Every service exposes `GET /_admin/credentials` (derived from the seed). Set `MO
 `POST /compose` (pushes a draft into a human's composer). Personas are fictional: PB-ALPHA (terse), PB-BRAVO
 (lists), Harbor Lane (IOIs), Kestrel (RFQs, negotiates against a hidden limit), Delta One (internal) and
 Juniper (RFQs plus prompt injection). Every persona message stores a gold label (`GET /_admin/labels`).
-`cd systems/ib && uv run mock-ib-corpus` writes the 300-conversation labelled eval set.
+`cd ib && uv run mock-ib-corpus` writes the 300-conversation labelled eval set.
 
-The Desk Chat React app (`systems/ib/desk-chat`) defaults to an amber-on-black **terminal theme** modelled on
+The Desk Chat React app (`ib/desk-chat`) defaults to an amber-on-black **terminal theme** modelled on
 institutional terminal chat: a command line with `<GO>` (type a chat name, `MSG <handle>`, `SRCH <text>`,
 `BLAST`, `THEME`, `HELP`), a function-key strip (F1 help, F2 chats, F3 command line, F8 Blast, F9 search,
 F10 theme, Esc), dense one-line message rows, and amber title bars. It uses no vendor logo or name.
@@ -160,7 +162,7 @@ the decision reaches the counterparty's callback as an HMAC-signed webhook
 (`X-Mock-Signature: t=…,v1=…`), retried with backoff. Built-in receivers at `/cp/{code}/callback` record
 what each counterparty got. The `gateway.loadgen` verb produces Poisson arrivals with a 09:00–09:45 burst.
 
-**mock-ngt.** See [`systems/ngt/FIX_SPEC.md`](systems/ngt/FIX_SPEC.md) for the FIX
+**mock-ngt.** See [`ngt/FIX_SPEC.md`](ngt/FIX_SPEC.md) for the FIX
 dialect: persisted sequence numbers, ResendRequest/gap-fill, and reports raised offline recovered on the
 next logon. Simulated lenders execute, counter (partial size or higher fee), or reject after 1–3 s (GC) or
 5–20 s (specials) of sim time. Venue codes and agreement types are checked
@@ -173,7 +175,7 @@ collateral and emits margin calls with a `colr.003`-shaped payload. `GET /eod/co
 end-of-day file (the `eod_break` flag makes it disagree).
 
 **mock-custodian.** `POST /iso/sese.023` takes XML validated against the XSD subsets in
-`systems/custodian/mock_custodian/xsd/` (head.001 + sese.023; a schema failure returns a `sese.024` RJCT naming the
+`custodian/mock_custodian/xsd/` (head.001 + sese.023; a schema failure returns a `sese.024` RJCT naming the
 field). `POST /instructions` takes JSON and builds the XML for you. Outbound messages go to `GET /iso/outbox`
 and the `/stream` WebSocket.
 
@@ -190,10 +192,10 @@ Each project tests itself, in its own environment:
 
 ```bash
 cd mocks
-for p in libs/* systems/*; do (cd $p && uv run pytest -q); done   # 27 unit tests; each system checks its app builds
+for p in libs/* control ib gateway ngt wematch sfp custodian; do (cd $p && uv run pytest -q); done   # 27 unit tests; each system checks its app builds
 (cd libs/mockcore && uv run mypy) && (cd libs/refdata && uv run mypy)
 cd harness && uv run ruff check .. && uv run pytest               # 23 cross-system tests; need Postgres
-cd ../systems/ib/desk-chat && npm run build
+cd ../ib/desk-chat && npm run build
 ```
 
 The harness tests start every system from its own project environment on ports 18000–18060, each against

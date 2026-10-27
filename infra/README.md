@@ -1,7 +1,7 @@
 # LoanDesk AI: AWS hosting
 
 Terraform for the spec's **market account**. Each mock is its own code project
-(`mocks/systems/<name>`, with its own lockfile, Dockerfile and image) and is hosted the way the real
+(`mocks/<name>`, with its own lockfile, Dockerfile and image) and is hosted the way the real
 external system would be: as a separate system with its own image registry, network, database,
 compute, endpoint and Terraform state. The systems share nothing at runtime. They meet only over public HTTPS (and
 FIX), with IP allowlists, the way a desk connects to its vendors.
@@ -68,7 +68,7 @@ Per-system design points:
     balancers. That covers LLM calls and webhooks to external callbacks.
 * mock-gateway calls its own simulated counterparties at `127.0.0.1`. Every other URL is public.
 * **Own image, own version.** Each system has its own ECR repos (`loandesk-<env>/<name>`, plus
-  `ib-desk-chat`), built from `mocks/systems/<name>/Dockerfile`. The image tag is the last commit
+  `ib-desk-chat`), built from `mocks/<name>/Dockerfile`. The image tag is the last commit
   touching that project or the libs, so redeploying one system never rebuilds or restarts another.
 
 ## Deploy
@@ -159,7 +159,7 @@ own project environment and database and the admin token enforced.
    ALB + Cognito authentication on `chat` and `ib`.
 11. FIX is plaintext TCP with the password in tag 554. An NLB TLS listener is a small follow-up if the
    client can speak TLS.
-12. LLM `replay` mode has nothing to replay in the cloud: `mocks/systems/ib/cassettes/` isn't in the repo or the
+12. LLM `replay` mode has nothing to replay in the cloud: `mocks/ib/cassettes/` isn't in the repo or the
     image, and `record` writes to the task's ephemeral disk. Bake a cassette into the image (or use S3)
     before relying on LLM personas there.
 13. The spec puts mock-ngt on DynamoDB. It now has its own Postgres, like every system. Swapping in

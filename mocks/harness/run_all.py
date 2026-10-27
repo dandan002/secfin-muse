@@ -4,7 +4,7 @@
     uv run python run_all.py                  # ports 8000-8060, FIX 9878, dbs loandesk_<service>
     uv run python run_all.py --base-port 18000 --db 'postgresql+asyncpg://postgres@localhost/test_{service}'
 
-Each system is a separate project (``mocks/systems/<name>``); its environment is synced with
+Each system is a separate project (``mocks/<name>``); its environment is synced with
 ``uv sync --frozen`` before it starts, so nothing here imports a system's code.
 
 ``{service}`` in the database URL is replaced per mock; missing databases are created.
@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parents[1]  # mocks/
-SYSTEMS = ROOT / "systems"
+SYSTEMS = ROOT  # each system is mocks/<name>
 OUT = Path(__file__).resolve().parent / "out"
 DEFAULT_DB = "postgresql+asyncpg://postgres@localhost:5432/loandesk_{service}"
 SERVICES = (  # name, module, port offset
