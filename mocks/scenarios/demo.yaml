@@ -1,0 +1,73 @@
+# The five-minute demo's market side (spec: "Five-minute demo script").
+# Inputs only: what the counterparties, venues and processor do. Our platform reacts to them.
+# Run:  POST /scenarios/demo/run {"mode": "stepped"}   (exactly reproducible)
+#       POST /scenarios/demo/run {"mode": "live", "speed": 10}
+name: demo
+description: >
+  09:00 open; PB-ALPHA blasts 40 locates in chat (34 GC/ETB + 6 Warm); Kestrel's API posts 25 more;
+  a hot-name RFQ from Kestrel; IOIs, a PB-BRAVO list and an internal borrow; a prompt-injection
+  attempt from Juniper; the processor breaks the first booking; background API flow with a 09:00-09:45 burst.
+start: "2026-10-27T08:55:00-04:00"
+speed: 10
+seed: 20261027
+end: "10:00:00"
+steps:
+  - at: "08:55:00"
+    do: sfp.flags
+    label: First booking of the day comes back with a deliberate break
+    args: {force_break_next: true, break_rate: 0.03}
+
+  - at: "08:58:00"
+    do: ib.persona
+    label: Agent lender morning availability
+    args: {persona: harbor-lending, action: ioi, n: 5}
+
+  - at: "09:00:00"
+    do: gateway.loadgen
+    label: Background API locate flow with the 09:00-09:45 burst
+    args: {on: true, base_per_min: 1.5, burst_mult: 6}
+
+  - at: "09:00:05"
+    do: ib.persona
+    label: PB-ALPHA blasts 40 locates (34 ETB + 6 Warm)
+    args: {persona: pb-alpha, action: locate_blast, tierCounts: {GC: 34, WARM: 6}, spacingS: 3}
+
+  - at: "09:00:30"
+    do: gateway.burst
+    label: Hedge-fund API posts 25 locates
+    args: {counterparty: KESTRELHF, lines: 25, requestId: KESTRELHF-DEMO-0001}
+
+  - at: "09:02:00"
+    do: ib.persona
+    label: Hot-name RFQ (fair ~450 bps on the venue; client will pay up to 720 bps)
+    args: {persona: kestrel-hf, action: rfq, instrument: "@hot:2:US", qty: 500000, maxFeeBps: 720}
+
+  - at: "09:03:00"
+    do: ib.persona
+    label: PB-BRAVO sends a SEDOL/ISIN list
+    args: {persona: pb-bravo, action: locate_blast, n: 8, perMessage: 8}
+
+  - at: "09:04:00"
+    do: ib.persona
+    label: Internal desk asks for an internal borrow
+    args: {persona: delta-one, action: internal_borrow, instrument: "@warm:2:US", qty: 2000000}
+
+  - at: "09:05:00"
+    do: ib.persona
+    label: Second RFQ (London)
+    args: {persona: juniper-hf, action: rfq, instrument: "@warm:0:GB", qty: 300000}
+
+  - at: "09:06:30"
+    do: ib.persona
+    label: Safety moment - prompt injection attempt
+    args: {persona: juniper-hf, action: injection, instrument: "@hot:1:US", qty: 5000000}
+
+  - at: "09:10:00"
+    do: ib.ambient
+    label: Background chatter for the rest of the hour
+    args: {on: true, everyS: 300}
+
+  - at: "09:45:00"
+    do: gateway.loadgen
+    label: Burst over; keep a trickle
+    args: {on: true, base_per_min: 0.5, burst_mult: 1}

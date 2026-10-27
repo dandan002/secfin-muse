@@ -1,0 +1,39 @@
+# Chaos drills from the spec: venue outage with failover, faulty messaging, end-of-day break.
+name: chaos
+description: >
+  Venue A goes down at 10:00 for 10 minutes (router should fail over to Venue B); Venue A then drops
+  and duplicates execution reports; the custodian fails the next settlement; the processor's end-of-day
+  file disagrees with its online books.
+start: "2026-10-27T09:55:00-04:00"
+speed: 10
+seed: 20261027
+end: "16:35:00"
+steps:
+  - at: "10:00:00"
+    do: http
+    label: Venue A outage
+    args: {service: ngt, method: PUT, path: /_admin/faults, json: {outage: true}}
+  - at: "10:10:00"
+    do: http
+    label: Venue A back, but lossy
+    args: {service: ngt, method: PUT, path: /_admin/faults, json: {drop_pct: 10, dup_pct: 10, reorder_pct: 10}}
+  - at: "10:30:00"
+    do: http
+    label: Venue A healthy
+    args: {service: ngt, method: PUT, path: /_admin/faults, json: {}}
+  - at: "10:30:00"
+    do: custodian.config
+    label: Next settlement fails for lack of securities
+    args: {fail_next: true}
+  - at: "11:00:00"
+    do: http
+    label: Gateway webhooks get slow and lossy
+    args: {service: gateway, method: PUT, path: /_admin/faults, json: {latency_ms: 800, drop_pct: 20}}
+  - at: "11:30:00"
+    do: http
+    label: Gateway healthy
+    args: {service: gateway, method: PUT, path: /_admin/faults, json: {}}
+  - at: "16:30:00"
+    do: sfp.flags
+    label: End-of-day file disagrees with the books
+    args: {eod_break: true}

@@ -1,0 +1,72 @@
+[project]
+name = "loandesk-mocks"
+version = "0.1.0"
+description = "Simulated external systems (chat, venues, processor, custodian, gateway) for LoanDesk AI. Synthetic data only."
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "pyyaml>=6",
+    "lxml>=5",
+    "openai>=1.40",
+    "python-multipart>=0.0.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-pyyaml",
+]
+
+[project.scripts]
+refdata = "refdata.cli:main"
+mock-ib-corpus = "mock_ib.corpus:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "packages/mockcore",
+    "packages/refdata",
+    "services/mock_control",
+    "services/mock_ib",
+    "services/mock_gateway",
+    "services/mock_ngt",
+    "services/mock_wematch",
+    "services/mock_sfp",
+    "services/mock_custodian",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mockcore", "refdata", "mock_control", "mock_ib", "mock_gateway", "mock_ngt", "mock_wematch",
+                     "mock_sfp", "mock_custodian", "run_all", "smoke"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+files = ["packages/mockcore", "packages/refdata"]

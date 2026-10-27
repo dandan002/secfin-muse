@@ -1,0 +1,8 @@
+.venv
+out
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+apps/desk-chat/node_modules
+apps/desk-chat/dist
