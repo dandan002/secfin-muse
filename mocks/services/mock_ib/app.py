@@ -271,11 +271,13 @@ def _generate(r, p: P.PersonaDef, action: str, args: dict[str, Any], at=None) ->
             action = "chatter"
         args = {"n": r.choice((1, 2, 3, 5))} if action == "locate_blast" else {}
     tier_mix = args.get("tierMix")
-    inst = resolve(args["instrument"]) if args.get("instrument") else None
+    inst = resolve(str(args["instrument"])) if args.get("instrument") else None
     if args.get("instrument") and inst is None:
         raise HTTPException(422, f"unknown instrument {args['instrument']!r}")
     if action == "locate_blast":
-        return P.locate_blast(r, p, int(args.get("n", 10)), tier_mix, args.get("perMessage"))
+        counts = args.get("tierCounts")
+        n = sum(counts.values()) if counts else int(args.get("n", 10))
+        return P.locate_blast(r, p, n, tier_mix, args.get("perMessage"), counts)
     if action == "internal_borrow":
         q = args.get("qty")
         insts = [inst] if inst else P.pick_instruments(r, 1, tier_mix)

@@ -42,6 +42,7 @@ class Database:
 
     async def init(self) -> None:
         async with self.engine.begin() as conn:
+            await conn.exec_driver_sql("SELECT pg_advisory_xact_lock(424242)")
             await conn.exec_driver_sql(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
             await conn.run_sync(self.metadata.create_all)
 

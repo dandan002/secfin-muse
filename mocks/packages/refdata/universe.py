@@ -266,9 +266,25 @@ def instrument_by_id(inst_id: str, seed: int | None = None) -> Instrument | None
 
 
 def resolve(query: str, seed: int | None = None) -> Instrument | None:
-    """Resolve an ISIN, SEDOL, CUSIP, FIGI, "TICK XX", "TICK XX Equity" or "TICK.MIC"."""
+    """Resolve an ISIN, SEDOL, CUSIP, FIGI, "TICK XX", "TICK XX Equity", "TICK.MIC" or a placeholder.
+
+    Placeholders (``@hot:0``, ``@warm:3:US``, ``@gc:12:GB``) pick a stable name by tier, index and
+    optional country, so scenario files don't hard-code generated tickers.
+    """
     q = " ".join(query.strip().upper().split())
+    if q.startswith("@"):
+        return placeholder(q, seed)
     return _index(rng.get_seed() if seed is None else seed).get(q)
+
+
+def placeholder(spec: str, seed: int | None = None) -> Instrument | None:
+    parts = spec.lstrip("@").upper().split(":")
+    tier = parts[0]
+    idx = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+    country = parts[2] if len(parts) > 2 else None
+    pool = [i for i in universe(seed) if i.tier == tier and not i.restricted and not (tier == "GC" and i.threshold_flag)
+            and (country is None or i.country == country)]
+    return pool[idx % len(pool)] if pool else None
 
 
 def by_tier(tier: str, seed: int | None = None) -> list[Instrument]:

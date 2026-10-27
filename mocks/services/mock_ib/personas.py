@@ -112,22 +112,39 @@ def ident(r: random.Random, inst: Instrument, style: str) -> tuple[str, str]:
 TIER_MIX_DEFAULT = {"GC": 0.70, "WARM": 0.20, "HOT": 0.10}
 
 
+def _pools(countries: tuple[str, ...] | None = None) -> dict[str, list[Instrument]]:
+    pools: dict[str, list[Instrument]] = {}
+    for inst in universe():
+        if inst.restricted or (countries and inst.country not in countries):
+            continue
+        # ETB-style GC only: threshold-list names never count as easy to borrow.
+        if inst.tier == "GC" and inst.threshold_flag:
+            continue
+        pools.setdefault(inst.tier, []).append(inst)
+    return pools
+
+
 def pick_instruments(
     r: random.Random,
     n: int,
     tier_mix: dict[str, float] | None = None,
     countries: tuple[str, ...] | None = None,
+    tier_counts: dict[str, int] | None = None,
 ) -> list[Instrument]:
-    mix = tier_mix or TIER_MIX_DEFAULT
-    pools: dict[str, list[Instrument]] = {}
-    for inst in universe():
-        if inst.restricted or (countries and inst.country not in countries):
-            continue
-        pools.setdefault(inst.tier, []).append(inst)
-    tiers = list(mix)
-    weights = [mix[t] for t in tiers]
+    """``n`` distinct names drawn by ``tier_mix`` weights, or exactly ``tier_counts`` per tier (shuffled)."""
+    pools = _pools(countries)
     out: list[Instrument] = []
     seen: set[str] = set()
+    if tier_counts:
+        for tier, k in tier_counts.items():
+            for inst in r.sample(pools[tier], k):
+                seen.add(inst.id)
+                out.append(inst)
+        r.shuffle(out)
+        return out
+    mix = tier_mix or TIER_MIX_DEFAULT
+    tiers = list(mix)
+    weights = [mix[t] for t in tiers]
     while len(out) < n:
         tier = r.choices(tiers, weights)[0]
         pool = pools.get(tier) or pools["GC"]
@@ -136,6 +153,8 @@ def pick_instruments(
             seen.add(inst.id)
             out.append(inst)
     return out
+
+
 
 
 def _line(inst: Instrument, written: str, id_type: str, qty: int, **extra: Any) -> dict[str, Any]:
@@ -161,10 +180,16 @@ def _label(intent: str, persona: PersonaDef, lines: list[dict[str, Any]], **extr
 
 # -- generators ---------------------------------------------------------------------------
 def locate_blast(
-    r: random.Random, p: PersonaDef, n: int, tier_mix: dict[str, float] | None = None, per_message: int | None = None
+    r: random.Random,
+    p: PersonaDef,
+    n: int,
+    tier_mix: dict[str, float] | None = None,
+    per_message: int | None = None,
+    tier_counts: dict[str, int] | None = None,
 ) -> list[Draft]:
     """A burst of locate requests, split over several messages in the persona's style."""
-    insts = pick_instruments(r, n, tier_mix, countries=("US",) if p.style == "terse" else None)
+    insts = pick_instruments(r, n, tier_mix, countries=("US",) if p.style == "terse" else None,
+                             tier_counts=tier_counts)
     drafts: list[Draft] = []
     i = 0
     while i < len(insts):

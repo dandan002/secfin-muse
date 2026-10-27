@@ -134,6 +134,8 @@ def sim_date_local() -> str:
 # -- persistence --------------------------------------------------------------------------
 async def ensure_clock_table(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
+        # Services boot concurrently; serialise DDL so CREATE SCHEMA/TABLE can't race.
+        await conn.exec_driver_sql("SELECT pg_advisory_xact_lock(424242)")
         await conn.exec_driver_sql("CREATE SCHEMA IF NOT EXISTS control")
         await conn.run_sync(control_metadata.create_all)
         row = (await conn.execute(select(clock_table).where(clock_table.c.id == 1))).first()
