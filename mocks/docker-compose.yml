@@ -1,19 +1,27 @@
-# LoanDesk AI "market side": every mock is its own service with its own Postgres schema.
+# LoanDesk AI "market side": every mock is its own service with its own Postgres, like the
+# external systems they stand in for. They share nothing but HTTP; mock-control pushes the sim clock.
 #   docker compose up --build
 # Then open http://localhost:5173 (Desk Chat) and http://localhost:8000/docs (sim control).
 # Synthetic data only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg.
 
+x-db: &db
+  image: postgres:16.6-alpine
+  environment:
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: mock
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -d mock"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
 x-mock: &mock
   build: .
   restart: unless-stopped
-  depends_on:
-    postgres:
-      condition: service_healthy
   env_file:
     - path: ../.env # optional: META_AI_API for LLM-driven personas
       required: false
   environment: &env
-    MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/loandesk_mocks
     MOCK_CONTROL_URL: http://control:8000
     MOCK_IB_URL: http://ib:8010
     MOCK_GATEWAY_URL: http://gateway:8020
@@ -30,37 +38,68 @@ x-mock: &mock
     retries: 10
 
 services:
-  postgres:
-    image: postgres:16.6-alpine
-    environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: loandesk_mocks
-    ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d loandesk_mocks"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
+  db-control:
+    <<: *db
+    volumes: [pg-control:/var/lib/postgresql/data]
+
+  db-ib:
+    <<: *db
+    volumes: [pg-ib:/var/lib/postgresql/data]
+
+  db-gateway:
+    <<: *db
+    volumes: [pg-gateway:/var/lib/postgresql/data]
+
+  db-ngt:
+    <<: *db
+    volumes: [pg-ngt:/var/lib/postgresql/data]
+
+  db-wematch:
+    <<: *db
+    volumes: [pg-wematch:/var/lib/postgresql/data]
+
+  db-sfp:
+    <<: *db
+    volumes: [pg-sfp:/var/lib/postgresql/data]
+
+  db-custodian:
+    <<: *db
+    volumes: [pg-custodian:/var/lib/postgresql/data]
 
   control:
     <<: *mock
     command: ["uvicorn", "mock_control.app:app", "--host", "0.0.0.0", "--port", "8000"]
-    environment: { <<: *env, PORT: "8000" }
+    depends_on:
+      db-control:
+        condition: service_healthy
+    environment:
+      <<: *env
+      PORT: "8000"
+      MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-control:5432/mock
     ports: ["8000:8000"]
 
   ib:
     <<: *mock
     command: ["uvicorn", "mock_ib.app:app", "--host", "0.0.0.0", "--port", "8010"]
-    environment: { <<: *env, PORT: "8010" }
+    depends_on:
+      db-ib:
+        condition: service_healthy
+    environment:
+      <<: *env
+      PORT: "8010"
+      MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-ib:5432/mock
     ports: ["8010:8010"]
 
   gateway:
     <<: *mock
     command: ["uvicorn", "mock_gateway.app:app", "--host", "0.0.0.0", "--port", "8020"]
+    depends_on:
+      db-gateway:
+        condition: service_healthy
     environment:
       <<: *env
       PORT: "8020"
+      MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-gateway:5432/mock
       # Point at the LoanDesk platform to have locates pushed instead of pulled from /v1/inbox.
       MOCK_GATEWAY_DOWNSTREAM_URL: ${MOCK_GATEWAY_DOWNSTREAM_URL:-}
     ports: ["8020:8020"]
@@ -68,25 +107,51 @@ services:
   ngt:
     <<: *mock
     command: ["uvicorn", "mock_ngt.app:app", "--host", "0.0.0.0", "--port", "8030"]
-    environment: { <<: *env, PORT: "8030", MOCK_NGT_FIX_PORT: "9878", MOCK_NGT_FIX_HOST: "0.0.0.0" }
+    depends_on:
+      db-ngt:
+        condition: service_healthy
+    environment:
+      <<: *env
+      PORT: "8030"
+      MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-ngt:5432/mock
+      MOCK_NGT_FIX_PORT: "9878"
+      MOCK_NGT_FIX_HOST: "0.0.0.0"
     ports: ["8030:8030", "9878:9878"]
 
   wematch:
     <<: *mock
     command: ["uvicorn", "mock_wematch.app:app", "--host", "0.0.0.0", "--port", "8040"]
-    environment: { <<: *env, PORT: "8040" }
+    depends_on:
+      db-wematch:
+        condition: service_healthy
+    environment:
+      <<: *env
+      PORT: "8040"
+      MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-wematch:5432/mock
     ports: ["8040:8040"]
 
   sfp:
     <<: *mock
     command: ["uvicorn", "mock_sfp.app:app", "--host", "0.0.0.0", "--port", "8050"]
-    environment: { <<: *env, PORT: "8050" }
+    depends_on:
+      db-sfp:
+        condition: service_healthy
+    environment:
+      <<: *env
+      PORT: "8050"
+      MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-sfp:5432/mock
     ports: ["8050:8050"]
 
   custodian:
     <<: *mock
     command: ["uvicorn", "mock_custodian.app:app", "--host", "0.0.0.0", "--port", "8060"]
-    environment: { <<: *env, PORT: "8060" }
+    depends_on:
+      db-custodian:
+        condition: service_healthy
+    environment:
+      <<: *env
+      PORT: "8060"
+      MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-custodian:5432/mock
     ports: ["8060:8060"]
 
   desk-chat:
@@ -98,4 +163,10 @@ services:
     ports: ["5173:80"]
 
 volumes:
-  pgdata:
+  pg-control:
+  pg-ib:
+  pg-gateway:
+  pg-ngt:
+  pg-wematch:
+  pg-sfp:
+  pg-custodian:

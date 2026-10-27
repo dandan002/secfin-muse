@@ -1,131 +1,161 @@
 # LoanDesk AI: AWS hosting
 
-Terraform for the **market account** from the spec: every external-system mock in `mocks/` on ECS
-Fargate. The firm-side platform isn't built yet; when it is, it gets its own root module
-(`terraform/firm`) and reaches these services the way it would reach a vendor.
+Terraform for the spec's **market account**. Each mock in `mocks/` is hosted the way the real
+external system would be: as a separate system with its own network, database, compute, endpoint
+and Terraform state. The systems share nothing at runtime. They meet only over public HTTPS (and
+FIX), with IP allowlists, the way a desk connects to its vendors.
 
 ```
-                        allowed_cidrs only
-                               │
-          ┌────────────────────┴─────────────────────┐
-          ▼                                          ▼
-  ALB :443 (*.mocks.example.com, ACM)        NLB :9878 (fix.mocks.example.com)
-   host rule per service                             │ TCP
-          │                                          │
-  ┌───────┴──────────────────────────────────────────┴──────────────┐
-  │ ECS Fargate, 1 task each                                        │
-  │  control:8000  ib:8010  gateway:8020  ngt:8030(+FIX 9878)       │
-  │  wematch:8040  sfp:8050  custodian:8060  chat:80 (Desk Chat)    │
-  │       ▲ each other via Cloud Map: http://<svc>.mocks.local:<port> │
-  └───────┼─────────────────────────────────────────────────────────┘
-          ▼
-  Aurora Serverless v2 Postgres 16: db loandesk_mocks, one schema per mock + control.clock
-  Secrets Manager: database URL, MOCK_ADMIN_TOKEN, optional META_AI_API
+ operators (allowed_cidrs)          LoanDesk platform, later (client_cidrs)
+        │                                         │
+        ▼                                         ▼
+┌──────────────────────┐   HTTPS from a fixed   ┌─────────────────────────────────────────────┐
+│ mock-control         │   egress IP (NAT+EIP)  │ ngt.<domain> (Venue A)    + fix.<domain>:9878│
+│  control.<domain>    │ ─────────────────────► │   own VPC · ALB + NLB · ECS task · RDS       │
+│  own VPC · ALB · ECS │   clock pushes, ticks, ├─────────────────────────────────────────────┤
+│  task · RDS (clock)  │   resets, faults,      │ ib.<domain> + chat.<domain> (Desk Chat)      │
+└──────────────────────┘   scenario verbs       │   own VPC · ALB · 2 ECS tasks · RDS          │
+                                                ├─────────────────────────────────────────────┤
+                                                │ gateway · wematch · sfp · custodian          │
+                                                │   each: own VPC · ALB · ECS task · RDS       │
+                                                └─────────────────────────────────────────────┘
 ```
 
-| Piece | Choice | Why |
+## What made this possible
+
+Before this change, every mock read the sim clock from one row in a shared database, so they could
+not be separated. Now:
+
+* **mock-control** owns the clock in its own database and **pushes** it to each system
+  (`PUT /_admin/clock`) on every change and every 5 s. The push needs the admin token.
+* Each system stores the last clock it received **in its own database**, so it boots and resumes
+  without ever calling mock-control. Pushes carry a revision, so a late one can't overwrite a newer
+  clock.
+* Locally, docker-compose runs one Postgres container per mock, and `run_all.py` and the tests give
+  each mock its own database. A test asserts that no mock's database holds another's tables.
+
+The only cross-system traffic left is mock-control's fan-out (clock, ticks, resets, faults, scenario
+verbs), which goes to each system's public URL, as a simulator driving external venues would.
+
+## Layout
+
+| Path | What | State |
 | --- | --- | --- |
-| Compute | ECS Fargate, 0.25 vCPU / 512 MB per service, **exactly one task**, deploys stop-then-start (`min 0% / max 100%`) | Schedulers, WebSocket hubs, FIX sessions and faults live in process memory; two tasks would double-fire venue fills and persona replies. Measured ~100 MB RSS per mock after the full demo. |
-| Discovery | Cloud Map private DNS (`ib.mocks.local`) | Same `MOCK_*_URL` wiring as docker-compose; one task per service needs nothing smarter. |
-| Edge | HTTPS ALB, host-based routing `<svc>.<domain_name>`, 900 s idle timeout for WebSockets; TCP NLB for FIX | No app changes: the services don't support path prefixes. NLB health-checks ngt's `/health`. |
-| Access | Security groups admit only `allowed_cidrs` (0.0.0.0/0 is rejected) | Control `/reset`, `/faults` and the Desk Chat `X-User` switcher are unauthenticated by design. |
-| Database | One Aurora Serverless v2 cluster (0.5–2 ACU) | Every mock reads the `control.clock` row, so they must share a database. Schemas keep ledgers separate. |
-| Desk Chat | The existing nginx image as a service at `chat.<domain_name>` | Same allowlist and cert as everything else. `VITE_IB_URL` is baked in at build time. |
-| Egress | Public subnets + public IPs by default; `nat_gateway = true` moves tasks private | Similar cost (8 public IPv4s ≈ NAT gateway); public is simpler. Ingress is SG-locked either way. |
-| Ops | CloudWatch Logs per service, Container Insights, `ecs execute-command`, optional AWS Budgets alert | |
+| `terraform/shared` | ECR images, the simulator's admin token, mock-control's Elastic IP, an optional LLM key and budget. Nothing on a request path. | workspace `<env>`, e.g. `demo` |
+| `terraform/vendor` | One external system. The workspace picks which one. | workspace `<env>-<system>`, e.g. `demo-ngt` |
+| `terraform/modules/vendor` | The system: VPC (2 AZs), RDS Postgres 16, ECS cluster + Fargate service, HTTPS ALB with its own ACM cert and DNS name, an NLB for raw TCP (FIX), IAM, logs, secrets. | — |
+| `terraform/common/variables.tf` | Variables for both roots (symlinked), so one `<env>.tfvars` drives everything. | — |
+
+Per-system design points:
+
+* **Exactly one task, stop-then-start deploys** (`min 0% / max 100%`). Each mock keeps its scheduler,
+  WebSocket hub, FIX sessions and faults in memory, so two copies would double-fire fills, persona
+  replies and settlements. A deploy means about a minute of downtime for that one system.
+* **Own RDS instance** (`db.t4g.micro`, 20 GB gp3, private subnets, encrypted). One mock pools at most
+  30 connections, which a micro handles.
+* **Ingress**:
+  * mock-control: `allowed_cidrs` only (it's the operators' console).
+  * Every other system: `allowed_cidrs` + `client_cidrs` + mock-control's Elastic IP.
+  * `0.0.0.0/0` is rejected.
+* **Egress**:
+  * mock-control runs in private subnets behind a NAT on the shared Elastic IP, a fixed address
+    vendors can allowlist.
+  * Others run in public subnets with public IPs, with inbound traffic only from their own load
+    balancers. That covers LLM calls and webhooks to external callbacks.
+* mock-gateway calls its own simulated counterparties at `127.0.0.1`. Every other URL is public.
 
 ## Deploy
 
-Prereqs: Terraform ≥ 1.11, Docker, AWS CLI with credentials for the market account, an S3 state
-bucket, and a Route 53 public hosted zone.
+Prereqs: Terraform ≥ 1.11, Docker, AWS CLI with credentials for the market account, a versioned S3
+bucket for state, and a Route 53 public hosted zone.
 
 ```bash
-cd infra/terraform/market
-cp backend.hcl.example backend.hcl            # edit bucket/region
-cp terraform.tfvars.example demo.tfvars       # edit zone, domain, allowed_cidrs
-terraform init -backend-config=backend.hcl
-terraform workspace select -or-create demo
-../../deploy.sh -var-file=demo.tfvars         # creates ECR, builds + pushes both images (tag = git SHA), applies
+cd infra/terraform
+cp backend.hcl.example backend.hcl     # bucket, region
+cp example.tfvars demo.tfvars          # zone, domain, allowed_cidrs
+cd ../..
+TF_APPLY_ARGS=-auto-approve PARALLEL=1 infra/deploy.sh demo     # shared → images → all 7 systems
+infra/deploy.sh demo ngt sfp                                    # later: roll just these
 ```
 
-Then drive it like the local stack:
+A first deploy creates seven RDS instances. `PARALLEL=1` applies the systems at once (about 15
+minutes) instead of one after another (about an hour). Then drive it like the local stack:
 
 ```bash
 export MOCK_ADMIN_TOKEN=$(aws secretsmanager get-secret-value --query SecretString --output text \
-  --secret-id "$(terraform output -raw admin_token_secret_arn)")
+  --secret-id "$(terraform -chdir=infra/terraform/shared output -raw admin_token_secret_arn)")
 curl -XPOST https://control.mocks.example.com/scenarios/demo/run -H 'content-type: application/json' -d '{"mode":"live","speed":10}'
-cd ../../../mocks && uv run python scripts/smoke.py \
-  --url-template 'https://{name}.mocks.example.com' --host fix.mocks.example.com
+cd mocks && uv run python scripts/smoke.py --url-template 'https://{name}.mocks.example.com' --host fix.mocks.example.com
 ```
 
-* Park between demos: `terraform apply -var-file=demo.tfvars -var running=false` (scales to 0; Aurora stays).
-* Tear down: `terraform destroy -var-file=demo.tfvars` (ECR repos and secrets are force-deleted).
-* Offline checks (no AWS needed): `terraform init -backend=false && terraform validate && terraform test`.
+The smoke script calls the systems directly, so run it from an address in `allowed_cidrs`.
+
+* **Between demos**, destroy. All mock data derives from the seed, so `infra/destroy.sh demo` (or
+  `infra/destroy.sh demo ngt` for one system) loses nothing; redeploy and `POST /reset`. The
+  cheaper-but-slower alternative is `-var running=false`, which parks the tasks and keeps the
+  databases.
+* **Offline checks** (no AWS needed), in each of `shared`, `vendor` and `modules/vendor`:
+  `terraform init -backend=false && terraform validate && terraform test`.
 
 ## Cost (us-east-1, running 24/7, approximate)
 
-| Item | $/month |
-| --- | --- |
-| Fargate, 8 × 0.25 vCPU / 0.5 GB | ~72 |
-| Aurora Serverless v2 at the 0.5 ACU floor + storage | ~45 |
-| Public IPv4 (8 tasks + ALB + NLB) | ~44 |
-| ALB | ~22 |
-| NLB | ~17 |
-| Secrets, Route 53, logs, ECR | ~5 |
-| **Total** | **~205** (≈ $7/day) |
+| System | Pieces | $/month |
+| --- | --- | --- |
+| gateway, wematch, sfp, custodian | each: ALB ~22, RDS micro + storage ~14, Fargate ~9, 3 public IPv4 ~11, secrets/logs ~1 | 4 × ~57 = ~228 |
+| ib | the above + Desk Chat task and IP | ~70 |
+| ngt | the above + NLB and its 2 IPs | ~82 |
+| control | the above + NAT gateway and Elastic IP, minus the task IP | ~90 |
+| shared | ECR, admin token | ~2 |
+| **Total** | | **~470** (≈ $15/day) |
 
-`running = false` drops it to about $90/month. Aurora can't idle below 0.5 ACU: seven services poll
-the clock row four times a second.
+That's about 2.3× the single-stack layout, mostly from seven ALBs, seven databases and the NAT.
+That's the price of real separation. Destroying between demo days takes it to ~$0. Parking with
+`running = false` saves about $100/month.
 
 ## Mock audit (Oct 2026)
 
-Baseline is healthy: 41/41 integration tests, ruff and mypy are clean, the Desk Chat build works, and
-the demo smoke passes 10/10 against a stack with the admin token enforced.
+Baseline is healthy: 43/43 integration tests, ruff and mypy are clean, the Desk Chat build works, and
+the demo smoke passes 10/10 with every mock on its own database and the admin token enforced.
 
-**Fixed in this change**
+**Fixed**
 
-1. **`MOCK_ADMIN_TOKEN` didn't protect most `/_admin` routes.** The check was a dependency on the
-   shared admin router, but every service registers its own `/_admin/*` routes on the app directly:
-   `credentials` (all API keys, bot tokens, webhook secrets, FIX passwords), `injected-breaks` and
-   `labels` (answer keys), plus `config`, `flags`, `limits` and `loadgen`. With the token set,
-   `/_admin/faults` returned 401 but `/_admin/credentials` returned 200. The check now runs in the
-   ASGI middleware for every `/_admin` path, over both HTTP and WebSocket (regression test in
-   `tests/test_mockcore.py`).
-2. `scripts/smoke.py` sends `X-Admin-Token` from `MOCK_ADMIN_TOKEN` and takes `--url-template` so it
-   can replay the demo against the hosted stack.
+1. **`MOCK_ADMIN_TOKEN` didn't protect most `/_admin` routes.** Service-specific routes
+   (`credentials` with every API key, bot token, webhook secret and FIX password; `injected-breaks`
+   and `labels` with the answer keys; `config`, `flags`, `limits`, `loadgen`) were registered outside
+   the guarded router. The check now runs in the middleware for every `/_admin` path (HTTP and
+   WebSocket), with a regression test.
+2. **Shared clock row.** Every mock read `control.clock` from one database, which forced a shared
+   database. The clock is now pushed and stored per mock (see above).
+3. `scripts/smoke.py` sends `X-Admin-Token` and takes `--url-template` for the hosted systems.
 
-**Hosting constraints (handled in the Terraform)**
+**Hosting constraints (handled)**
 
-3. Single-instance only: in-memory scheduler, hubs, faults and FIX sessions. A restart drops pending
-   timers (already documented). Hence one task per service and stop-then-start deploys.
-4. `/health` is exempt from simulated outages and error faults, so chaos drills don't make the
-   load balancer kill tasks. Keep it that way.
-5. Connection pools allow 30 per service (210 in total). Aurora at ≥ 2 max ACU covers that; a small
-   RDS instance such as t4g.micro would not.
+4. Single-instance only, so one task per system with stop-then-start deploys. A restart drops
+   pending timers (already documented).
+5. `/health` is exempt from simulated outages and errors, so chaos drills don't make a load balancer
+   kill the task. Keep it that way.
 6. First boot seeds the universe before `/health` answers, so the grace period is 180 s.
 
-**Open items (not changed)**
+**Open items**
 
-7. Control's own `/reset`, `/clock`, `/faults` and `/scenarios` routes aren't under `/_admin`, so
-   anyone who can reach control can reset the simulation. Today only the IP allowlist protects
-   them. Consider requiring the admin token on control's mutating routes. That changes the local
-   workflow, so it's left for a decision.
-8. Desk Chat human API: no auth (`X-User`, `?as=`). Fine for a demo behind an allowlist. For wider
-   access, put ALB + Cognito authentication on `chat` and `ib`.
-9. FIX is plaintext TCP with the password in tag 554. An NLB TLS listener with the ACM cert is a
-   small follow-up if the client can speak TLS.
-10. LLM `replay` mode has nothing to replay in the cloud: `mocks/cassettes/` isn't in the repo or
-    the image, and `record` writes to the task's ephemeral disk. Bake a cassette into the image (or
-    use S3) before relying on LLM personas there.
-11. Integration tests **skip** rather than fail when Postgres is unreachable, and
-    `MOCK_TEST_DATABASE_ADMIN_URL` must be a plain `postgresql://` URL. A misconfigured CI would
-    pass with 22 tests skipped. There's no CI yet; when it's added, make it fail on skips.
-12. The spec puts mock-ngt on DynamoDB. The code uses Postgres like the others, and the shared clock
-    row assumes one database. Keeping Postgres is the simpler, consistent choice.
+7. mock-control's own `/reset`, `/clock`, `/faults` and `/scenarios` routes aren't under `/_admin`,
+   so anyone in `allowed_cidrs` can reset the simulation. Consider requiring the admin token there.
+   That changes the local workflow, so it's left for a decision.
+8. Desk Chat human API: no auth (`X-User`, `?as=`). Fine behind an allowlist. For wider access, put
+   ALB + Cognito authentication on `chat` and `ib`.
+9. FIX is plaintext TCP with the password in tag 554. An NLB TLS listener is a small follow-up if the
+   client can speak TLS.
+10. LLM `replay` mode has nothing to replay in the cloud: `mocks/cassettes/` isn't in the repo or the
+    image, and `record` writes to the task's ephemeral disk. Bake a cassette into the image (or use S3)
+    before relying on LLM personas there.
+11. Integration tests **skip** rather than fail when Postgres is unreachable, so a misconfigured CI
+    would pass with most tests skipped. There's no CI yet; when it's added, fail on skips.
+12. The spec puts mock-ngt on DynamoDB. It now has its own Postgres, like every system. Swapping in
+    DynamoDB is possible per system later and no longer affects the others.
 
 ## Not yet built (from the spec's cloud section)
 
-The second "firm" account and PrivateLink between them, API Gateway with mTLS and usage plans for
-counterparties, WAF, Cognito roles, MSK, SFTP (Transfer Family) for locate and EOD files, OTel to
-X-Ray, and GitHub Actions deploys via OIDC (`deploy.sh` is what that workflow would run). Most of
-these belong with the platform, not the mocks.
+The second "firm" account (its NAT IPs go in `client_cidrs`), PrivateLink as an alternative to
+public allowlisted endpoints, API Gateway with mTLS and usage plans for counterparties, WAF, Cognito
+roles, MSK, SFTP (Transfer Family) for locate and EOD files, OTel to X-Ray, and GitHub Actions
+deploys via OIDC (running `deploy.sh`). Most of these belong with the platform, not the mocks.

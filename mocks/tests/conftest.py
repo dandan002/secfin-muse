@@ -1,7 +1,8 @@
 """Integration fixtures: one real Postgres database and every mock running as its own process.
 
 Set ``MOCK_TEST_DATABASE_ADMIN_URL`` (default ``postgresql://postgres@localhost:5432/postgres``) to
-point at a server where the tests may create and drop ``loandesk_mocks_test``.
+point at a server where the tests may create and drop ``loandesk_test_<service>``: one database
+per mock, as in production.
 """
 
 from __future__ import annotations
@@ -16,10 +17,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from run_all import Stack, start_stack  # noqa: E402
+from run_all import SERVICES, Stack, start_stack  # noqa: E402
 
 ADMIN_URL = os.environ.get("MOCK_TEST_DATABASE_ADMIN_URL", "postgresql://postgres@localhost:5432/postgres")
-TEST_DB = "loandesk_mocks_test"
+TEST_DB = "loandesk_test_{service}"
 
 
 def _recreate_db() -> str:
@@ -30,8 +31,10 @@ def _recreate_db() -> str:
     async def go() -> None:
         conn = await asyncpg.connect(ADMIN_URL)
         try:
-            await conn.execute(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)")
-            await conn.execute(f"CREATE DATABASE {TEST_DB}")
+            for name, _, _ in SERVICES:
+                db = TEST_DB.format(service=name)
+                await conn.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
+                await conn.execute(f"CREATE DATABASE {db}")
         finally:
             await conn.close()
 

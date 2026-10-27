@@ -1,7 +1,9 @@
 """Simulated clock shared by every mock.
 
-The authoritative state lives in one row of ``control.clock``. Each service caches it and
-re-reads it every ``clock_poll_s``. Two modes:
+The authoritative state lives in one row of ``control.clock`` in mock-control's own database.
+mock-control pushes it to every service (``PUT /_admin/clock``) on each change and on a
+heartbeat; each service keeps the last state it received in its own database, so the mocks
+share no database and never call mock-control. Two modes:
 
 * ``live``: sim time advances at ``speed`` x wall time from an anchor (paused freezes it).
 * ``stepped``: sim time only moves when mock-control advances it; services run their
@@ -65,6 +67,17 @@ class ClockState:
         d["now"] = iso(self.now())
         d["now_local"] = self.now().astimezone(NEW_YORK).isoformat(timespec="milliseconds")
         return d
+
+    @classmethod
+    def from_json(cls, d: dict) -> ClockState:
+        return cls(
+            sim_epoch=parse_ts(d["sim_epoch"]),
+            wall_anchor=float(d["wall_anchor"]),
+            speed=float(d["speed"]),
+            paused=bool(d["paused"]),
+            mode=str(d["mode"]),
+            seed=int(d["seed"]),
+        )
 
 
 class SimClock:

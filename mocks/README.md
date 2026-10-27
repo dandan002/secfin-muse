@@ -1,9 +1,10 @@
 # LoanDesk AI: external-system mocks
 
 The "market side" of LoanDesk AI: stateful simulators of every outside system the desk talks to.
-Each mock is its own service with its own Postgres schema and ledger, so the platform makes real
-network calls and reconciliation can genuinely disagree. All mocks share one simulated clock and
-one seeded RNG, so a demo replays event for event.
+Each mock is a separate system with its own Postgres database and ledger, like the external systems it
+stands in for: the mocks share no database and talk only over HTTP, so the platform makes real network
+calls and reconciliation can genuinely disagree. `mock-control` pushes one simulated clock to all of them,
+and every mock derives its data from one seed, so a demo replays event for event.
 
 > **Disclaimer.** Simulators for demonstration only. Not affiliated with or endorsed by EquiLend,
 > Wematch, FIS or Bloomberg; all names are trademarks of their respective owners. All data is
@@ -24,7 +25,7 @@ Every service serves OpenAPI docs at `/docs`.
 
 ## Run it
 
-**Docker** (Postgres plus everything):
+**Docker** (each mock with its own Postgres container):
 
 ```bash
 cd mocks
@@ -38,12 +39,14 @@ open http://localhost:8000/docs   # sim control
 ```bash
 cd mocks
 uv sync
-export MOCK_DATABASE_URL=postgresql+asyncpg://postgres@localhost:5432/loandesk_mocks   # db must exist
+# {service} becomes each mock's own database (created if missing); this is the default:
+export MOCK_DATABASE_URL='postgresql+asyncpg://postgres@localhost:5432/loandesk_{service}'
 uv run python scripts/run_all.py             # all seven services; logs in out/logs/
 cd apps/desk-chat && npm ci && npm run dev   # Desk Chat on http://localhost:5173
 ```
 
-**AWS** (ECS Fargate + Aurora, Terraform): see [`../infra/README.md`](../infra/README.md).
+**AWS** (each mock its own stack: VPC, RDS, ECS, load balancer; Terraform): see
+[`../infra/README.md`](../infra/README.md).
 
 Then drive the demo:
 
@@ -54,7 +57,11 @@ uv run python scripts/smoke.py   # optional: a stand-in "platform" plays the who
 
 ## Simulated time and determinism
 
-`mock-control` owns one clock row that every service reads.
+`mock-control` owns the clock (a row in its own database) and pushes it to every mock with
+`PUT /_admin/clock` whenever it changes, and again every 5 s (`MOCK_CLOCK_PUSH_S`). Each mock stores the
+last clock it received in its own database, so a restarted mock resumes at once and catches up on the
+next push. Pushes carry a revision, so a late one never overwrites a newer clock. The mocks never call
+`mock-control`.
 
 * **live**: sim time runs at `speed`× wall time (`PUT /clock {"speed": 10}`, `POST /clock/start|pause|jump`).
 * **stepped**: time moves only on `POST /clock/advance {"seconds": 30}` (or `{"to": ...}`), which runs each
@@ -161,13 +168,14 @@ squeezes, and GBM prices. Tier bands follow the spec: GC under 50 bps and under 
 
 ```bash
 cd mocks
-uv run pytest            # 41 tests; needs Postgres (MOCK_TEST_DATABASE_ADMIN_URL, default postgres@localhost)
+uv run pytest            # 43 tests; needs Postgres (MOCK_TEST_DATABASE_ADMIN_URL, a plain postgresql:// URL)
 uv run ruff check . && uv run mypy
 cd apps/desk-chat && npm run build
 ```
 
-The integration tests start every mock as its own process on ports 18000–18060 against a throwaway
-database. They cover each API end to end, FIX recovery, the full demo (`scripts/smoke.py`) and stepped-run
+The integration tests start every mock as its own process on ports 18000–18060, each against its own
+throwaway database (`loandesk_test_<service>`), and check that no mock's database holds another's tables.
+They cover each API end to end, FIX recovery, the full demo (`scripts/smoke.py`) and stepped-run
 determinism.
 
 ## Limits (by design, for now)

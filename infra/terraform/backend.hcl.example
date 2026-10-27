@@ -1,6 +1,5 @@
-# cp backend.hcl.example backend.hcl && terraform init -backend-config=backend.hcl
+# cp backend.hcl.example backend.hcl   (deploy.sh passes a distinct state key per root)
 bucket       = "my-org-terraform-state"   # an existing, versioned S3 bucket
-key          = "loandesk/market.tfstate"  # workspaces land under env:/<workspace>/...
 region       = "us-east-1"
 use_lockfile = true                       # S3-native locking; no DynamoDB table needed
 encrypt      = true

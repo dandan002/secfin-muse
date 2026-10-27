@@ -1,8 +1,9 @@
 """mock-control: the simulated clock, resets, fault fan-out and the scenario runner.
 
-It owns the ``control.clock`` row every mock reads. In ``stepped`` mode it advances the
-clock and tells each service to run its due jobs before every scenario step, which makes a
-run reproducible event-for-event for a given seed.
+It owns the ``control.clock`` row in its own database and pushes the clock to every mock
+(``PUT /_admin/clock``) on each change and on a heartbeat, so the mocks share nothing but
+HTTP. In ``stepped`` mode it advances the clock and tells each service to run its due jobs
+before every scenario step, which makes a run reproducible event-for-event for a given seed.
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ spec = ServiceSpec(
     schema="control",
     base=Base,
     description="Sim clock, seeded resets, fault toggles and scenario runner for every mock.",
+    owns_clock=True,
+    on_startup=lambda c: _start_heartbeat(c),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
@@ -77,9 +80,40 @@ def _admin_headers(sim_time: datetime | None = None) -> dict[str, str]:
     return h
 
 
+_push_lock = asyncio.Lock()
+
+
+async def _push_clock() -> dict[str, Any]:
+    """Send the current clock to every mock. Serialised so an older push never lands last."""
+    async with _push_lock:
+        body = {"state": clock.clock.state.to_json(), "rev": time.time_ns()}
+
+        async def one(name: str) -> Any:
+            try:
+                r = await ctx.http.put(service_urls()[name] + "/_admin/clock", json=body,
+                                       headers=_admin_headers(), timeout=10)
+                return r.json() if r.status_code < 400 else {"error": r.status_code, "body": r.text[:300]}
+            except Exception as e:  # a mock that's down catches up on the next heartbeat
+                return {"error": type(e).__name__, "detail": str(e)}
+
+        results = await asyncio.gather(*(one(n) for n in SERVICE_ORDER))
+    return dict(zip(SERVICE_ORDER, results, strict=True))
+
+
+async def _heartbeat() -> None:
+    while True:
+        await _push_clock()
+        await asyncio.sleep(ctx.cfg.clock_push_s)
+
+
+async def _start_heartbeat(c: ServiceContext) -> None:
+    c._tasks.append(asyncio.create_task(_heartbeat(), name="mock-control-clock-push"))
+
+
 async def _save_clock(state: clock.ClockState) -> clock.ClockState:
     clock.clock.state = state
     await clock.save_clock(ctx.db.engine, state)
+    await _push_clock()
     return state
 
 

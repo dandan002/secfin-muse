@@ -2,5 +2,6 @@
 *.tfstate
 *.tfstate.*
 *.tfvars
-!terraform.tfvars.example
+!example.tfvars
 backend.hcl
+modules/**/.terraform.lock.hcl

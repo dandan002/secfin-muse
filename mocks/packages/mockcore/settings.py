@@ -12,8 +12,10 @@ class CoreSettings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://postgres@localhost:5432/loandesk_mocks"
     seed: int = 20261027
-    # How often a service re-reads the shared clock row (wall seconds).
+    # How often mock-control re-reads its clock row (wall seconds).
     clock_poll_s: float = 0.25
+    # How often mock-control re-pushes the clock to every mock, so a restarted one catches up.
+    clock_push_s: float = 5.0
     # How often the scheduler checks for due jobs in live mode (wall seconds).
     scheduler_poll_s: float = 0.05
     # Service URLs, used by mock-control for fan-out and by services that call each other.

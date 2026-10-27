@@ -9,3 +9,4 @@ node_modules/
 dist/
 mocks/cassettes/*.local.jsonl
 mocks/out/
+infra/out/

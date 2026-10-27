@@ -24,6 +24,30 @@ def test_control_clock_and_services(mocks):
     assert services["ngt"]["label"] == "Venue A (NGT-style)"
 
 
+def test_each_mock_has_its_own_database_and_gets_the_clock_pushed(mocks):
+    import asyncio
+
+    import asyncpg
+    from conftest import ADMIN_URL, TEST_DB
+
+    async def schemas(db: str) -> set[str]:
+        conn = await asyncpg.connect(ADMIN_URL.rsplit("/", 1)[0] + "/" + db)
+        try:
+            rows = await conn.fetch("SELECT schema_name FROM information_schema.schemata "
+                                    "WHERE schema_name NOT LIKE 'pg_%' AND schema_name <> 'information_schema'")
+            return {r["schema_name"] for r in rows} - {"public"}
+        finally:
+            await conn.close()
+
+    services = ("control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian")
+    for svc in services:  # schema names match the service names; nobody else's tables, no shared clock row
+        assert asyncio.run(schemas(TEST_DB.format(service=svc))) == {svc}, svc
+
+    out = mocks.advance(30)
+    for svc in services[1:]:
+        assert mocks.get(svc, "/_admin/clock").json()["now"] == out["now"], svc
+
+
 def test_faults_outage_and_clear(mocks):
     mocks.put("control", "/faults/ngt", json={"outage": True}).raise_for_status()
     assert mocks.get("ngt", "/v1/availability?limit=1").status_code == 503

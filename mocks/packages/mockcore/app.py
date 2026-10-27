@@ -12,6 +12,7 @@ import contextlib
 import hmac
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -50,6 +51,8 @@ class ServiceSpec:
     on_startup: ResetHook | None = None  # start extra servers (e.g. FIX acceptor)
     on_shutdown: ResetHook | None = None
     tags: list[dict[str, str]] = field(default_factory=list)
+    # Only mock-control owns the clock table; every other mock gets the clock pushed to it.
+    owns_clock: bool = False
 
 
 class ServiceContext:
@@ -66,6 +69,7 @@ class ServiceContext:
         self.http = httpx.AsyncClient(timeout=10.0)
         self._tasks: list[asyncio.Task] = []
         self.verbs: dict[str, Callable[[dict[str, Any]], Awaitable[Any]]] = {}
+        self.clock_rev = 0  # revision of the last clock push accepted (non-owners)
         self.started = False
 
     def verb(self, name: str) -> Callable:
@@ -86,9 +90,12 @@ class ServiceContext:
 
     # -- lifecycle -----------------------------------------------------------------------
     async def start(self, background: bool = True) -> None:
-        await clock.ensure_clock_table(self.db.engine)
+        if self.spec.owns_clock:
+            await clock.ensure_clock_table(self.db.engine)
         await self.db.init()
-        clock.clock.state = await clock.load_clock(self.db.engine)
+        await self.refresh_clock()
+        if not self.spec.owns_clock:
+            await self._load_pushed_clock()
         rng.set_seed(clock.clock.state.seed)
         meta = self.spec.base.ServiceMeta
         async with self.session() as s:
@@ -100,7 +107,8 @@ class ServiceContext:
         if self.spec.on_startup:
             await self.spec.on_startup(self)
         if background:
-            self._tasks.append(asyncio.create_task(self._poll_clock(), name=f"{self.spec.name}-clock"))
+            if self.spec.owns_clock:
+                self._tasks.append(asyncio.create_task(self._poll_clock(), name=f"{self.spec.name}-clock"))
             self._tasks.append(
                 asyncio.create_task(self.scheduler.loop(self.cfg.scheduler_poll_s), name=f"{self.spec.name}-sched")
             )
@@ -131,7 +139,37 @@ class ServiceContext:
         meta = self.spec.base.ServiceMeta
         async with self.session() as s:
             await s.merge(meta(key="seeded", value={"seed": seed}))
+            if not self.spec.owns_clock:  # truncate wiped the stored clock; keep it
+                await s.merge(meta(key="clock", value=self._clock_record()))
             await s.commit()
+
+    # -- clock ---------------------------------------------------------------------------
+    async def refresh_clock(self) -> None:
+        """The owner re-reads its clock table; everyone else already holds the pushed state."""
+        if self.spec.owns_clock:
+            clock.clock.state = await clock.load_clock(self.db.engine)
+
+    def _clock_record(self) -> dict[str, Any]:
+        return {"state": clock.clock.state.to_json(), "rev": self.clock_rev}
+
+    async def _load_pushed_clock(self) -> None:
+        async with self.session() as s:
+            row = await s.get(self.spec.base.ServiceMeta, "clock")
+        if row is None:  # never heard from mock-control: paused at the default epoch
+            clock.clock.state = clock.ClockState(wall_anchor=time.time(), seed=self.cfg.seed)
+        else:
+            clock.clock.state = clock.ClockState.from_json(row.value["state"])
+            self.clock_rev = int(row.value.get("rev", 0))
+
+    async def accept_clock(self, state: clock.ClockState, rev: int) -> bool:
+        """Apply a pushed clock unless a newer one already arrived (pushes can overtake)."""
+        if rev < self.clock_rev:
+            return False
+        clock.clock.state, self.clock_rev = state, rev
+        async with self.session() as s:
+            await s.merge(self.spec.base.ServiceMeta(key="clock", value=self._clock_record()))
+            await s.commit()
+        return True
 
     async def _poll_clock(self) -> None:
         while True:
@@ -253,6 +291,11 @@ class ResetRequest(BaseModel):
     seed: int | None = None
 
 
+class ClockPush(BaseModel):
+    state: dict[str, Any]
+    rev: int
+
+
 def create_app(ctx: ServiceContext) -> FastAPI:
     spec = ctx.spec
 
@@ -296,14 +339,14 @@ def create_app(ctx: ServiceContext) -> FastAPI:
 
     @admin.post("/reset")
     async def reset(req: ResetRequest | None = None) -> dict[str, Any]:
-        clock.clock.state = await clock.load_clock(ctx.db.engine)
+        await ctx.refresh_clock()
         seed = req.seed if req and req.seed is not None else clock.clock.state.seed
         await ctx.reset(seed)
         return {"ok": True, "seed": seed}
 
     @admin.post("/tick")
     async def tick(until: str | None = Query(None, description="Run jobs due up to this sim time")) -> dict:
-        clock.clock.state = await clock.load_clock(ctx.db.engine)
+        await ctx.refresh_clock()
         target: datetime = clock.parse_ts(until) if until else clock.clock.live_now()
         ran = await ctx.scheduler.run_due(target)
         return {"ran": ran, "until": clock.iso(target)}
@@ -320,6 +363,14 @@ def create_app(ctx: ServiceContext) -> FastAPI:
     @admin.get("/clock")
     async def get_clock() -> dict[str, Any]:
         return clock.clock.state.to_json()
+
+    @admin.put("/clock")
+    async def put_clock(push: ClockPush) -> dict[str, Any]:
+        """mock-control pushes the sim clock here; the mocks never read each other's databases."""
+        if spec.owns_clock:
+            raise HTTPException(409, "this service owns the clock; use PUT /clock")
+        accepted = await ctx.accept_clock(clock.ClockState.from_json(push.state), push.rev)
+        return {"accepted": accepted, "rev": ctx.clock_rev, **clock.clock.state.to_json()}
 
     @admin.get("/scenario")
     async def list_verbs() -> dict[str, Any]:
