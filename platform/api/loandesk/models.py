@@ -73,6 +73,18 @@ class Availability(Base):
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class InternalPosition(Base):
+    """Our open loan positions per book, from the processor. Netted across books into INTERNAL availability."""
+
+    __tablename__ = "internal_positions"
+    instrument_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    book: Mapped[str] = mapped_column(String(64), primary_key=True)  # the processor's booking entity
+    borrowed: Mapped[int] = mapped_column(BigInteger, default=0)
+    lent: Mapped[int] = mapped_column(BigInteger, default=0)
+    avg_borrow_fee_bps: Mapped[float | None] = mapped_column(Float)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Print(Base):
     """Last traded fees seen on a venue (for last-fee, trend and fat-finger checks)."""
 

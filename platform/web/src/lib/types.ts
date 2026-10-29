@@ -41,9 +41,11 @@ export interface MarketRow {
   restricted: boolean;
   venueA: { qty: number; fee: number | null; lenders: number } | null;
   venueB: { qty: number; fee: number | null } | null;
+  internal: { qty: number; books: number; costBps: number | null } | null;
   supply: number;
   held: number;
   available: number;
+  availableBy: { internal: number; street: number };
   bestFeeBps: number | null;
   lastFeeBps: number | null;
   trend: number[];
@@ -77,7 +79,11 @@ export interface Locate {
   expiresAt: string | null;
   instrument?: { composite: string; name: string; isin: string; tier: Tier; feeBps: number; utilPct: number; etb: boolean };
   available?: number;
+  availableBy?: { internal: number; street: number };
   suggestedQty?: number;
+  feeFloorBps?: number;
+  counterpartyRoom?: { code: string; kind: string; creditLimitUsd: number; tradesUsd: number; locatesUsd: number;
+    inThisName: number; maxQty: number; failing: string[] };
 }
 
 export interface Check {

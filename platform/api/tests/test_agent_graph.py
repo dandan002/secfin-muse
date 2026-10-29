@@ -10,7 +10,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from loandesk import agent, db, gate, secmaster
+from loandesk import agent, db, gate, rules, secmaster
 from loandesk.agent import graph
 from loandesk.agent.models import _key
 from loandesk.models import Instrument
@@ -74,7 +74,7 @@ async def _locate(client: httpx.AsyncClient, tier: str, qty: int, supply: int, c
         await s.commit()
     loc = (await client.post("/locates", json={"counterparty": cp, "lines": [
         {"identifier": inst.isin, "quantity": qty}]})).json()[0]
-    return {**loc, "fee": secmaster.live(inst.id)["feeBps"]}
+    return {**loc, "fee": rules.fee_floor(secmaster.live(inst.id)["feeBps"])["floorBps"]}  # a bit above market
 
 
 _used: set[str] = set()
@@ -280,3 +280,34 @@ def test_concentration_is_a_hard_limit_and_hot_full_fill_is_advisory() -> None:
         last_fee_bps=400.0, tier="HOT", shs_out=10_000_000, issues=[])}
     assert not checks["concentration (shares out)"].ok and checks["concentration (shares out)"].blocking
     assert not checks["hot name"].ok and not checks["hot name"].blocking
+
+
+async def test_filtered_names_never_reach_a_model(
+        client: httpx.AsyncClient, runner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_desk import _name
+
+    monkeypatch.setattr(get_settings(), "filter_threshold", "hold")
+    loc = (await client.post("/locates", json={"counterparty": "PBALPHA", "lines": [
+        {"identifier": await _name("threshold", supply=50_000), "quantity": 1000}]})).json()[0]
+    m = scripted(monkeypatch, {})
+    run_id = (await client.post(f"/agent/locates/{loc['id']}/review")).json()["id"]
+    await runner.idle()
+    run = (await client.get(f"/agent/runs/{run_id}")).json()
+    assert run["status"] == "FAILED" and run["error"].startswith("filtered: on the Reg SHO threshold list")
+    assert m.seen == []
+
+
+async def test_pricing_under_the_floor_gets_a_second_opinion(
+        client: httpx.AsyncClient, runner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    loc = await _locate(client, "WARM", 20_000, supply=500_000)
+    market_fee = secmaster.live(loc["instrumentId"])["feeBps"]
+    m = scripted(monkeypatch, {
+        SPARK: [answer(decision="APPROVED", quantity=20_000, feeBps=market_fee, confidence=0.9)],
+        WONDER: [answer(decision="APPROVED", quantity=20_000, feeBps=loc["fee"], confidence=0.9)]})
+    run_id = (await client.post(f"/agent/locates/{loc['id']}/review")).json()["id"]
+    await runner.idle()
+    run = (await client.get(f"/agent/runs/{run_id}")).json()
+    assert run["status"] == "WAITING" and run["model"] == WONDER
+    assert any(r.startswith("fee floor:") for r in run["transcript"][2]["concerns"])
+    prompt = m.seen[0][1][1]["content"]
+    assert "floorBps" in prompt and "maxQty" in prompt

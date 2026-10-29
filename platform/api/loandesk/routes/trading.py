@@ -36,6 +36,7 @@ class DecisionIn(BaseModel):
     quantity: int | None = Field(None, ge=0)
     feeBps: float | None = None
     rationale: str | None = None
+    overrideFeeFloor: bool = Field(False, description="Lend under the desk's floor (trader only; recorded)")
 
 
 class BatchDecisionIn(DecisionIn):
@@ -63,7 +64,7 @@ async def _decide(s: AsyncSession, loc_id: str, body: DecisionIn, who: str) -> L
         raise HTTPException(404, "no such locate")
     try:
         return await locates.decide(s, loc, body.decision, body.quantity, by=who, rationale=body.rationale,
-                                    fee_bps=body.feeBps)
+                                    fee_bps=body.feeBps, override_floor=body.overrideFeeFloor)
     except locates.DecisionError as e:
         raise HTTPException(409, str(e)) from e
 

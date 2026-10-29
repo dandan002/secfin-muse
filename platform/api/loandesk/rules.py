@@ -12,7 +12,7 @@ from typing import Any, Literal
 from .models import Counterparty, Instrument
 from .settings import get_settings
 
-Route = Literal["AUTO", "REVIEW", "HOLD"]
+Route = Literal["FILTER", "AUTO", "REVIEW", "HOLD"]
 
 
 @dataclass
@@ -26,17 +26,30 @@ class Check:
         return asdict(self)
 
 
+def locate_filters(inst: Instrument, *, price: float, available: int, availability_fresh: bool
+                   ) -> list[tuple[str, str]]:
+    """Lines the desk won't locate, whatever the request: ``(action, reason)`` for each filter that matches.
+
+    The threshold, restricted and price filters are static facts about the name. Zero availability only
+    counts while the feed is fresh, so a stalled feed sends lines to review instead of declining them all.
+    """
+    cfg = get_settings()
+    price_usd = price * FX_USD.get(inst.ccy, 1.0)  # the minimum is in dollars, whatever the listing currency
+    shown = f"${price_usd:.2f}" if inst.ccy == "USD" else f"{inst.ccy} {price:g} (${price_usd:.2f})"
+    hits = [(cfg.filter_threshold, inst.threshold_flag, "on the Reg SHO threshold list (persistent fails)"),
+            (cfg.filter_restricted, inst.restricted, "on the restricted list"),
+            (cfg.filter_no_availability, availability_fresh and available <= 0, "no availability"),
+            (cfg.filter_low_price, price_usd < cfg.min_price_usd,
+             f"priced at {shown}, under the ${cfg.min_price_usd:g} minimum")]
+    return [(action, reason) for action, hit, reason in hits if hit and action != "off"]
+
+
 def locate_route(inst: Instrument, tier: str, etb: bool, qty: int, available: int,
                  cp: Counterparty | None) -> tuple[Route, list[str]]:
     """Spec module 3 decision tiers: who gets to decide this line."""
-    cfg = get_settings()
     hold: list[str] = []
     if tier == "HOT":
         hold.append("hot name")
-    if inst.threshold_flag:
-        hold.append("threshold list")
-    if inst.restricted:
-        hold.append("restricted list")
     if cp is None:
         hold.append("unknown counterparty")
     if hold:
@@ -44,8 +57,6 @@ def locate_route(inst: Instrument, tier: str, etb: bool, qty: int, available: in
     review: list[str] = []
     if not etb:
         review.append(f"{tier.lower()} name, not on the ETB list")
-    if qty > cfg.locate_name_cap:
-        review.append(f"over the per-name cap of {cfg.locate_name_cap:,}")
     if available < qty:
         review.append(f"only {available:,} available")
     elif available < 2 * qty:
@@ -53,6 +64,20 @@ def locate_route(inst: Instrument, tier: str, etb: bool, qty: int, available: in
     if review:
         return "REVIEW", review
     return "AUTO", ["ETB, under cap, covered by availability"]
+
+
+def fee_floor(market_bps: float, *, cost_bps: float | None = None, internal_cp: bool = False) -> dict[str, Any]:
+    """The least the desk charges to lend: a bit above market (and above what the shares cost us).
+
+    External counterparties pay the market fee plus ``markup_pct`` (at least ``markup_min_bps``); internal
+    desks pay market. Either way never below our own borrow cost when we cross from internal inventory.
+    """
+    cfg = get_settings()
+    base = max(market_bps, cost_bps or 0.0)
+    floor = base if internal_cp else max(base * (1 + cfg.markup_pct / 100), base + cfg.markup_min_bps)
+    return {"marketBps": market_bps, "costBps": cost_bps, "floorBps": round(floor, 1),
+            "basis": "internal desk: market" if internal_cp else
+            f"market + {cfg.markup_pct:g}% (at least {cfg.markup_min_bps:g} bps)"}
 
 
 def fee_band(last_fee_bps: float) -> tuple[float, float]:
@@ -63,7 +88,8 @@ def fee_band(last_fee_bps: float) -> tuple[float, float]:
 
 
 def supply_signals(*, qty_requested: int, available: int, supply: int, held: int, lenders: int | None,
-                   util_pct: float, history: list[dict[str, Any]]) -> list[dict[str, str]]:
+                   util_pct: float, history: list[dict[str, Any]], internal_available: int = 0
+                   ) -> list[dict[str, str]]:
     """Plain facts about how gettable the supply really is, for the reviewer to weigh (it decides, not this).
 
     Listed availability is indicative: lenders recall into high utilization, thin lender bases vanish, and a
@@ -76,15 +102,23 @@ def supply_signals(*, qty_requested: int, available: int, supply: int, held: int
     def sig(level: str, name: str, detail: str) -> None:
         out.append({"level": level, "signal": name, "detail": detail})
 
-    cover = available / qty_requested if qty_requested else 0.0
-    if cover < 1:
-        sig("issue", "short supply", f"{available:,} available for {qty_requested:,} requested ({cover:.2f}x)")
-    elif cover < 2:
-        sig("issue", "thin cover", f"availability covers {cover:.1f}x the request (under 2x)")
+    internally_covered = internal_available >= qty_requested > 0
+    if internally_covered:  # our own box is firm: street cover and the lender base don't decide this one
+        sig("watch", "covered internally", f"{internal_available:,} of our own inventory available; crossed first")
+    else:
+        if internal_available:
+            street = qty_requested - internal_available
+            sig("watch", "part covered internally",
+                f"{internal_available:,} from our own inventory, {street:,} from the street")
+        cover = available / qty_requested if qty_requested else 0.0
+        if cover < 1:
+            sig("issue", "short supply", f"{available:,} available for {qty_requested:,} requested ({cover:.2f}x)")
+        elif cover < 2:
+            sig("issue", "thin cover", f"availability covers {cover:.1f}x the request (under 2x)")
+        if lenders is not None and lenders <= 2:
+            sig("issue", "thin lender base", f"{lenders} lender{'s' if lenders != 1 else ''} showing supply")
     if supply and held / supply >= 0.5:
         sig("watch", "desk already long the supply", f"approved locates hold {held / supply:.0%} of listed supply")
-    if lenders is not None and lenders <= 2:
-        sig("issue", "thin lender base", f"{lenders} lender{'s' if lenders != 1 else ''} showing supply")
     if util_pct >= cfg.hot_min_util_pct:
         sig("issue", "utilization at recall levels", f"{util_pct:.1f}% utilized")
     elif util_pct >= 60:
@@ -110,7 +144,8 @@ def supply_signals(*, qty_requested: int, available: int, supply: int, held: int
 
 def locate_decision_checks(*, decision: str, quantity: int, qty_requested: int, available: int,
                            fee_bps: float | None, last_fee_bps: float | None, tier: str, shs_out: int,
-                           issues: list[str]) -> list[Check]:
+                           issues: list[str], floor_bps: float | None = None,
+                           cp_max_qty: int | None = None) -> list[Check]:
     """Is a proposed locate decision (from the agent, before it reaches the gate) consistent with the book?
 
     Blocking checks are hard limits. Advisory ones (``blocking=False``) never stop a proposal: they ride on
@@ -123,15 +158,22 @@ def locate_decision_checks(*, decision: str, quantity: int, qty_requested: int, 
     shape = quantity == qty_requested if decision == "APPROVED" else 0 < quantity < qty_requested
     out.append(Check("quantity", shape, f"{quantity:,} {decision.lower()} of {qty_requested:,} requested"))
     out.append(Check("availability", quantity <= available, f"{quantity:,} vs {available:,} available"))
+    if cp_max_qty is not None:
+        out.append(Check("counterparty limits", quantity <= cp_max_qty,
+                         f"{quantity:,} vs {cp_max_qty:,} the counterparty's limits allow"))
     pct_so = quantity / max(shs_out, 1) * 100
     out.append(Check("concentration (shares out)", pct_so <= cfg.max_pct_shares_out,
                      f"{pct_so:.2f}% of shares outstanding (max {cfg.max_pct_shares_out}%)"))
     if fee_bps is None or fee_bps < 0:
         out.append(Check("fee", False, "no indicative fee"))
-    elif last_fee_bps and last_fee_bps > 0:
-        lo, hi = fee_band(last_fee_bps)
-        out.append(Check("fat finger (fee)", lo <= fee_bps <= hi,
-                         f"{fee_bps:g} bps vs last {last_fee_bps:g} (band {lo:.0f}-{hi:.0f})"))
+    else:
+        if floor_bps is not None:
+            out.append(Check("fee floor", fee_bps >= floor_bps,
+                             f"{fee_bps:g} bps vs the desk's floor of {floor_bps:g} (a bit above market)"))
+        if last_fee_bps and last_fee_bps > 0:
+            lo, hi = fee_band(last_fee_bps)
+            out.append(Check("fat finger (fee)", lo <= fee_bps <= hi,
+                             f"{fee_bps:g} bps vs last {last_fee_bps:g} (band {lo:.0f}-{hi:.0f})"))
     if decision == "APPROVED":
         out.append(Check("hot name", tier != "HOT", "full fill on a hot name (desk practice: suggest a partial)",
                          blocking=False))
@@ -159,6 +201,10 @@ def pretrade_checks(*, side: str, inst: Instrument, qty: int, fee_bps: float, pr
         lo, hi = fee_band(last_fee_bps)
         out.append(Check("fat finger (fee)", lo <= fee_bps <= hi,
                          f"{fee_bps:g} bps vs last {last_fee_bps:g} (band {lo:.0f}-{hi:.0f})"))
+        if side == "LEND":
+            floor = fee_floor(last_fee_bps, internal_cp=cp is not None and cp.kind == "INTERNAL")["floorBps"]
+            out.append(Check("fee floor", fee_bps >= floor,
+                             f"lending at {fee_bps:g} bps vs the desk's floor of {floor:g} (a bit above market)"))
     return out
 
 

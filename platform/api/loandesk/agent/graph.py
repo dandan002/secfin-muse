@@ -34,8 +34,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .. import clock, db, gate, rules, secmaster
-from ..models import AgentRun, Instrument
-from ..services import market
+from ..models import AgentRun, Counterparty, Instrument
+from ..services import limits, locates, market
 from ..settings import get_settings
 from . import tools
 from .models import gateway
@@ -50,7 +50,8 @@ confidence, say so and ask for a second opinion ("escalate": true).
 Every review, consider all three before you decide:
 1. Availability. Listed supply is indicative, not a promise: lenders recall, supply vanishes when a name gets
    busy, and a few lenders showing size is not the same as many. Ask how much is realistically gettable,
-   not just how much is listed. Note what the desk already holds against it.
+   not just how much is listed. Note what the desk already holds against it. Our own internal inventory
+   ("internal", netted across our books) is different: it is firm, and locates cross against it first.
 2. Utilization. High or rising utilization means lenders are recalling and new supply is scarce.
 3. Fee history. A rising or volatile fee means the name is tightening; a recent spike matters even if it
    has eased.
@@ -58,6 +59,13 @@ Every review, consider all three before you decide:
 When any of these raises an issue, prefer a partial sized to what you are confident can be delivered, or
 decline. Under-approving costs a little fee; over-approving creates a failed locate and Reg SHO exposure.
 A full approval on a name with supply issues needs a reason the trader will accept.
+
+Pricing: we lend a bit above market. The desk's floor ("floorBps") is the market fee plus our markup, and never
+under what the shares cost us when we cross our own inventory. Price at or above the floor; go higher when the
+name is tightening or the request is large, and say why.
+
+Counterparty limits are hard: never propose more than "maxQty" (credit limit, outstanding locate limit and the
+per-name cap, net of what the counterparty already holds). If the limits cap the fill, say so in the rationale.
 
 Rules you never break:
 - Use tools for every fact. Never compute money yourself; the tools do the maths.
@@ -161,24 +169,35 @@ async def gather(state: ReviewState) -> dict[str, Any]:
             return _fail("gather", f"locate is already {loc['status']}")
         if not loc.get("instrument"):
             return _fail("gather", "the locate's instrument did not resolve")
+        inst = await s.get(Instrument, loc["instrumentId"])
+        if inst is not None and (hits := await locates.filters(s, inst)):
+            # A filtered name is the trader's call (or policy's), never worth a model call.
+            return _fail("gather", "filtered: " + "; ".join(r for _, r in hits))
         isin = loc["instrument"]["isin"]
         mkt = await _tool(s, "get_market", {"identifier": isin}, ctx)
         history = await _tool(s, "get_fee_history", {"identifier": isin, "days": 20}, ctx)
+        cp = await s.get(Counterparty, loc["counterparty"])
+        pricing = await locates.pricing(s, inst, cp) if inst else None
+        room = limits.summary(cp, inst, loc["qtyRequested"], (await limits.books(s, [loc["counterparty"]])).get(
+            loc["counterparty"], limits.Book())) if inst else None
     signals = rules.supply_signals(qty_requested=loc["qtyRequested"], available=mkt["available"],
                                    supply=mkt["supply"], held=mkt["held"],
                                    lenders=(mkt.get("venueA") or {}).get("lenders"), util_pct=mkt["utilPct"],
-                                   history=history)
-    facts = {"locate": loc, "market": mkt, "feeHistory": history, "signals": signals}
+                                   history=history, internal_available=mkt["availableBy"]["internal"])
+    facts = {"locate": loc, "market": mkt, "feeHistory": history, "signals": signals, "pricing": pricing,
+             "counterparty": room}
     hot = loc["instrument"]["tier"] == "HOT"
     model = cfg.orchestrator_model if hot else state.get("model") or cfg.reviewer_model
     task = (f"Review locate {loc['id']} from {loc['counterparty']}.\n\n"
             f"Locate:\n{json.dumps(loc, default=str)}\n\n"
-            f"Market now (supply, held, available, utilization, lenders, last prints):\n"
+            f"Market now (supply, held, available split internal/street, utilization, lenders, last prints):\n"
             f"{json.dumps(mkt, default=str)}\n\n"
             f"Daily close fee, utilization and tier, last {len(history)} business days (oldest first):\n"
             f"{json.dumps(history)}\n\n"
             f"Supply signals from the rules engine (facts to weigh, not decisions):\n"
-            f"{json.dumps(signals) if signals else 'none raised'}\n\n{ANSWER}")
+            f"{json.dumps(signals) if signals else 'none raised'}\n\n"
+            f"Pricing (feeBps must be at least floorBps):\n{json.dumps(pricing)}\n\n"
+            f"Counterparty limits (quantity must not exceed maxQty):\n{json.dumps(room)}\n\n{ANSWER}")
     return {"facts": facts, "model": model, "escalated": hot, "revised": False, "calls": 0,
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}],
             "transcript": [_step("gather", tools=[t["tool"] for t in ctx.transcript], model=model,
@@ -236,12 +255,16 @@ async def check(state: ReviewState) -> dict[str, Any]:
     async with db.session() as s:
         available = await market.available(s, loc["instrumentId"])
         inst = await s.get(Instrument, loc["instrumentId"])
+        cp = await s.get(Counterparty, loc["counterparty"])
+        floor = (await locates.pricing(s, inst, cp))["floorBps"] if inst else None
+        cp_max = (await limits.for_line(s, cp, inst, d.get("quantity", 0)))[1] if inst else 0
     live = secmaster.live(loc["instrumentId"])
     issues = [f"{x['signal']} ({x['detail']})" for x in facts["signals"] if x["level"] == "issue"]
     checks = rules.locate_decision_checks(decision=d.get("decision", ""), quantity=d.get("quantity", 0),
                                           qty_requested=loc["qtyRequested"], available=available,
                                           fee_bps=d.get("feeBps"), last_fee_bps=live["feeBps"], tier=live["tier"],
-                                          shs_out=inst.shs_out if inst else 0, issues=issues)
+                                          shs_out=inst.shs_out if inst else 0, issues=issues, floor_bps=floor,
+                                          cp_max_qty=cp_max)
     concerns = [f"{c.name}: {c.detail}" for c in checks if c.blocking and not c.ok]
     advisories = [f"{c.name}: {c.detail}" for c in checks if not c.blocking and not c.ok]
     if not gaps:

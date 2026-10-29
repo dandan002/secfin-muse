@@ -46,8 +46,8 @@ export function Market() {
       {!error && !rows.length && <Empty>{pinned ? "Pin names with w, or apply a paste as a watchlist." : "No availability yet. The market fills in once Venue A's feed syncs (mocks on :8030)."}</Empty>}
       {!!rows.length && (
         <table className="w-full text-xs">
-          <thead><tr>{["", "name", "tier", "last px", "fee", "util", "venue A", "lenders", "best", "last print", "5d", "held", "available"].map((h) =>
-            <th key={h} className={`th ${["last px", "fee", "util", "venue A", "lenders", "best", "last print", "held", "available"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+          <thead><tr>{["", "name", "tier", "last px", "fee", "util", "internal", "venue A", "lenders", "best", "last print", "5d", "held", "available"].map((h) =>
+            <th key={h} className={`th ${["last px", "fee", "util", "internal", "venue A", "lenders", "best", "last print", "held", "available"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
           <tbody>
             {rows.map((r, i) => (
               <tr key={r.instrumentId} onClick={() => setSel(i)} onDoubleClick={() => openTicket({ instrument: r.composite })}
@@ -61,6 +61,8 @@ export function Market() {
                 <td className="td text-right text-dim">{px(r.lastPx, r.ccy)}</td>
                 <td className="td text-right"><Flash value={r.feeBps}>{bps(r.feeBps)}</Flash></td>
                 <td className="td text-right text-dim">{pct(r.utilPct, 0)}</td>
+                <td className="td text-right" title={r.internal ? `net ${r.internal.qty.toLocaleString()} across ${r.internal.books} book(s); ${r.availableBy.internal.toLocaleString()} free after locates` : "none on our books"}>
+                  {r.internal?.qty ? <span className="text-accent">{qty(r.availableBy.internal)}</span> : <span className="text-faint">—</span>}</td>
                 <td className="td text-right"><Flash value={r.venueA?.qty}>{qty(r.venueA?.qty)}</Flash></td>
                 <td className="td text-right text-faint">{r.venueA?.lenders ?? "—"}</td>
                 <td className="td text-right"><Flash value={r.bestFeeBps}>{bps(r.bestFeeBps)}</Flash></td>

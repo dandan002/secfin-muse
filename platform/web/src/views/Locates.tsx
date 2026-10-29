@@ -134,7 +134,7 @@ function Inbox() {
                     <td className="td text-right">{qty(l.qtyRequested)}</td>
                     <td className={`td text-right ${(l.available ?? 0) < l.qtyRequested ? "text-down" : "text-dim"}`}>{qty(l.available)}</td>
                     <td className="td text-right text-accent">{qty(l.suggestedQty)}</td>
-                    <td className="td text-right text-dim">{bps(l.instrument?.feeBps)}</td>
+                    <td className="td text-right text-dim" title={`market ${bps(l.instrument?.feeBps)}, floor ${bps(l.feeFloorBps)}`}>{bps(l.feeIndBps)}</td>
                     <td className="td text-right text-dim">{pct(l.instrument?.utilPct, 0)}</td>
                     <td className="td"><State s={l.route} /></td>
                     <td className="td text-faint max-w-[220px] truncate">{l.routeReasons.join(" · ")}</td>
@@ -158,15 +158,20 @@ function LocateDetail({ l, onDecide }: {
   const [q, setQ] = useState("");
   const [fee, setFee] = useState("");
   const [why, setWhy] = useState("");
+  const [override, setOverride] = useState(false);
   const toast = useDesk((s) => s.toast);
   useEffect(() => {
     setQ(l?.suggestedQty ? String(l.suggestedQty) : "");
-    setFee(l?.instrument ? String(Math.round(l.instrument.feeBps)) : "");
+    setFee(l?.feeIndBps != null ? String(l.feeIndBps) : "");  // the desk's quote: a bit above market
     setWhy("");
-  }, [l?.id, l?.suggestedQty, l?.instrument]);
+    setOverride(false);
+  }, [l?.id, l?.suggestedQty, l?.feeIndBps]);
   if (!l) return <Panel title="detail"><Empty>Select a line.</Empty></Panel>;
   const n = parseQty(q) ?? undefined;
-  const extra = { feeBps: fee ? parseFloat(fee) : undefined, rationale: why || undefined };
+  const feeN = fee ? parseFloat(fee) : undefined;
+  const underFloor = feeN != null && l.feeFloorBps != null && feeN < l.feeFloorBps;
+  const room = l.counterpartyRoom;
+  const extra = { feeBps: feeN, rationale: why || undefined, overrideFeeFloor: underFloor && override };
   const askAgent = async () => {
     try {
       await api.post(`/agent/locates/${l.id}/review`);
@@ -189,7 +194,11 @@ function LocateDetail({ l, onDecide }: {
         <Stat label="requested" value={full(l.qtyRequested)} />
         <Stat label="available" value={qty(l.available)} tone={(l.available ?? 0) < l.qtyRequested ? "text-down" : ""} />
         <Stat label="from" value={l.counterparty} />
-        <Stat label="fee bps" value={bps(l.instrument?.feeBps)} />
+        <Stat label="internal" value={qty(l.availableBy?.internal)} tone={l.availableBy?.internal ? "text-accent" : ""} />
+        <Stat label="street" value={qty(l.availableBy?.street)} />
+        <Stat label="market bps" value={bps(l.instrument?.feeBps)} />
+        <Stat label="floor bps" value={bps(l.feeFloorBps)} />
+        <Stat label="cp room" value={room ? qty(room.maxQty) : "—"} tone={room && room.maxQty < l.qtyRequested ? "text-down" : ""} />
         <Stat label="util" value={pct(l.instrument?.utilPct)} />
         <Stat label="via" value={l.channel.toLowerCase()} />
       </div>
@@ -204,6 +213,15 @@ function LocateDetail({ l, onDecide }: {
           <input value={q} onChange={(e) => setQ(e.target.value)} className="input text-right" /></label>
         <label className="flex flex-col gap-1"><span className="label">ind. fee bps</span>
           <input value={fee} onChange={(e) => setFee(e.target.value)} className="input text-right" /></label>
+        {underFloor && (
+          <label className="col-span-2 flex items-center gap-2 text-2xs text-warm">
+            <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+            under the desk's floor of {bps(l.feeFloorBps)}: override (recorded on the locate)
+          </label>
+        )}
+        {!!room?.failing.length && (
+          <ul className="col-span-2 text-2xs text-down space-y-0.5">{room.failing.map((f) => <li key={f}>· {f}</li>)}</ul>
+        )}
         <label className="col-span-2 flex flex-col gap-1"><span className="label">rationale</span>
           <input value={why} onChange={(e) => setWhy(e.target.value)} placeholder="optional" className="input" /></label>
       </div>

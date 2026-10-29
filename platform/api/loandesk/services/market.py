@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import clock, secmaster
 from ..models import Availability, Instrument, Locate, Print
+from ..settings import get_settings
+
+INTERNAL = "INTERNAL"  # our own books, netted (see services/inventory.py)
 
 HELD = ("APPROVED", "PARTIAL")  # locate states that still hold shares against availability
 
@@ -63,10 +66,34 @@ async def supply(s: AsyncSession, instrument_ids: list[str] | None = None) -> di
     return out
 
 
+def cross(sup: list[Availability], held_qty: int) -> dict[str, int]:
+    """Cross first: what approved locates hold comes out of our own inventory before street supply."""
+    internal = sum(a.qty for a in sup if a.source == INTERNAL)
+    street = sum(a.qty for a in sup if a.source != INTERNAL)
+    from_internal = min(held_qty, internal)
+    return {"internal": internal - from_internal, "street": max(street - (held_qty - from_internal), 0)}
+
+
+async def split(s: AsyncSession, instrument_id: str) -> dict[str, int]:
+    """Live availability by kind: ``internal`` (our books, firm) and ``street`` (venue feeds, indicative)."""
+    rows = (await supply(s, [instrument_id])).get(instrument_id, [])
+    return cross(rows, (await held(s, [instrument_id])).get(instrument_id, 0))
+
+
 async def available(s: AsyncSession, instrument_id: str) -> int:
     """Live availability: every source's supply less what approved locates already hold."""
     rows = (await supply(s, [instrument_id])).get(instrument_id, [])
     return max(sum(a.qty for a in rows) - (await held(s, [instrument_id])).get(instrument_id, 0), 0)
+
+
+async def availability_fresh(s: AsyncSession) -> bool:
+    """Has any availability arrived recently enough to treat a missing name as having none?"""
+    latest = (await s.execute(select(func.max(Availability.as_of)).where(Availability.source != INTERNAL))).scalar()
+    if latest is None:
+        return False
+    if latest.tzinfo is None:  # SQLite drops the zone; stored in UTC
+        latest = latest.replace(tzinfo=UTC)
+    return (clock.now() - latest).total_seconds() <= get_settings().availability_fresh_s
 
 
 async def prints_for(s: AsyncSession, instrument_id: str, limit: int = 5) -> list[Print]:
@@ -93,7 +120,8 @@ def _row(i: Instrument, sup: list[Availability], held_qty: int, prints: list[flo
     lv = secmaster.live(i.id)
     by_src = {a.source: a for a in sup}
     total = sum(a.qty for a in sup)
-    best = min((a.indicative_fee_bps for a in sup if a.indicative_fee_bps is not None and a.qty > 0), default=None)
+    best = min((a.indicative_fee_bps for a in sup if a.indicative_fee_bps is not None and a.qty > 0
+                and a.source != INTERNAL), default=None)
     return {"instrumentId": i.id, "composite": i.composite, "name": i.name, "isin": i.isin, "sedol": i.sedol,
             "country": i.country, "ccy": i.ccy, **lv, "etb": secmaster.is_etb(i, lv["tier"]),
             "thresholdFlag": i.threshold_flag, "restricted": i.restricted,
@@ -101,7 +129,10 @@ def _row(i: Instrument, sup: list[Availability], held_qty: int, prints: list[flo
                        "lenders": by_src["VENUE_A"].lenders} if "VENUE_A" in by_src else None,
             "venueB": {"qty": by_src["VENUE_B"].qty, "fee": by_src["VENUE_B"].indicative_fee_bps}
             if "VENUE_B" in by_src else None,
-            "supply": total, "held": held_qty, "available": max(total - held_qty, 0), "bestFeeBps": best,
+            "internal": {"qty": by_src[INTERNAL].qty, "books": by_src[INTERNAL].lenders,
+                         "costBps": by_src[INTERNAL].indicative_fee_bps} if INTERNAL in by_src else None,
+            "supply": total, "held": held_qty, "available": max(total - held_qty, 0),
+            "availableBy": cross(sup, held_qty), "bestFeeBps": best,
             "lastFeeBps": prints[-1] if prints else None, "trend": prints[-20:]}
 
 
@@ -128,4 +159,8 @@ async def market_for(s: AsyncSession, inst: Instrument) -> dict[str, Any]:
     row = (await grid(s, ids=[inst.id], only_supplied=False))[0]
     row["prints"] = [{"venue": p.venue, "qty": p.qty, "feeBps": p.fee_bps, "ts": clock.iso(p.ts)}
                      for p in await prints_for(s, inst.id, 5)]
+    if row["internal"]:
+        from .inventory import for_instrument
+
+        row["internal"]["byBook"] = await for_instrument(s, inst.id)
     return row

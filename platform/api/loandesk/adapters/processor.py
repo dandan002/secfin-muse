@@ -25,5 +25,9 @@ class Processor(Client):
     async def amend(self, contract_id: str, fields: dict[str, Any], reason: str) -> dict[str, Any]:
         return await self.post(f"/contracts/{contract_id}/amend", json={"fields": fields, "reason": reason})
 
+    async def positions(self) -> list[dict[str, Any]]:
+        """Open quantity per (instrument, side, booking entity) across our contracts."""
+        return await self.get("/positions")
+
     async def contracts(self) -> list[dict[str, Any]]:
         return await self.get("/contracts")
