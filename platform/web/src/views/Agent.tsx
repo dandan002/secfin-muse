@@ -95,7 +95,7 @@ export function Agent() {
               <span className="text-ink text-sm">{a.title}</span>
               <span className="ml-auto"><State s={a.status} /></span>
             </div>
-            {a.rationale && <p className="mt-1.5 text-xs text-dim leading-relaxed">{a.rationale}</p>}
+            {a.rationale && <p className="mt-1.5 text-xs text-dim leading-relaxed whitespace-pre-line">{a.rationale}</p>}
             {!!a.riskFlags.length && (
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {a.riskFlags.map((f) => <span key={f} className="text-2xs text-hot border border-hot/40 rounded px-1.5">{f}</span>)}

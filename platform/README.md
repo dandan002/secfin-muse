@@ -51,16 +51,24 @@ that needs a venue fails visibly (order `FAILED`, reply `FAILED`) instead of han
 ## Agent (off by default)
 
 ```
-gather ─► decide ⇄ tools ─► check ─(low confidence / turned Hot / failed checks, once)─► escalate ─► decide
+gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► revise ─► decide
+                              │      └─(hard limit / low confidence / turned Hot / asked, once)─► escalate ─► decide
                               │
                            propose ─► await_trader (paused until the card is decided) ─► done
 ```
 
-* `agent/graph.py`: the agent's tasks as LangGraph graphs. The first is the warm-locate review: Spark 1.3 decides,
-  the rules engine checks the answer (`rules.locate_decision_checks`), and low confidence, a name that turned Hot or
-  a failed check hands the case to Wonder once. Hot names start with Wonder. The model only reads and judges: the
-  graph, not the model, turns a checked answer into a gate action. Counterparty text in any tool result is fenced in
-  `<untrusted>` tags (`fence()`).
+* `agent/graph.py`: the agent's tasks as LangGraph graphs. The first is the warm-locate review. Every review starts
+  from the same market picture: availability (supply, what the desk already holds, lenders), utilization, a 20-day
+  fee and utilization history, and the rules engine's supply signals (`rules.supply_signals`: thin cover, recall-level
+  or rising utilization, rising or volatile fees, a thin lender base). The model must assess availability,
+  utilization and fee history in its answer; an incomplete answer goes back to it once. The prompt treats listed
+  supply as indicative and steers to partial or no fills when something is off, and gives the model latitude:
+  `reasoning_effort` per role, more tool calls, a fee-history tool, and an `escalate` flag to ask for Wonder itself.
+  Spark decides first; low confidence, a broken hard limit, a name that turned Hot or the reviewer's own request hands
+  the case to Wonder once (Hot names start with Wonder). `rules.locate_decision_checks` blocks on hard limits
+  (availability, concentration, fee band) and flags desk practice (full fill on a Hot name or into supply issues) on
+  the card. The graph, not the model, turns a checked answer into a gate action. Counterparty text in any tool result
+  is fenced in `<untrusted>` tags (`fence()`).
 * `agent/runner.py`: runs graphs in the background. Each run is a LangGraph thread with an `agent_runs` row; state is
   checkpointed after every node (the desk's Postgres, or a sibling `*.agent.db` next to SQLite;
   `LOANDESK_AGENT_CHECKPOINT_URL` overrides). Approving or rejecting the card resumes the run; on start-up, runs a
