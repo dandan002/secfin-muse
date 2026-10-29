@@ -1,0 +1,75 @@
+"""Internal inventory: our own books, from the processor's positions, netted per name.
+
+Every open contract is a position on one of our books (the processor's booking entity): a BORROW puts
+shares in the box, a LEND takes them out. Netting borrowed less lent across all books gives what the
+firm holds and can lend again without going to the street. That net long becomes the ``INTERNAL``
+availability row, which locates cross against first (``market.cross``): it is firm, where venue
+supply is only indicative. A book that is net short elsewhere still nets against it; a name that is
+net short overall has no internal supply.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .. import clock, events
+from ..models import Availability, InternalPosition
+from .market import INTERNAL
+
+
+def flatten(positions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Processor positions (instrument, side, booking entity) to one figure per name across books."""
+    out: dict[str, dict[str, Any]] = defaultdict(lambda: {"borrowed": 0, "lent": 0, "fee_qty": 0.0,
+                                                           "books": defaultdict(lambda: {"borrowed": 0, "lent": 0})})
+    for p in positions:
+        n, side, qty = out[p["instrumentId"]], p["side"], int(p["openQuantity"])
+        book = n["books"][p["bookingEntity"]]
+        if side == "BORROW":
+            n["borrowed"] += qty
+            book["borrowed"] += qty
+            n["fee_qty"] += (p.get("avgFeeBps") or 0) * qty
+        else:
+            n["lent"] += qty
+            book["lent"] += qty
+    return {iid: {"borrowed": n["borrowed"], "lent": n["lent"], "net": n["borrowed"] - n["lent"],
+                  "costBps": round(n["fee_qty"] / n["borrowed"], 2) if n["borrowed"] else None,
+                  "books": {b: dict(v) for b, v in n["books"].items()}} for iid, n in out.items()}
+
+
+async def apply(s: AsyncSession, positions: list[dict[str, Any]], as_of: datetime | None = None) -> int:
+    """Replace the per-book positions and the netted INTERNAL availability. Returns names with internal supply."""
+    as_of = as_of or clock.now()
+    flat = flatten(positions)
+    await s.execute(delete(InternalPosition))
+    for iid, n in flat.items():
+        for book, b in n["books"].items():
+            s.add(InternalPosition(instrument_id=iid, book=book, borrowed=b["borrowed"], lent=b["lent"],
+                                   avg_borrow_fee_bps=n["costBps"], as_of=as_of))
+    have = {a.instrument_id: a for a in
+            (await s.execute(select(Availability).where(Availability.source == INTERNAL))).scalars()}
+    long = {iid: n for iid, n in flat.items() if n["net"] > 0}
+    for iid, a in have.items():  # names we no longer hold go to zero, so the ledger never lends what's gone
+        if iid not in long:
+            a.qty, a.as_of = 0, as_of
+    for iid, n in long.items():
+        a = have.get(iid)
+        if a is None:
+            a = Availability(instrument_id=iid, source=INTERNAL, qty=0, lenders=0, as_of=as_of)
+            s.add(a)
+        # ``lenders`` counts our books holding the name; the fee is what the shares cost us to borrow.
+        a.qty, a.lenders, a.indicative_fee_bps, a.as_of = n["net"], sum(
+            1 for b in n["books"].values() if b["borrowed"] > b["lent"]), n["costBps"], as_of
+    events.publish_later(s, "market", {"type": "inventory", "instruments": len(long)})
+    return len(long)
+
+
+async def for_instrument(s: AsyncSession, instrument_id: str) -> list[dict[str, Any]]:
+    rows = (await s.execute(select(InternalPosition).where(InternalPosition.instrument_id == instrument_id)
+                            .order_by(InternalPosition.book))).scalars()
+    return [{"book": r.book, "borrowed": r.borrowed, "lent": r.lent, "net": r.borrowed - r.lent,
+             "asOf": clock.iso(r.as_of)} for r in rows]

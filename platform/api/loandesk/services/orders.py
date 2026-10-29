@@ -60,8 +60,11 @@ def order_json(o: Order, inst: Instrument | None = None) -> dict[str, Any]:
 
 
 async def exposure_usd(s: AsyncSession, cp_code: str) -> float:
-    rows = (await s.execute(select(Trade.qty, Trade.price, Trade.ccy).where(Trade.cp_code == cp_code))).all()
-    return sum(q * p * rules.FX_USD.get(c, 1.0) for q, p, c in rows)
+    """Booked trades plus outstanding approved locates (see ``services/limits.py``)."""
+    from .limits import books
+
+    b = (await books(s, [cp_code])).get(cp_code)
+    return b.trades_usd + b.locates_usd if b else 0.0
 
 
 async def _cp(s: AsyncSession, code: str | None) -> Counterparty | None:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 import httpx
+import pytest
 
 from loandesk import clock, db, gate
 from loandesk.ingest import paste
@@ -172,3 +174,166 @@ async def test_locates_expire_at_end_of_day(setup: None) -> None:
     finally:
         clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
     assert n > 0
+
+
+# -- locate filters ---------------------------------------------------------------------------------
+async def _name(where: str, supply: int = 0) -> str:
+    """An ISIN for a name matching ``where`` (restricted, threshold, penny or unsupplied), given ``supply``."""
+    from sqlalchemy import select
+
+    from loandesk import rules, secmaster
+    from loandesk.models import Availability, Instrument
+
+    async with db.session() as s:
+        supplied = set((await s.execute(select(Availability.instrument_id))).scalars())
+        for i in (await s.execute(select(Instrument).order_by(Instrument.id))).scalars():
+            usd = secmaster.live(i.id)["lastPx"] * rules.FX_USD.get(i.ccy, 1.0)
+            plain = not i.restricted and not i.threshold_flag and usd >= 1
+            if {"restricted": i.restricted and not i.threshold_flag and usd >= 1,
+                "threshold": i.threshold_flag and not i.restricted and usd >= 1,
+                "penny": usd < 1 and not i.restricted and not i.threshold_flag,
+                "unsupplied": plain and i.id not in supplied}[where] and i.id not in supplied:
+                if supply:
+                    await _supply(i.id, supply)
+                return i.isin
+    raise AssertionError(where)
+
+
+async def test_filters_decline_before_anyone_sees_the_line(client: httpx.AsyncClient) -> None:
+    await _supply("I00001", 2_000_000)  # keeps the availability feed fresh
+    lines = [{"identifier": await _name(w, supply=0 if w == "unsupplied" else 50_000), "quantity": 1000}
+             for w in ("restricted", "threshold", "penny", "unsupplied")]
+    locs = (await client.post("/locates", json={"counterparty": "PBALPHA", "lines": lines})).json()
+    assert {(x["route"], x["status"], x["decidedBy"]) for x in locs} == {("FILTER", "REJECTED", "policy:FILTER")}
+    reasons = [x["routeReasons"][0] for x in locs]
+    assert reasons[0] == "on the restricted list" and reasons[1].startswith("on the Reg SHO threshold list")
+    assert re.fullmatch(r"priced at [A-Z]{3} [\d.]+ \(\$0\.\d\d\), under the \$1 minimum", reasons[2]), reasons[2]
+    assert reasons[3] == "no availability"
+    assert all(x["rationale"] == x["routeReasons"][0] for x in locs)
+
+
+async def test_stale_feed_reviews_instead_of_declining(client: httpx.AsyncClient) -> None:
+    clock.pin(datetime(2026, 10, 27, 16, 0, tzinfo=UTC))  # two hours past the last availability
+    try:
+        loc = (await client.post("/locates", json={"counterparty": "PBALPHA", "lines": [
+            {"identifier": await _name("unsupplied"), "quantity": 1000}]})).json()[0]
+    finally:
+        clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+    assert loc["status"] == "RECEIVED" and loc["route"] != "FILTER"
+
+
+async def test_a_filter_can_hold_for_the_trader_instead(client: httpx.AsyncClient,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    from loandesk.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "filter_restricted", "hold")
+    loc = (await client.post("/locates", json={"counterparty": "PBALPHA", "lines": [
+        {"identifier": await _name("restricted", supply=50_000), "quantity": 1000}]})).json()[0]
+    assert (loc["route"], loc["status"]) == ("HOLD", "RECEIVED") and "on the restricted list" in loc["routeReasons"]
+
+
+# -- internal inventory -----------------------------------------------------------------------------
+def test_flatten_nets_books_per_name() -> None:
+    from loandesk.services import inventory
+
+    flat = inventory.flatten([
+        {"instrumentId": "I1", "side": "BORROW", "bookingEntity": "LOANDESK-US", "openQuantity": 100_000,
+         "avgFeeBps": 30.0},
+        {"instrumentId": "I1", "side": "LEND", "bookingEntity": "LOANDESK-US", "openQuantity": 20_000},
+        {"instrumentId": "I1", "side": "LEND", "bookingEntity": "LOANDESK-UK", "openQuantity": 30_000},
+        {"instrumentId": "I2", "side": "LEND", "bookingEntity": "LOANDESK-US", "openQuantity": 5_000}])
+    assert flat["I1"]["net"] == 50_000 and flat["I1"]["costBps"] == 30.0
+    assert flat["I1"]["books"]["LOANDESK-UK"] == {"borrowed": 0, "lent": 30_000}
+    assert flat["I2"]["net"] == -5_000
+
+
+async def test_locates_cross_internal_inventory_first(client: httpx.AsyncClient) -> None:
+    from loandesk.services import inventory
+
+    iid, isin = "I00002", (await client.get("/instruments/I00002/market")).json()["instrument"]["isin"]
+    await _supply(iid, 500_000)
+    async with db.session() as s:
+        await inventory.apply(s, [{"instrumentId": iid, "side": "BORROW", "bookingEntity": "LOANDESK-US",
+                                   "openQuantity": 80_000, "avgFeeBps": 25.0},
+                                  {"instrumentId": iid, "side": "LEND", "bookingEntity": "LOANDESK-UK",
+                                   "openQuantity": 20_000}])
+        await s.commit()
+    inv = next(r for r in (await client.get("/inventory")).json() if r["instrumentId"] == iid)
+    assert (inv["net"], inv["free"], len(inv["books"])) == (60_000, 60_000, 2)
+    loc = (await client.post("/locates", json={"counterparty": "PBALPHA", "lines": [
+        {"identifier": isin, "quantity": 100_000}]})).json()[0]
+    if loc["status"] == "RECEIVED":
+        loc = (await client.post(f"/locates/{loc['id']}/decision", json={"decision": "APPROVED"})).json()
+    basis = loc["regShoBasis"]
+    assert "INTERNAL_INVENTORY:60000@" in basis and "(crossed 60000)" in basis
+    assert basis.index("INTERNAL_INVENTORY") < basis.index("VENUE_A_AVAIL")
+    mkt = (await client.get(f"/instruments/{iid}/market")).json()["market"]
+    assert mkt["availableBy"] == {"internal": 0, "street": 460_000}
+    assert mkt["internal"]["byBook"][0]["book"] == "LOANDESK-UK"
+
+    async with db.session() as s:  # the box empties: the name's internal supply goes to zero, not stale
+        await inventory.apply(s, [])
+        await s.commit()
+    assert (await client.get(f"/instruments/{iid}/market")).json()["market"]["internal"]["qty"] == 0
+
+
+# -- pricing and counterparty limits ----------------------------------------------------------------
+def test_fee_floor_is_a_bit_above_market() -> None:
+    from loandesk import rules
+
+    assert rules.fee_floor(40.0)["floorBps"] == 42.0  # +5%, at least 2 bps
+    assert rules.fee_floor(10.0)["floorBps"] == 12.0  # the 2 bp minimum wins on cheap names
+    assert rules.fee_floor(40.0, internal_cp=True)["floorBps"] == 40.0  # internal desks pay market
+    assert rules.fee_floor(40.0, cost_bps=50.0)["floorBps"] == 52.5  # never under what the shares cost us
+
+
+async def test_locates_quote_above_market_and_hold_the_floor(client: httpx.AsyncClient) -> None:
+    from loandesk import secmaster
+
+    isin = await _name("unsupplied")
+    async with db.session() as s:
+        from sqlalchemy import select
+
+        from loandesk.models import Instrument
+        inst = (await s.execute(select(Instrument).where(Instrument.isin == isin))).scalar_one()
+    await _supply(inst.id, 500_000)
+    market_fee = secmaster.live(inst.id)["feeBps"]
+    loc = (await client.post("/locates", json={"counterparty": "KESTRELHF", "lines": [
+        {"identifier": isin, "quantity": 10_000}]})).json()[0]
+    assert loc["feeIndBps"] > market_fee
+    if loc["status"] != "RECEIVED":
+        return  # auto-approved under the ETB policy, at the quote
+    under = await client.post(f"/locates/{loc['id']}/decision", json={"decision": "APPROVED", "feeBps": market_fee})
+    assert under.status_code == 409 and "under the desk's floor" in under.json()["detail"]
+    ok = (await client.post(f"/locates/{loc['id']}/decision", json={
+        "decision": "APPROVED", "feeBps": market_fee, "overrideFeeFloor": True}, headers={"x-trader": "sam"})).json()
+    assert ok["status"] == "APPROVED" and "overridden" in ok["rationale"]
+
+
+async def test_lending_under_the_floor_fails_the_ticket(client: httpx.AsyncClient) -> None:
+    p = (await client.post("/orders/preview", json={"side": "LEND", "instrument": "AAPL US", "quantity": 10_000,
+                                                    "feeBps": 1.0, "counterparty": "KESTRELHF"})).json()
+    floor = next(c for c in p["checks"] if c["name"] == "fee floor")
+    assert not floor["ok"] and floor["blocking"]
+
+
+async def test_counterparty_limits_hold_and_cap_approvals(client: httpx.AsyncClient,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    from loandesk.settings import get_settings
+
+    await _supply("I00003", 5_000_000)
+    monkeypatch.setattr(get_settings(), "cp_locate_limit_pct", 0.0001)  # a tiny locate line for the test
+    loc = (await client.post("/locates", json={"counterparty": "HARBORAL", "lines": [
+        {"identifier": "I00003", "quantity": 900_000}]})).json()[0]
+    assert loc["route"] == "HOLD" and any(r.startswith("locate limit:") for r in loc["routeReasons"]), loc
+    r = await client.post(f"/locates/{loc['id']}/decision", json={"decision": "APPROVED"})
+    assert r.status_code == 409 and "fits" in r.json()["detail"]
+    room = next(x for x in (await client.get("/locates", params={"status": "RECEIVED"})).json()
+                if x["id"] == loc["id"])["counterpartyRoom"]
+    assert room["maxQty"] < 900_000 and any(f.startswith("locate limit") for f in room["failing"])
+
+    monkeypatch.setattr(get_settings(), "blocked_counterparties", ["HARBORAL"])
+    blocked = (await client.post("/locates", json={"counterparty": "HARBORAL", "lines": [
+        {"identifier": "I00003", "quantity": 1000}]})).json()[0]
+    assert (blocked["route"], blocked["status"]) == ("FILTER", "REJECTED")
+    assert blocked["routeReasons"][0].startswith("counterparty blocked")

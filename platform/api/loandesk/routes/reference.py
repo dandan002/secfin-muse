@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import secmaster
 from ..db import get_session
-from ..models import Counterparty, Instrument
-from ..services import market
+from ..models import Counterparty, Instrument, InternalPosition
+from ..services import inventory, market
 
 router = APIRouter(tags=["reference"])
 
@@ -44,3 +44,19 @@ async def counterparties(s: AsyncSession = Depends(get_session)) -> list[dict]:
 async def market_grid(tier: str | None = None, q: str | None = None, ids: str | None = None,
                       limit: int = Query(300, le=2000), s: AsyncSession = Depends(get_session)) -> list[dict]:
     return await market.grid(s, tier=tier, q=q, ids=ids.split(",") if ids else None, limit=limit)
+
+
+@router.get("/inventory")
+async def internal_inventory(s: AsyncSession = Depends(get_session)) -> list[dict]:
+    """Our books from the processor, netted per name: what we hold, what's free after locates, and by book."""
+    names = list((await s.execute(select(InternalPosition.instrument_id).distinct())).scalars())
+    rows = await market.grid(s, ids=names, only_supplied=False, limit=2000) if names else []
+    out = []
+    for r in rows:
+        books = await inventory.for_instrument(s, r["instrumentId"])
+        out.append({"instrumentId": r["instrumentId"], "composite": r["composite"], "isin": r["isin"],
+                    "tier": r["tier"], "borrowed": sum(b["borrowed"] for b in books),
+                    "lent": sum(b["lent"] for b in books), "net": sum(b["net"] for b in books),
+                    "free": r["availableBy"]["internal"], "costBps": (r["internal"] or {}).get("costBps"),
+                    "books": books})
+    return sorted(out, key=lambda x: -x["net"])

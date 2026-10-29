@@ -16,6 +16,9 @@ def _url(name: str, port: int) -> str:
     return Field(f"http://127.0.0.1:{port}", validation_alias=AliasChoices(f"LOANDESK_{name}_URL", f"MOCK_{name}_URL"))
 
 
+FilterAction = Literal["reject", "hold", "off"]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LOANDESK_", env_file=REPO_ROOT / ".env", extra="ignore")
 
@@ -45,6 +48,7 @@ class Settings(BaseSettings):
     sync_enabled: bool = True
     poll_s: float = 2.0
     availability_every_s: float = 10.0
+    inventory_every_s: float = 30.0  # internal inventory from the processor's positions
 
     # -- desk policy (deterministic rules engine) -------------------------------------------------
     gc_max_fee_bps: float = 50.0
@@ -53,6 +57,20 @@ class Settings(BaseSettings):
     hot_min_util_pct: float = 85.0
     locate_name_cap: int = 1_000_000
     auto_approve_etb: bool = True  # the standing policy that clears GC/ETB locates without a human
+    # Pre-routing filters: a matching line is declined by policy:FILTER before any trader or model sees it
+    # ("hold" sends it to the trader instead, "off" disables the filter).
+    filter_threshold: FilterAction = "reject"  # Reg SHO threshold list: persistent fails to deliver
+    filter_restricted: FilterAction = "reject"
+    filter_no_availability: FilterAction = "reject"  # only while the availability feed is fresh
+    filter_low_price: FilterAction = "reject"
+    min_price_usd: float = 1.0
+    availability_fresh_s: float = 1800.0  # sim seconds before availability counts as stale
+    # Pricing: what we charge to lend, over the market fee (internal desks pay market, never below our cost).
+    markup_pct: float = 5.0
+    markup_min_bps: float = 2.0
+    # Counterparty limits on top of each counterparty's credit limit (reference data).
+    cp_locate_limit_pct: float = 50.0  # outstanding approved locates, as a % of the credit limit
+    blocked_counterparties: list[str] = []
     booking_entity: str = "LOANDESK-US"
     fat_finger_band: float = 0.5  # block fees outside last fee x (1 - band, 1 + 1/band)
     max_pct_shares_out: float = 5.0

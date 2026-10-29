@@ -1,4 +1,5 @@
-"""Background sync with the outside world: clock, gateway inbox, Venue A market data and our orders.
+"""Background sync with the outside world: clock, gateway inbox, Venue A market data, our orders and
+the processor's positions (internal inventory).
 
 Polling keeps the scaffold simple and restart-safe (cursors live in ``sync_cursors``). The venues
 also offer WebSocket streams; switching to them changes only this module.
@@ -18,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import clock, db, events
 from .adapters import AdapterError, systems
 from .models import Order, SyncCursor
-from .services import locates, market, orders
+from .services import inventory, locates, market, orders
 from .settings import get_settings
 
 log = logging.getLogger("loandesk.sync")
@@ -66,6 +67,14 @@ async def sync_market() -> None:
         n = await market.upsert_availability(s, "VENUE_A", avail["instruments"])
         await market.add_prints(s, "VENUE_A", prints)
         events.publish_later(s, "market", {"type": "refresh", "instruments": n, "asOf": avail.get("asOf")})
+        await s.commit()
+
+
+async def sync_inventory() -> None:
+    """Internal inventory: the processor's positions on our books, netted per name."""
+    positions = await systems().processor.positions()
+    async with db.session() as s:
+        await inventory.apply(s, positions)
         await s.commit()
 
 
@@ -122,6 +131,7 @@ class Syncer:
         cfg = get_settings()
         jobs = {"clock": (5.0, sync_clock), "inbox": (cfg.poll_s, sync_inbox),
                 "market": (cfg.availability_every_s, sync_market), "orders": (cfg.poll_s, sync_orders),
+                "inventory": (cfg.inventory_every_s, sync_inventory),
                 "housekeeping": (30.0, housekeeping)}
         self.tasks = [asyncio.create_task(_every(n, sec, fn), name=f"sync-{n}") for n, (sec, fn) in jobs.items()]
 

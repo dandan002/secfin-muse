@@ -37,9 +37,9 @@ that needs a venue fails visibly (order `FAILED`, reply `FAILED`) instead of han
 | Spec | Backend | Screen |
 | --- | --- | --- |
 | 1. Security master | `secmaster.py`: resolve ticker/ISIN/SEDOL/CUSIP/FIGI with check-digit validation and "did you mean"; tiers from the desk's own bands | ticket autocomplete, instrument card |
-| 2. Live market | `services/market.py`, `sync.py`: Venue A availability and prints, live availability ledger (supply less approved locates) | **Market** (`4`): tier filter, fee flash, 5d sparkline, watchlist |
-| 3. Locates | `services/locates.py`, `rules.locate_route`: AUTO / REVIEW / HOLD, ETB auto-approve policy, Reg SHO 203(b) basis, gateway replies, end-of-day expiry | **Locates** (`2`): inbox grouped by requester, `a` `p` `x` `⇧A`; actioned, release, export |
-| 4. Trading | `services/orders.py`, `rules.pretrade_checks`, `rules.route_order`: limits, restricted, concentration, fat finger; GC → firm bid, specials → negotiated bid | **Trade** (`3`): ticket with live checks, `ctrl+↵`; **Blotter** (`1`): accept counter `a`, re-rate `r`, cancel `x` |
+| 2. Live market | `services/market.py`, `sync.py`: Venue A availability and prints, live availability ledger (supply less approved locates); `services/inventory.py`: internal inventory from the processor's positions, netted across our books into an `INTERNAL` source that locates cross against first (`GET /inventory`, Reg SHO basis `INTERNAL_INVENTORY:… (crossed n)`) | **Market** (`4`): tier filter, fee flash, 5d sparkline, watchlist |
+| 3. Locates | `services/locates.py`, `rules.locate_filters`: threshold list (fails), restricted list, zero availability (fresh feed only) and price under $1 are declined by `policy:FILTER` before routing (each `LOANDESK_FILTER_*` can be `reject`, `hold` or `off`); `rules.locate_route`: AUTO / REVIEW / HOLD, ETB auto-approve policy, Reg SHO 203(b) basis, gateway replies, end-of-day expiry | **Locates** (`2`): inbox grouped by requester, `a` `p` `x` `⇧A`; actioned, release, export |
+| 4. Trading | `services/orders.py`, `rules.pretrade_checks`, `rules.route_order`: limits, restricted, concentration, fat finger, lending fee floor; GC → firm bid, specials → negotiated bid | **Trade** (`3`): ticket with live checks, `ctrl+↵`; **Blotter** (`1`): accept counter `a`, re-rate `r`, cancel `x` |
 | 5. Booking | `services/booking.py`: CDM trade to the processor, compare, amend-to-fill for breaks | Blotter fills: book, fix break |
 | 6. Approval gate | `gate.py`: propose → approve / edit / reject / take over, executors per kind, kill switch | **Agent** (`5`): cards, diff, transcript, `space` `e` `x` `t` |
 | Paste anything | `ingest/paste.py`: sheet ranges, Bloomberg output, chat shorthand, per-cell confidence | **Paste** (`6`): preview, apply as locates / Venue B list / watchlist |
@@ -47,6 +47,19 @@ that needs a venue fails visibly (order `FAILED`, reply `FAILED`) instead of han
 
 `⌘K` / `ctrl+K` opens the command palette: `locate 500k VOD LN for PB-ALPHA`, `borrow 100k AAPL @ 30 from HARBORAL`,
 `show hot names`, or any name.
+
+## Pricing and counterparty limits
+
+* **Pricing** (`rules.fee_floor`): we lend a bit above market. The floor is the market fee plus `LOANDESK_MARKUP_PCT`
+  (default 5%, at least `LOANDESK_MARKUP_MIN_BPS`, default 2), never under our borrow cost when a locate crosses
+  internal inventory; internal desks pay market. Locates are quoted at the floor at intake; decisions under it are
+  refused unless a trader sets `overrideFeeFloor` (recorded in the rationale); LEND tickets fail a blocking
+  `fee floor` check; the agent must price at or above it.
+* **Counterparty limits** (`services/limits.py`): exposure is booked trades plus outstanding approved locates. Checks:
+  credit limit (reference data), outstanding-locate limit (`LOANDESK_CP_LOCATE_LIMIT_PCT` of credit, default 50%),
+  per-counterparty per-name cap (`LOANDESK_LOCATE_NAME_CAP`), and `LOANDESK_BLOCKED_COUNTERPARTIES` (declined by
+  `policy:FILTER`). A breach holds the line for the trader; approvals can't exceed the room (`counterpartyRoom.maxQty`,
+  also the cap on `suggestedQty`); internal desks have only the per-name cap.
 
 ## Agent (off by default)
 
