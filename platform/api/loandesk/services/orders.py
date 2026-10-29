@@ -281,6 +281,24 @@ async def apply_venue_b(s: AsyncSession, o: Order, lst: dict[str, Any] | None, m
     return True
 
 
+def within_limit(o: Order, fee_bps: float) -> bool:
+    """A dealer's fee the order already allows: no more than our limit to borrow, no less to lend."""
+    return fee_bps <= o.fee_bps if o.side == "BORROW" else fee_bps >= o.fee_bps
+
+
+async def accept_within_limit(s: AsyncSession, o: Order, matches: list[dict[str, Any]]) -> bool:
+    """A dealer counter inside the order's limit is already covered by the order: accept it on the venue.
+    (A counter resets our side's acceptance there, so the list's auto-accept no longer applies.)"""
+    vb, done = systems().venue_b, False
+    for m in matches:
+        if m["status"] == "PROPOSED" and not m["ourAccept"] and within_limit(o, float(m["feeBps"])):
+            await vb.accept(m["matchId"])
+            events.record(s, "order", o.id, "accepted_within_limit", {"matchId": m["matchId"], "feeBps": m["feeBps"],
+                                                                     "limitBps": o.fee_bps}, actor="policy:LIMIT")
+            done = True
+    return done
+
+
 async def add_trade_b(s: AsyncSession, loan: dict[str, Any], list_id: str | None) -> Trade | None:
     """Record a Venue B loan once. Venue B gives no UTI, so we generate ours (ISO 23897: our LEI + a unique
     suffix); terms the venue doesn't carry come from the order, or the desk's defaults for the counterparty."""

@@ -252,6 +252,17 @@ async def test_counter_and_cancel_on_venue_b(client: httpx.AsyncClient, venue_b:
     assert r["status"] == "CANCELLED" and venue_b.calls[-1][0] == "reject"
 
 
+async def test_a_dealer_counter_inside_the_limit_is_accepted(client: httpx.AsyncClient, post_trade: SimpleNamespace,
+                                                             venue_b: VenueB) -> None:
+    o = (await client.post("/orders", json={"instrument": "NVDA US", "quantity": 15_000, "feeBps": 30,
+                                            "venue": "VENUE_B", "override": True})).json()
+    venue_b.dealer_counters(o["venueOrderId"], 19.2, 15_000)  # cheaper than our 30 bps limit to borrow
+    await sync.sync_venue_b()  # accepts it; the loan lands on the next pass
+    await sync.sync_venue_b()
+    got = {x["id"]: x for x in (await client.get("/orders")).json()}[o["id"]]
+    assert (got["status"], got["filledQty"]) == ("EXECUTED", 15_000)
+
+
 # -- lifecycle ------------------------------------------------------------------------------------------
 async def test_return_recall_and_rerate_a_venue_a_loan(client: httpx.AsyncClient,
                                                        post_trade: SimpleNamespace) -> None:
