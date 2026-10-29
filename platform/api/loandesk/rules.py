@@ -55,6 +55,31 @@ def locate_route(inst: Instrument, tier: str, etb: bool, qty: int, available: in
     return "AUTO", ["ETB, under cap, covered by availability"]
 
 
+def fee_band(last_fee_bps: float) -> tuple[float, float]:
+    """The fat-finger band around the last fee, in bps."""
+    band = get_settings().fat_finger_band
+    lo, hi = last_fee_bps * (1 - band), last_fee_bps / (1 - band)
+    return max(lo - 10, 0), hi + 10  # a 10 bp floor so GC names near zero don't trip on noise
+
+
+def locate_decision_checks(*, decision: str, quantity: int, qty_requested: int, available: int,
+                           fee_bps: float | None, last_fee_bps: float | None) -> list[Check]:
+    """Is a proposed locate decision (from the agent, before it reaches the gate) consistent with the book?"""
+    out = [Check("decision", decision in ("APPROVED", "PARTIAL", "REJECTED"), decision)]
+    if decision == "REJECTED":
+        return out
+    shape = quantity == qty_requested if decision == "APPROVED" else 0 < quantity < qty_requested
+    out.append(Check("quantity", shape, f"{quantity:,} {decision.lower()} of {qty_requested:,} requested"))
+    out.append(Check("availability", quantity <= available, f"{quantity:,} vs {available:,} available"))
+    if fee_bps is None or fee_bps < 0:
+        out.append(Check("fee", False, "no indicative fee"))
+    elif last_fee_bps and last_fee_bps > 0:
+        lo, hi = fee_band(last_fee_bps)
+        out.append(Check("fat finger (fee)", lo <= fee_bps <= hi,
+                         f"{fee_bps:g} bps vs last {last_fee_bps:g} (band {lo:.0f}-{hi:.0f})"))
+    return out
+
+
 def pretrade_checks(*, side: str, inst: Instrument, qty: int, fee_bps: float, price: float, last_fee_bps: float | None,
                     cp: Counterparty | None, cp_exposure_usd: float, fx_usd: float) -> list[Check]:
     """Spec module 4 pre-trade checks. Any failing blocking check stops the order before it leaves the desk."""
@@ -72,8 +97,7 @@ def pretrade_checks(*, side: str, inst: Instrument, qty: int, fee_bps: float, pr
     out.append(Check("concentration (ADV)", pct_adv <= cfg.max_pct_adv,
                      f"{pct_adv:.0f}% of 20d ADV (max {cfg.max_pct_adv:.0f}%)", blocking=False))
     if last_fee_bps and last_fee_bps > 0:
-        lo, hi = last_fee_bps * (1 - cfg.fat_finger_band), last_fee_bps / (1 - cfg.fat_finger_band)
-        lo, hi = max(lo - 10, 0), hi + 10  # a 10 bp floor so GC names near zero don't trip on noise
+        lo, hi = fee_band(last_fee_bps)
         out.append(Check("fat finger (fee)", lo <= fee_bps <= hi,
                          f"{fee_bps:g} bps vs last {last_fee_bps:g} (band {lo:.0f}-{hi:.0f})"))
     return out

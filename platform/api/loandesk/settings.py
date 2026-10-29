@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     parser_model: str = "muse-spark-1.3"
     budget_usd: float = 0.50
     cassette_path: Path = Path("cassettes/agent.jsonl")
+    escalate_below: float = 0.7  # Spark confidence under this hands the locate to Wonder
+    # Where agent runs keep their checkpoints: "memory", a sqlite path, or a postgres URL.
+    # Unset: the desk's own Postgres, or a sibling ``*.agent.db`` next to its SQLite file.
+    agent_checkpoint_url: str | None = None
 
 
 @lru_cache

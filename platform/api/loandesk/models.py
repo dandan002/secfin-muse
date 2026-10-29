@@ -202,6 +202,22 @@ class Action(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class AgentRun(Base):
+    """One agent task. Its working state lives in the LangGraph checkpointer under ``id`` (the thread id)."""
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (Index("ix_agent_runs_status", "status"),)
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    task: Mapped[str] = mapped_column(String(32))  # review_locate
+    subject: Mapped[str] = mapped_column(String(64), index=True)  # what it is about, e.g. the locate id
+    status: Mapped[str] = mapped_column(String(12))  # RUNNING | WAITING | DONE | FAILED
+    model: Mapped[str | None] = mapped_column(String(48))  # the model holding the case now
+    action_id: Mapped[str | None] = mapped_column(String(24), index=True)  # the gate action it waits on
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class PasteSession(Base):
     __tablename__ = "paste_sessions"
     id: Mapped[str] = mapped_column(String(24), primary_key=True)

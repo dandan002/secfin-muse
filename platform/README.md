@@ -48,16 +48,31 @@ that needs a venue fails visibly (order `FAILED`, reply `FAILED`) instead of han
 `⌘K` / `ctrl+K` opens the command palette: `locate 500k VOD LN for PB-ALPHA`, `borrow 100k AAPL @ 30 from HARBORAL`,
 `show hot names`, or any name.
 
-## Agent bases (off by default)
+## Agent (off by default)
 
+```
+gather ─► decide ⇄ tools ─► check ─(low confidence / turned Hot / failed checks, once)─► escalate ─► decide
+                              │
+                           propose ─► await_trader (paused until the card is decided) ─► done
+```
+
+* `agent/graph.py`: the agent's tasks as LangGraph graphs. The first is the warm-locate review: Spark 1.3 decides,
+  the rules engine checks the answer (`rules.locate_decision_checks`), and low confidence, a name that turned Hot or
+  a failed check hands the case to Wonder once. Hot names start with Wonder. The model only reads and judges: the
+  graph, not the model, turns a checked answer into a gate action. Counterparty text in any tool result is fenced in
+  `<untrusted>` tags (`fence()`).
+* `agent/runner.py`: runs graphs in the background. Each run is a LangGraph thread with an `agent_runs` row; state is
+  checkpointed after every node (the desk's Postgres, or a sibling `*.agent.db` next to SQLite;
+  `LOANDESK_AGENT_CHECKPOINT_URL` overrides). Approving or rejecting the card resumes the run; on start-up, runs a
+  restart interrupted carry on, including ones whose card was decided while the desk was down.
 * `agent/models.py`: the model gateway. `LOANDESK_AGENT_MODE=off|replay|record|live`, OpenAI SDK against
-  `api.meta.ai/v1` (`uv sync --extra agent`), a cassette for record/replay, per-model spend meter and a hard budget.
-* `agent/tools.py`: the spec's tool list over the same services the screens use. Only `create_action` can lead to
-  a side effect, and only through the gate.
-* `agent/loop.py`: a plain tool-calling loop; counterparty text only ever arrives inside `<untrusted>` tags.
-  `review_locate()` is the first task (`POST /agent/locates/{id}/review`, the "ask agent" button).
+  `api.meta.ai/v1`, a cassette for record/replay (keys ignore timestamps and generated ids), a per-model spend meter
+  and a hard budget.
+* `agent/tools.py`: the spec's tool list over the same services the screens use.
+* `uv sync --extra agent` installs LangGraph and the SDK; without it the desk runs and the agent endpoints say so.
+  API: `POST /agent/locates/{id}/review` (202, runs in the background), `GET /agent/runs`, `GET /agent/runs/{id}`.
 
-Not built yet: chat ingest (parser subagent on Desk Chat), warm-locate escalation to Wonder, RFQ quoting,
+Not built yet: chat ingest (parser subagent on Desk Chat), RFQ quoting,
 plain-language policies, Venue B negotiation, FIX transport, and logins for the desk itself (the `X-Trader`
 header is a placeholder).
 

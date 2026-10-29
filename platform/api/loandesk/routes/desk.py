@@ -4,24 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import clock, events, gate, sync
+from .. import agent, clock, events, gate, sync
 from ..adapters import AdapterError, systems
-from ..agent import loop
 from ..agent.models import gateway
 from ..agent.tools import REGISTRY
 from ..db import get_session
 from ..ingest import paste
-from ..models import Action, Event, PasteSession
+from ..models import Action, AgentRun, Event, PasteSession
 from ..services import locates
 from ..settings import get_settings
 from .deps import trader
+
+if TYPE_CHECKING:
+    from ..agent.runner import Runner
 
 router = APIRouter()
 
@@ -55,6 +57,7 @@ async def approve(action_id: str, body: ApproveIn | None = None, who: str = Depe
     except gate.GateError as e:
         raise HTTPException(409, str(e)) from e
     await s.commit()
+    await _resume_agent(a)
     return gate.action_json(a)
 
 
@@ -67,7 +70,14 @@ async def reject(action_id: str, verdict: Literal["reject", "take-over"], body: 
     except gate.GateError as e:
         raise HTTPException(409, str(e)) from e
     await s.commit()
+    await _resume_agent(a)
     return gate.action_json(a)
+
+
+async def _resume_agent(a: Action) -> None:
+    """A decided card may be what an agent run is waiting on."""
+    if (r := agent.current()) is not None:
+        await r.action_decided(a)
 
 
 class KillIn(BaseModel):
@@ -153,16 +163,47 @@ async def apply_paste(paste_id: str, body: ApplyIn, who: str = Depends(trader),
 @router.get("/agent/status", tags=["agent"])
 async def agent_status() -> dict:
     return {**gateway().status(), "tools": sorted(REGISTRY), "actionKinds": gate.kinds(),
-            "killSwitch": gate.kill_switch()}
+            "killSwitch": gate.kill_switch(), "graphs": agent.missing or "ready"}
 
 
-@router.post("/agent/locates/{loc_id}/review", tags=["agent"])
-async def agent_review(loc_id: str, s: AsyncSession = Depends(get_session)) -> dict:
+def _runner() -> Runner:
+    if (r := agent.current()) is None:
+        raise HTTPException(503, agent.missing or "agent runner not started")
+    return r
+
+
+@router.post("/agent/locates/{loc_id}/review", status_code=202, tags=["agent"])
+async def agent_review(loc_id: str) -> dict:
+    """Start a warm-locate review in the background. Its card reaches the Agent queue when it has one."""
     if gateway().mode == "off":
         raise HTTPException(503, "agent is off: set LOANDESK_AGENT_MODE=replay|record|live")
-    run = await loop.review_locate(s, loc_id)
-    await s.commit()
-    return run.to_json()
+    from ..agent.runner import run_json
+
+    return run_json(await _runner().review_locate(loc_id))
+
+
+@router.get("/agent/runs", tags=["agent"])
+async def agent_runs(status: str | None = None, subject: str | None = None, limit: int = 50,
+                     s: AsyncSession = Depends(get_session)) -> list[dict]:
+    from ..agent.runner import run_json
+
+    q = select(AgentRun).order_by(AgentRun.created_at.desc()).limit(min(limit, 500))
+    if status:
+        q = q.where(AgentRun.status == status.upper())
+    if subject:
+        q = q.where(AgentRun.subject == subject)
+    return [run_json(r) for r in (await s.execute(q)).scalars()]
+
+
+@router.get("/agent/runs/{run_id}", tags=["agent"])
+async def agent_run(run_id: str, s: AsyncSession = Depends(get_session)) -> dict:
+    """One run with its graph state: the decision, the checks, the escalation and the full transcript."""
+    from ..agent.runner import run_json
+
+    r = await s.get(AgentRun, run_id)
+    if r is None:
+        raise HTTPException(404, "no such run")
+    return run_json(r, await _runner().state(run_id))
 
 
 # -- audit and status -------------------------------------------------------------------------------

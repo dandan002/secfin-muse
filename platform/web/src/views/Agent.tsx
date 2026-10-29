@@ -15,13 +15,28 @@ interface AgentStatus {
   tools: string[];
   actionKinds: string[];
   killSwitch: { on: boolean };
+  graphs: string;
 }
+
+interface AgentRun {
+  id: string;
+  task: string;
+  subject: string;
+  status: string;
+  model: string | null;
+  actionId: string | null;
+  error: string | null;
+  updatedAt: string;
+}
+
+const short = (m: string | null) => (m ?? "").replace(/^muse-/, "");
 
 /** The approval queue (spec module 6): every proposed side effect waits here for a human. */
 export function Agent() {
   const [tab, setTab] = useState<"PENDING" | "ALL">("PENDING");
   const { data } = useQuery<Action[]>(`/actions?status=${tab}`, ["action"]);
   const { data: st } = useQuery<AgentStatus>("/agent/status", ["action"]);
+  const { data: runs } = useQuery<AgentRun[]>(st?.mode === "off" ? null : "/agent/runs?limit=12", ["agent_run"]);
   const toast = useDesk((s) => s.toast);
   const cards = data ?? [];
   const [sel, setSel] = useSelection(cards.length);
@@ -122,6 +137,8 @@ export function Agent() {
               <div className="flex justify-between"><span className="text-faint">mode</span>
                 <span className={st.mode === "off" ? "text-dim" : "text-accent"}>{st.mode}</span></div>
               <div className="flex justify-between"><span className="text-faint">model key</span><span>{st.keyConfigured ? "configured" : "none"}</span></div>
+              <div className="flex justify-between"><span className="text-faint">graphs</span>
+                <span className={st.graphs === "ready" ? "text-dim" : "text-warm"} title={st.graphs}>{st.graphs === "ready" ? "ready" : "not installed"}</span></div>
               <div className="flex justify-between"><span className="text-faint">spend</span><span>${st.spentUsd.toFixed(2)} / ${st.budgetUsd.toFixed(2)}</span></div>
               {Object.entries(st.models).map(([k, v]) => (
                 <div key={k} className="flex justify-between"><span className="text-faint">{k}</span><span className="text-dim">{v}</span></div>
@@ -135,6 +152,21 @@ export function Agent() {
             </>
           )}
         </Panel>
+        {!!runs?.length && (
+          <Panel title="runs" bodyClass="p-2 max-h-56 overflow-auto">
+            <ul className="space-y-0.5 text-2xs">
+              {runs.map((r) => (
+                <li key={r.id} title={r.error ?? r.id}
+                  className={`flex items-center gap-2 px-1 py-0.5 rounded ${r.actionId && r.actionId === cur?.id ? "bg-accent/[0.06]" : ""}`}>
+                  <span className="text-dim">{r.task.replace("_", " ")}</span>
+                  <span className="text-faint truncate">{r.subject}</span>
+                  <span className="ml-auto text-faint">{short(r.model)}</span>
+                  <State s={r.status} />
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
         <Panel title="transcript" className="flex-1" bodyClass="overflow-auto p-3">
           {!cur?.transcript.length ? <Empty>Source message, parse, tools called and model output for the selected card.</Empty> : (
             <ol className="space-y-2 text-2xs text-dim">
