@@ -53,7 +53,7 @@ def test_faults_outage_and_clear(mocks):
     mocks.put("control", "/faults/ngt", json={"outage": True}).raise_for_status()
     assert mocks.get("ngt", "/v1/availability?limit=1").status_code == 503
     assert mocks.get("ngt", "/health").status_code == 200  # admin/health stay up
-    mocks.http.delete(mocks.url("control", "/faults")).raise_for_status()
+    mocks.delete("control", "/faults").raise_for_status()
     assert mocks.get("ngt", "/v1/availability?limit=1").status_code == 200
 
 
@@ -119,15 +119,16 @@ def _ngt(mocks):
 def test_ngt_firm_bid_fills_and_ledger(mocks):
     h = _ngt(mocks)
     gc = mocks.get("ngt", "/v1/availability?instrument=@gc:5:US").json()["instruments"][0]
+    qty = min(100000, gc["quantity"] // 2)  # inventory scales with each name's real share count
     r = mocks.post("ngt", "/v1/orders", headers=h, json={"clientOrderId": "FB-1", "type": "FIRM_BID",
-                                                         "instrument": gc["isin"], "quantity": 100000,
+                                                         "instrument": gc["isin"], "quantity": qty,
                                                          "feeBps": gc["bestFeeBps"], **TRADE_TERMS})
     assert r.status_code == 201, r.text
     assert r.json()["status"] == "EXECUTED"
     trades = mocks.get("ngt", "/v1/trades", headers=h).json()
     assert trades[0]["uti"].startswith("MOCK00VENUEANGT") and trades[0]["borrower"]["code"] == OUR_FIRM["ngt_code"]
     after = mocks.get("ngt", f"/v1/availability?instrument={gc['isin']}").json()["instruments"][0]
-    assert after["quantity"] == gc["quantity"] - 100000
+    assert after["quantity"] == gc["quantity"] - qty
     dup = mocks.post("ngt", "/v1/orders", headers=h, json={"clientOrderId": "FB-1", "type": "FIRM_BID",
                                                            "instrument": gc["isin"], "quantity": 1, "feeBps": 1,
                                                            **TRADE_TERMS})

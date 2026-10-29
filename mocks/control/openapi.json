@@ -179,6 +179,116 @@
         "title": "JumpRequest",
         "type": "object"
       },
+      "KeyChange": {
+        "properties": {
+          "plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "title": "KeyChange",
+        "type": "object"
+      },
+      "KeyIn": {
+        "properties": {
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "plan": {
+            "default": "standard",
+            "title": "Plan",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "ttlDays": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttldays"
+          }
+        },
+        "required": [
+          "principal",
+          "scopes"
+        ],
+        "title": "KeyIn",
+        "type": "object"
+      },
+      "PlanIn": {
+        "properties": {
+          "burst": {
+            "minimum": 1.0,
+            "title": "Burst",
+            "type": "number"
+          },
+          "dailyQuota": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dailyquota"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "ratePerSecond": {
+            "exclusiveMinimum": 0.0,
+            "title": "Ratepersecond",
+            "type": "number"
+          }
+        },
+        "required": [
+          "ratePerSecond",
+          "burst"
+        ],
+        "title": "PlanIn",
+        "type": "object"
+      },
       "ResetAll": {
         "properties": {
           "epoch": {
@@ -242,6 +352,17 @@
           }
         },
         "title": "ResetRequest",
+        "type": "object"
+      },
+      "RotateIn": {
+        "properties": {
+          "graceSeconds": {
+            "default": 3600,
+            "title": "Graceseconds",
+            "type": "integer"
+          }
+        },
+        "title": "RotateIn",
         "type": "object"
       },
       "RunRequest": {
@@ -331,7 +452,7 @@
     }
   },
   "info": {
-    "description": "Sim clock, seeded resets, fault toggles and scenario runner for every mock.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
+    "description": "Sim clock, seeded resets, fault toggles and scenario runner for every mock.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. Listed instruments come from public reference data (OpenFIGI, Yahoo Finance); lending data, counterparties and trades are synthetic.**",
     "title": "Simulation Control \u2014 mock-control",
     "version": "0.1.0"
   },
@@ -420,6 +541,29 @@
           }
         },
         "summary": "Put Clock",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/credentials": {
+      "get": {
+        "operationId": "credentials__admin_credentials_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Credentials  Admin Credentials Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Credentials",
         "tags": [
           "admin"
         ]
@@ -569,6 +713,310 @@
           }
         },
         "summary": "Jobs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys": {
+      "get": {
+        "operationId": "list_keys__admin_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Keys  Admin Keys Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Keys",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Issue a random key. The plaintext is in this response only; it is never stored.",
+        "operationId": "issue_key__admin_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Issue Key  Admin Keys Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}": {
+      "patch": {
+        "description": "Change a key's entitlements (scopes) or plan; takes effect on its next call.",
+        "operationId": "change_key__admin_keys__key_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Change Key  Admin Keys  Key Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}/revoke": {
+      "post": {
+        "operationId": "revoke_key__admin_keys__key_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Key  Admin Keys  Key Id  Revoke Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}/rotate": {
+      "post": {
+        "description": "A new key with the same entitlements; the old one expires after ``graceSeconds``.",
+        "operationId": "rotate_key__admin_keys__key_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RotateIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rotate Key  Admin Keys  Key Id  Rotate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/plans": {
+      "delete": {
+        "operationId": "reset_plans__admin_plans_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset Plans  Admin Plans Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reset Plans",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/plans/{name}": {
+      "put": {
+        "description": "Change a plan's limits for every key on it (until restart, or DELETE /_admin/plans).",
+        "operationId": "put_plan__admin_plans__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Plan  Admin Plans  Name  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Plan",
         "tags": [
           "admin"
         ]
@@ -1396,6 +1844,30 @@
         "summary": "Services",
         "tags": [
           "control"
+        ]
+      }
+    },
+    "/whoami": {
+      "get": {
+        "description": "Who this key belongs to, what it's entitled to, and how much of its plan is left.",
+        "operationId": "whoami_whoami_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whoami Whoami Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Whoami",
+        "tags": [
+          "meta"
         ]
       }
     }

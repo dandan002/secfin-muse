@@ -251,7 +251,7 @@ The "smart API" counterparties use to send us locates and orders.
 - Per-name snapshot: short interest (shares, % of shares outstanding and of float, days to cover, 1/7/30-day change), indicative fee, utilization, lendable/on-loan/available supply, a 1–10 cost-to-borrow score, crowding and squeeze-risk scores. Built on the same fee and utilization processes as the venues, so its squeezes are the venues' squeezes.
 - Daily history, a universe screen (crowded shorts, squeeze risk), FINRA-style exchange-reported short interest on the mid-month and month-end cycle with a publication lag.
 - A daily CSV file the platform bulk-loads overnight to fill `instruments.si_pct`, `util_pct`, `tier` and `threshold_flag`; a watchlist with squeeze, fee-spike, utilization and short-interest alerts over REST and WebSocket.
-- An OpenFIGI-shaped `/v1/mapping` for the synthetic identifiers. Chaos flags: a stale feed and a late daily file.
+- An OpenFIGI-shaped `/v1/mapping` that also knows the mocks' fictitious ISINs, CUSIPs and SEDOLs. Chaos flags: a stale feed and a late daily file.
 
 ### Synthetic data
 
@@ -392,7 +392,7 @@ Model everything internally in the FINOS Common Domain Model and use ISO identif
 - **New mock, mock-custodian** (market account): accepts `sese.023`, returns `sese.024`/`sese.025`, and fails a small share of settlements so the agent has fails and recalls to handle.
 - **One trade, many standards:** a trade detail view with tabs for CDM JSON, the FIX message, `sese.023` and `auth.052`, each with a plain-English explainer from the agent. This is the 20-second standards beat in the demo video.
 - **Reference data seeds:** real ISO code lists (MIC, ISO 4217, ISO 3166, CFI) loaded as-is; LEIs for fictional counterparties use a clearly fake prefix so they never collide with GLEIF records.
-- **Open sources first, cached:** keep the security master current from free sources wherever possible: [OpenFIGI](https://www.openfigi.com/api) for identifier mapping (ISIN, CUSIP, SEDOL, ticker + exchange to FIGI), GLEIF for LEIs, FINRA short interest, SEC fails-to-deliver and exchange Reg SHO threshold lists as cross-checks on the data vendor. Call OpenFIGI whenever a new identifier appears and on each refresh, but cache the answers (FIGIs never change: hits for about 30 days, misses for a day), send only uncached look-ups in batches of up to 100 (with a free API key) and honour rate limits. The analytics mock answers the same OpenFIGI request shape for the synthetic identifiers, which the public service will not know.
+- **Open sources first, cached:** keep the security master current from free sources wherever possible: [OpenFIGI](https://www.openfigi.com/api) for identifier mapping (ISIN, CUSIP, SEDOL, ticker + exchange to FIGI), GLEIF for LEIs, FINRA short interest, SEC fails-to-deliver and exchange Reg SHO threshold lists as cross-checks on the data vendor. Call OpenFIGI whenever a new identifier appears and on each refresh, but cache the answers (FIGIs never change: hits for about 30 days, misses for a day), send only uncached look-ups in batches of up to 100 (with a free API key) and honour rate limits. The mock universe already carries real FIGIs fetched this way; its ISINs, CUSIPs and SEDOLs are fictitious, so the analytics mock answers the same OpenFIGI request shape for those.
 
 ## Controls, risk and compliance
 

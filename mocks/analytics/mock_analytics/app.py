@@ -4,7 +4,7 @@ Per-name snapshots (short interest, days to cover, utilization, indicative fee, 
 on-loan supply, cost-to-borrow score, crowding and squeeze risk), daily history, a universe
 screen, FINRA-style exchange-reported short interest on the bi-monthly cycle, a daily CSV file
 for bulk loads, a watchlist with alerts (REST and WebSocket), and an OpenFIGI-shaped mapping
-endpoint for the synthetic identifiers. Reference: ../API.md.
+endpoint for the mocks' fictitious ISINs, CUSIPs and SEDOLs. Reference: ../API.md.
 
 Numbers come from the same deterministic fee, utilization and price processes the venues use
 (``refdata.market``), so the vendor's view agrees with the market's. ``stale_feed`` and
@@ -19,14 +19,14 @@ import io
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
-from fastapi import Depends, Header, HTTPException, Query, WebSocket
+from fastapi import Depends, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 
-from mockcore import clock, rng
+from mockcore import clock
 from mockcore.app import ServiceContext, ServiceSpec, create_app
-from mockcore.auth import derive_secret
+from mockcore.keys import AuthSpec, Grant, KeyRing, Principal
 from refdata import market
 from refdata.counterparties import OUR_FIRM
 from refdata.universe import Instrument, instrument_by_id, resolve, universe
@@ -34,6 +34,12 @@ from refdata.universe import Instrument, instrument_by_id, resolve, universe
 from . import metrics
 from .models import Alert, Base, Watch
 
+SCOPES = {
+    "data:read": "Snapshots, history, screens and exchange-reported short interest",
+    "files:read": "The daily short-interest file",
+    "alerts:read": "Watchlist, alerts, and alerts on the stream",
+    "alerts:manage": "Change the watchlist",
+}
 spec = ServiceSpec(
     name="mock-analytics",
     label="Market Analytics (S3-style)",
@@ -41,6 +47,11 @@ spec = ServiceSpec(
     base=Base,
     description="Simulated short-interest and securities-lending data vendor: snapshots, history, screens, "
                 "exchange-reported short interest, daily file, watchlist alerts, OpenFIGI-shaped mapping.",
+    auth=AuthSpec(SCOPES, lambda: [
+        Grant(OUR_FIRM["code"], tuple(SCOPES), "partner", f"{OUR_FIRM['name']} (subscriber)"),
+        Grant(OUR_FIRM["code"], ("data:read", "files:read", "alerts:read"), "standard", "Research (read-only)",
+              name="research-readonly"),
+    ]),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
@@ -50,14 +61,14 @@ FILE_DELAY = timedelta(hours=1)  # the daily file lands an hour after the data c
 HISTORY_MAX_DAYS = 366
 
 
-def api_key() -> str:
-    return derive_secret(rng.get_seed(), "analytics-api", OUR_FIRM["code"])[:32]
+def client(scope: str):  # noqa: ANN201 - a FastAPI dependency
+    """The subscribing firm (the key's principal), entitled to ``scope`` (see mockcore.keys)."""
+    gate = ctx.require(scope)
 
+    async def dep(p: Principal = Depends(gate)) -> str:
+        return p.principal
 
-async def client(x_api_key: str | None = Header(default=None)) -> str:
-    if x_api_key != api_key():
-        raise HTTPException(401, "missing or bad X-Api-Key")
-    return OUR_FIRM["code"]
+    return dep
 
 
 def as_of() -> datetime:
@@ -91,7 +102,7 @@ def snap(inst: Instrument, ts: datetime) -> dict[str, Any]:
 
 # -- per name -------------------------------------------------------------------------------------
 @app.get("/v1/securities/{ref}", tags=["short interest"])
-async def security(ref: str, who: str = Depends(client)) -> dict:
+async def security(ref: str, who: str = Depends(client("data:read"))) -> dict:
     """Latest analytics for one name; ``ref`` is any identifier (ISIN, SEDOL, CUSIP, FIGI, "TICK US")."""
     inst = _inst(ref)
     return {"identifiers": identifiers(inst), **snap(inst, as_of())}
@@ -99,7 +110,7 @@ async def security(ref: str, who: str = Depends(client)) -> dict:
 
 @app.get("/v1/securities/{ref}/history", tags=["short interest"])
 async def history(ref: str, start: date | None = Query(None, alias="from"), end: date | None = Query(None, alias="to"),
-                  who: str = Depends(client)) -> dict:
+                  who: str = Depends(client("data:read"))) -> dict:
     """Daily closes (21:00 UTC data cut), oldest first. Defaults to the last 30 days; at most 366."""
     inst = _inst(ref)
     last = metrics.data_date(as_of())
@@ -138,7 +149,7 @@ def _sort_value(s: dict[str, Any], key: str) -> float:
 async def screen(country: str | None = None, sector: str | None = None,
                  tier: Literal["GC", "WARM", "HOT"] | None = None, minPctFloat: float = 0, minCrowding: float = 0,
                  sort: SortKey = "crowdingScore", limit: int = Query(100, ge=1, le=2000), offset: int = Query(0, ge=0),
-                 who: str = Depends(client)) -> dict:
+                 who: str = Depends(client("data:read"))) -> dict:
     """Screen the whole universe, highest ``sort`` first (the crowded-shorts list by default)."""
     ts = as_of()
     rows = []
@@ -159,7 +170,7 @@ async def screen(country: str | None = None, sector: str | None = None,
 @app.get("/v1/exchange-short-interest", tags=["exchange-reported"])
 async def exchange_short_interest(settlementDate: date | None = None, instrument: str | None = None,
                                   limit: int = Query(500, ge=1, le=2000), offset: int = Query(0, ge=0),
-                                  who: str = Depends(client)) -> dict:
+                                  who: str = Depends(client("data:read"))) -> dict:
     """US short positions on the mid-month and month-end settlement dates, published 7 business days later."""
     today = metrics.data_date(as_of())
     settle = settlementDate or metrics.latest_published(today)
@@ -195,14 +206,14 @@ def published_dates(now: datetime, n: int = 10) -> list[date]:
 
 
 @app.get("/v1/files", tags=["files"])
-async def files(who: str = Depends(client)) -> list[dict]:
+async def files(who: str = Depends(client("files:read"))) -> list[dict]:
     """The last ten daily files, newest first."""
     return [{"asOf": d.isoformat(), "path": f"/v1/files/{d.isoformat()}/short-interest.csv", "rows": len(universe()),
              "publishedAt": clock.iso(metrics.close_ts(d) + FILE_DELAY)} for d in published_dates(clock.now())]
 
 
 @app.get("/v1/files/{as_of_date}/short-interest.csv", tags=["files"], response_class=PlainTextResponse)
-async def daily_file(as_of_date: date, who: str = Depends(client)) -> str:
+async def daily_file(as_of_date: date, who: str = Depends(client("files:read"))) -> str:
     """One row per instrument at the day's 21:00 UTC data cut: what the platform bulk-loads overnight."""
     if as_of_date > published_dates(clock.now(), 1)[0]:
         raise HTTPException(404, f"file for {as_of_date} not yet published")
@@ -234,13 +245,13 @@ async def _watchlist(s) -> list[dict[str, Any]]:
 
 
 @app.get("/v1/watchlist", tags=["alerts"])
-async def get_watchlist(who: str = Depends(client)) -> list[dict]:
+async def get_watchlist(who: str = Depends(client("alerts:read"))) -> list[dict]:
     async with ctx.session() as s:
         return await _watchlist(s)
 
 
 @app.put("/v1/watchlist", tags=["alerts"])
-async def put_watchlist(body: WatchlistIn, who: str = Depends(client)) -> dict:
+async def put_watchlist(body: WatchlistIn, who: str = Depends(client("alerts:manage"))) -> dict:
     insts, unknown = {}, []
     for ref in body.instruments:
         inst = resolve(ref)
@@ -261,7 +272,7 @@ async def put_watchlist(body: WatchlistIn, who: str = Depends(client)) -> dict:
 
 
 @app.delete("/v1/watchlist/{ref}", tags=["alerts"], status_code=204)
-async def unwatch(ref: str, who: str = Depends(client)) -> None:
+async def unwatch(ref: str, who: str = Depends(client("alerts:manage"))) -> None:
     inst = _inst(ref)
     async with ctx.session() as s:
         await s.execute(delete(Watch).where(Watch.instrument_id == inst.id))
@@ -276,7 +287,7 @@ def _alert_json(a: Alert) -> dict[str, Any]:
 
 @app.get("/v1/alerts", tags=["alerts"])
 async def alerts(since: datetime | None = None, kind: str | None = None, limit: int = Query(500, le=5000),
-                 who: str = Depends(client)) -> list[dict]:
+                 who: str = Depends(client("alerts:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Alert).order_by(Alert.id).limit(limit)
         if since:
@@ -329,10 +340,9 @@ async def scan() -> dict[str, Any]:
 
 
 @app.websocket("/v1/stream")
-async def stream(ws: WebSocket, key: str = Query(""), topics: str = "alerts") -> None:
-    """Live alerts as they are raised."""
-    if key != api_key():
-        await ws.close(code=4401)
+async def stream(ws: WebSocket, topics: str = "alerts") -> None:
+    """Live alerts as they are raised. Pass the key as ``?key=``; needs ``alerts:read``."""
+    if await ctx.gate.websocket(ws, "alerts:read") is None:
         return
     await ctx.ws_stream(ws, [t.strip() for t in topics.split(",") if t.strip()])
 
@@ -367,18 +377,24 @@ def _map_one(job: MappingJob) -> dict[str, Any]:
         return {"warning": "No identifier found."}
     kind = "ETP" if inst.is_etf else "Common Stock"
     return {"data": [{"figi": inst.figi, "name": inst.name.upper(), "ticker": inst.ticker, "exchCode": inst.exch_code,
-                      "compositeFIGI": inst.figi, "securityType": kind, "marketSector": "Equity",
-                      "shareClassFIGI": None, "securityType2": "Mutual Fund" if inst.is_etf else "Common Stock",
+                      "compositeFIGI": inst.composite_figi or inst.figi, "securityType": kind,
+                      "marketSector": "Equity", "shareClassFIGI": inst.share_class_figi,
+                      "securityType2": "Mutual Fund" if inst.is_etf else "Common Stock",
                       "securityDescription": inst.ticker}]}
 
 
 @app.post("/v1/mapping", tags=["reference"])
-async def mapping(jobs: list[MappingJob], x_openfigi_apikey: str | None = Header(default=None),
-                  x_api_key: str | None = Header(default=None)) -> list[dict]:
-    """OpenFIGI v3 ``/mapping`` request and response shapes, answered from the synthetic universe.
+async def mapping(jobs: list[MappingJob], request: Request,
+                  x_openfigi_apikey: str | None = Header(default=None)) -> list[dict]:
+    """OpenFIGI v3 ``/mapping`` request and response shapes, answered from the mock universe.
 
-    Like OpenFIGI: no key allows 10 jobs per request, a key 100. Results line up with the jobs."""
-    keyed = api_key() in (x_openfigi_apikey, x_api_key)
+    Like OpenFIGI: open without a key at 10 jobs per request; any valid key (``X-OPENFIGI-APIKEY``,
+    ``X-Api-Key`` or Bearer) allows 100 and counts against that key's plan. Results line up with the jobs."""
+    key = x_openfigi_apikey or KeyRing.presented(request.headers, request.query_params)
+    keyed = False
+    if key:
+        ctx.gate.check(key)  # 401 for a bad key, 429 over the plan, like any gated route
+        keyed = True
     cap = 100 if keyed else 10
     if len(jobs) > cap:
         raise HTTPException(413, f"at most {cap} jobs per request {'with' if keyed else 'without'} an API key")
@@ -396,7 +412,8 @@ ctx.scheduler.every(900, "alert-scan", scan)
 
 @app.get("/_admin/credentials", tags=["admin"])
 async def credentials() -> dict:
-    return {"header": "X-Api-Key", "apiKey": api_key()}
+    return {"header": "X-Api-Key", "apiKey": ctx.gate.bootstrap_key(OUR_FIRM["code"]),
+            "readOnlyKey": ctx.gate.bootstrap_key("research-readonly")}
 
 
 @app.get("/_admin/flags", tags=["admin"])

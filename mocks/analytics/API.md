@@ -15,7 +15,7 @@ a squeeze this vendor flags is the same squeeze Venue A and Venue B price.
 | | |
 | --- | --- |
 | Base | `https://analytics.<domain>` (local `http://localhost:8070`); OpenAPI at `/docs`, snapshot in [`openapi.json`](openapi.json) |
-| Auth | `X-Api-Key: <key>`; WebSocket `?key=<key>`; `/v1/mapping` works without a key (lower cap) |
+| Auth | `X-Api-Key: <key>` (or `Authorization: Bearer`); WebSocket `?key=<key>`; `/v1/mapping` also works without a key (lower cap). Scopes: `data:read`, `files:read`, `alerts:read`, `alerts:manage`; see [Access](../README.md#access-api-keys-scopes-and-plans) |
 | Connector | [`connector/`](connector): `AnalyticsClient`, plus `FigiResolver` (cached OpenFIGI client) |
 
 ## Connector
@@ -31,7 +31,7 @@ async with AnalyticsClient("https://analytics.mocks.example.com", api_key=key) a
     async for event in data.stream():                  # SQUEEZE / FEE_SPIKE / UTIL_HIGH / SI_JUMP
         ...
 
-# Real identifiers: the public OpenFIGI service. Synthetic ones: the same client against this mock.
+# Real identifiers: the public OpenFIGI service. The mocks' fictitious ISINs/CUSIPs/SEDOLs: this mock.
 async with FigiResolver(api_key=os.environ.get("OPENFIGI_API_KEY")) as figi:
     hits = await figi.map([FigiJob("ID_ISIN", isin) for isin in new_isins])
 ```
@@ -130,7 +130,7 @@ An alert: `alertId` (`AN-A-…`), `kind`, `severity`, `isin`, `composite`, `ts`,
 ## Identifier mapping (OpenFIGI-shaped)
 
 `POST /v1/mapping` takes and returns exactly what [OpenFIGI](https://www.openfigi.com/api) v3's
-`POST /v3/mapping` does, answered from the synthetic universe, so one client works against both:
+`POST /v3/mapping` does, answered from the mock universe, so one client works against both:
 
 ```json
 [{"idType": "ID_ISIN", "idValue": "US9912345678"}, {"idType": "TICKER", "idValue": "QZNT", "exchCode": "US"}]
@@ -160,9 +160,11 @@ than depend on a paid vendor for identifiers:
 * **FINRA** bi-monthly short interest, **SEC** fails-to-deliver files and exchange **Reg SHO
   threshold lists** as free cross-checks on the vendor's numbers.
 
-The mocks' identifiers are synthetic and sit in fictitious ranges (see `../README.md`), so the
-public OpenFIGI will not find them. Point the same resolver at this mock (`<url>/v1`) for
-synthetic names, and at `https://api.openfigi.com/v3` for real ones.
+The mock universe is real listed names with their real FIGIs and tickers (fetched from OpenFIGI
+by `refdata fetch`), but its ISINs, CUSIPs and SEDOLs are fictitious (the real ones are licensed;
+see `../README.md`). So the public OpenFIGI answers FIGI and ticker look-ups for mock names but
+not their ISINs, CUSIPs or SEDOLs. Point the same resolver at this mock (`<url>/v1`) for those; it
+returns the same real FIGIs. Use `https://api.openfigi.com/v3` for everything real.
 
 ## Errors
 
@@ -172,7 +174,7 @@ off-cycle settlement date, non-US exchange look-up, or unknown watchlist names.
 
 ## Simulator controls (`/_admin`, needs `X-Admin-Token`)
 
-`GET /_admin/credentials`; `GET|PUT /_admin/flags`: `stale_feed` (every snapshot and screen is
+`GET /_admin/credentials` (`apiKey`: every scope on the partner plan; `readOnlyKey`: research, no watchlist changes); `GET|PUT /_admin/flags`: `stale_feed` (every snapshot and screen is
 stuck at the previous day's close, so the platform has to notice an old `asOf`), `late_file`
 (the latest daily file misses its slot) and `squeeze_mult` (the SQUEEZE threshold, default 3).
 Scenario verbs: `analytics.flags`, `analytics.scan` (run the alert scan now) and

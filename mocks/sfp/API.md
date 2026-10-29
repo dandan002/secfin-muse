@@ -13,7 +13,7 @@ or settlement date), so reconciliation has real breaks to find.
 | | |
 | --- | --- |
 | Base | `https://sfp.<domain>` (local `http://localhost:8050`); OpenAPI at `/docs`, snapshot in [`openapi.json`](openapi.json) |
-| Auth | `X-Api-Key: <key>`; WebSocket `?key=<key>` |
+| Auth | `X-Api-Key: <key>` (or `Authorization: Bearer`); WebSocket `?key=<key>`. Keys carry scopes and a rate-limit plan: see [Access](../README.md#access-api-keys-scopes-and-plans) |
 | Connector | [`connector/`](connector): `ProcessorClient`, `securities_lending_trade()` CDM builder |
 
 ## Connector

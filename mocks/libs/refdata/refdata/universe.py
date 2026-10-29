@@ -1,11 +1,29 @@
-"""2,000 fictional equities across US/UK/EU/JP with check-digit-correct fictitious identifiers."""
+"""The instrument universe: about 2,000 equities across US/UK/EU/JP.
+
+Two sources, picked with ``MOCK_UNIVERSE``:
+
+* ``public`` (default, when the snapshot is present): real listed names from
+  ``data/public_universe.json.gz`` (built by ``refdata fetch`` from OpenFIGI and Yahoo Finance): name,
+  ticker, exchange, FIGIs, sector, shares outstanding, last close, average volume and realised
+  volatility. Everything about lending is synthetic but calibrated on those facts: within each market,
+  smaller and more volatile names are likelier to rank as specials, and the tier mix stays 70/20/10
+  GC/Warm/Hot so scenarios find what they need. CUSIP/ISIN/SEDOL are licensed, so they stay fictitious.
+* ``synthetic``: 2,000 fictional companies, fully generated from the seed (no snapshot needed).
+
+Either way the result is a pure function of (source, seed), so every service builds the same one.
+"""
 
 from __future__ import annotations
 
+import gzip
+import json
 import math
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
 from mockcore import rng
 
@@ -93,7 +111,7 @@ class Instrument:
     ticker: str
     mic: str
     exch_code: str
-    composite: str  # e.g. "QZNT US"
+    composite: str  # e.g. "AAPL US"
     name: str
     fisn: str
     country: str
@@ -119,6 +137,11 @@ class Instrument:
     next_ex_div: str | None
     restricted: bool = False
     tags: tuple[str, ...] = field(default_factory=tuple)
+    px_vol_daily: float = 0.02  # daily log-price volatility for the price process
+    source: str = "synthetic"  # "public": listing facts from the snapshot; lending data is always synthetic
+    composite_figi: str | None = None
+    share_class_figi: str | None = None
+    mkt_cap: int | None = None  # local currency, from the snapshot
 
     @property
     def days_to_cover(self) -> float:
@@ -152,12 +175,11 @@ def _lognormal(r, median: float, sigma: float) -> float:
     return median * math.exp(r.gauss(0, sigma))
 
 
-def _draw_tier_metrics(r) -> tuple[float, float, float]:
-    """(util %, fee bps, short interest %) with a 70/20/10 GC/Warm/Hot mix."""
-    u = r.random()
-    if u < 0.70:
+def _draw_for_tier(r, tier: str) -> tuple[float, float, float]:
+    """(util %, fee bps, short interest %) inside a tier's bands."""
+    if tier == "GC":
         return r.uniform(2, 28), r.uniform(15, 45), r.uniform(0.5, 4)
-    if u < 0.90:
+    if tier == "WARM":
         util = r.uniform(30, 82)
         fee = min(max(_lognormal(r, 120, 0.5), 50), 290)
         return util, fee, r.uniform(4, 15)
@@ -166,8 +188,138 @@ def _draw_tier_metrics(r) -> tuple[float, float, float]:
     return util, fee, r.uniform(15, 45)
 
 
-@lru_cache(maxsize=4)
-def _build(seed: int) -> tuple[Instrument, ...]:
+def _draw_tier_metrics(r) -> tuple[float, float, float]:
+    """(util %, fee bps, short interest %) with a 70/20/10 GC/Warm/Hot mix."""
+    u = r.random()
+    return _draw_for_tier(r, "GC" if u < 0.70 else "WARM" if u < 0.90 else "HOT")
+
+
+def _fake_ids(r, country: str, n: int, used_isin: set[str]) -> tuple[str, str | None, str]:
+    """(SEDOL, CUSIP, ISIN) in fictitious ranges (see identifiers.py)."""
+    sedol = ids.make_sedol("9" + "".join(r.choice(ids.SEDOL_CHARS) for _ in range(5)))
+    cusip = None
+    if country == "US":
+        cusip = ids.make_cusip(f"99{r.randint(0, 9999):04d}" + f"{r.randint(10, 99)}")
+        isin = ids.make_isin("US", cusip)
+    elif country == "GB":
+        isin = ids.make_isin("GB", "00" + sedol)
+    else:
+        isin = ids.make_isin(country, "9Z" + "".join(r.choice(ids.ALNUM) for _ in range(7)))
+    if isin in used_isin:  # astronomically unlikely, but keep keys unique
+        isin = ids.make_isin(country, "9Y" + f"{n:07d}")
+    used_isin.add(isin)
+    return sedol, cusip, isin
+
+
+# -- public: real listings, synthetic lending ---------------------------------------------------------
+SNAPSHOT = Path(__file__).parent / "data" / "public_universe.json.gz"
+
+
+@lru_cache(maxsize=1)
+def snapshot() -> dict[str, Any] | None:
+    if not SNAPSHOT.exists():
+        return None
+    with gzip.open(SNAPSHOT, "rt") as f:
+        return json.load(f)
+
+
+def _zscores(xs: list[float]) -> list[float]:
+    mean = sum(xs) / len(xs)
+    sd = math.sqrt(sum((x - mean) ** 2 for x in xs) / max(len(xs) - 1, 1)) or 1.0
+    return [(x - mean) / sd for x in xs]
+
+
+def _build_public(seed: int, snap: dict[str, Any]) -> tuple[Instrument, ...]:
+    r = rng.fresh("refdata", "universe-public", seed=seed)
+    out: list[Instrument] = []
+    used_isin: set[str] = set()
+    n = 0
+    for m in MARKETS:
+        tick = 1 if m.ccy == "JPY" else 0.01  # sub-tick quotes (a 0.04p share) can't be priced
+        rows = sorted((x for x in snap["instruments"] if x["exchCode"] == m.exch_code and x["lastPx"] >= tick),
+                      key=lambda x: (-(x["marketCap"] or 0), x["figi"]))
+        if not rows:
+            continue
+        # Specialness: small, volatile names are the ones that get hard to borrow. Rank within the
+        # market, with seeded noise, then cut 70/20/10 so every market has GC, Warm and Hot names.
+        vols = [x["volAnn"] or 0.3 for x in rows]
+        size = _zscores([-math.log(max(x["marketCap"] or x["sharesOut"] * x["lastPx"], 1.0)) for x in rows])
+        vol = _zscores([math.log(max(v, 0.05)) for v in vols])
+        score = [0.55 * a + 0.5 * b + 0.3 * r.gauss(0, 1) - (2.0 if x["isEtf"] else 0.0)
+                 for a, b, x in zip(size, vol, rows, strict=True)]
+        order = sorted(range(len(rows)), key=lambda i: -score[i])
+        tiers = [""] * len(rows)
+        for rank, i in enumerate(order):
+            tiers[i] = "HOT" if rank < 0.10 * len(rows) else "WARM" if rank < 0.30 * len(rows) else "GC"
+        in_index = int(len(rows) * 0.35)  # the largest names make up the market's (mock) index
+        for k, (x, tier, v) in enumerate(zip(rows, tiers, vols, strict=True)):
+            n += 1
+            sedol, cusip, isin = _fake_ids(r, m.country, n, used_isin)
+            util, fee, si = _draw_for_tier(r, tier)
+            px = round(float(x["lastPx"]), 0 if m.ccy == "JPY" else 2)
+            shs_out = max(int(x["sharesOut"]), 1_000_000)
+            adv90 = max(int(x["adv3m"]), 1_000)
+            name = x.get("longName") or x["name"]
+            ex_div = None
+            if not x["isEtf"] and r.random() < 0.15:
+                ex_div = (date(2026, 10, 28) + timedelta(days=r.randint(0, 30))).isoformat()
+            out.append(
+                Instrument(
+                    id=f"I{n:05d}",
+                    ticker=x["ticker"],
+                    mic=x["mic"],
+                    exch_code=m.exch_code,
+                    composite=f"{x['ticker']} {m.exch_code}",
+                    name=name,
+                    fisn=f"{name.split()[0].upper()[:15]}/{'ETF' if x['isEtf'] else 'SH'}",
+                    country=m.country,
+                    ccy=m.ccy,
+                    sector=x["sector"],
+                    cfi="CEOGEU" if x["isEtf"] else "ESVUFR",
+                    is_etf=x["isEtf"],
+                    isin=isin,
+                    sedol=sedol,
+                    cusip=cusip,
+                    figi=x["figi"],
+                    base_px=px,
+                    shs_out=shs_out,
+                    free_float_pct=round(r.uniform(55, 99), 1),
+                    adv_20d=int(adv90 * _lognormal(r, 1.0, 0.15)),
+                    adv_90d=adv90,
+                    si_pct=round(si, 2),
+                    base_util_pct=round(util, 2),
+                    base_fee_bps=round(fee, 1),
+                    tier=classify(fee, util),
+                    threshold_flag=util > 90 and r.random() < 0.35,
+                    index=m.index if k < in_index else None,
+                    next_ex_div=ex_div,
+                    restricted=r.random() < 0.004,
+                    px_vol_daily=round(min(max(v / math.sqrt(252), 0.005), 0.12), 5),
+                    source="public",
+                    composite_figi=x.get("compositeFigi"),
+                    share_class_figi=x.get("shareClassFigi"),
+                    mkt_cap=x["marketCap"] or None,
+                )
+            )
+    return tuple(out)
+
+
+def source() -> str:
+    """``public`` when the snapshot is there and ``MOCK_UNIVERSE`` doesn't say ``synthetic``."""
+    wanted = os.environ.get("MOCK_UNIVERSE", "public").lower()
+    return "public" if wanted == "public" and snapshot() is not None else "synthetic"
+
+
+@lru_cache(maxsize=8)
+def _build(seed: int, src: str = "synthetic") -> tuple[Instrument, ...]:
+    if src == "public":
+        snap = snapshot()
+        assert snap is not None, "no public snapshot: run `refdata fetch` or set MOCK_UNIVERSE=synthetic"
+        return _build_public(seed, snap)
+    return _build_synthetic(seed)
+
+
+def _build_synthetic(seed: int) -> tuple[Instrument, ...]:
     r = rng.fresh("refdata", "universe", seed=seed)
     out: list[Instrument] = []
     used_isin: set[str] = set()
@@ -184,19 +336,7 @@ def _build(seed: int) -> tuple[Instrument, ...]:
                 sector = "Fund"
             else:
                 name = f"{r.choice(_NAME_A)} {r.choice(_NAME_B[sector])} {r.choice(_SUFFIX[m.country])}"
-            # Fictitious identifier ranges (see identifiers.py).
-            sedol = ids.make_sedol("9" + "".join(r.choice(ids.SEDOL_CHARS) for _ in range(5)))
-            cusip = None
-            if m.country == "US":
-                cusip = ids.make_cusip(f"99{r.randint(0, 9999):04d}" + f"{r.randint(10, 99)}")
-                isin = ids.make_isin("US", cusip)
-            elif m.country == "GB":
-                isin = ids.make_isin("GB", "00" + sedol)
-            else:
-                isin = ids.make_isin(m.country, "9Z" + "".join(r.choice(ids.ALNUM) for _ in range(7)))
-            if isin in used_isin:  # astronomically unlikely, but keep keys unique
-                isin = ids.make_isin(m.country, "9Y" + f"{n:07d}")
-            used_isin.add(isin)
+            sedol, cusip, isin = _fake_ids(r, m.country, n, used_isin)
             figi = ids.make_figi("".join(r.choice(ids.FIGI_CHARS) for _ in range(8)))
 
             util, fee, si = _draw_tier_metrics(r)
@@ -246,23 +386,32 @@ def _build(seed: int) -> tuple[Instrument, ...]:
     return tuple(out)
 
 
-def universe(seed: int | None = None) -> tuple[Instrument, ...]:
-    return _build(rng.get_seed() if seed is None else seed)
+def universe(seed: int | None = None, src: str | None = None) -> tuple[Instrument, ...]:
+    return _build(rng.get_seed() if seed is None else seed, src or source())
 
 
-@lru_cache(maxsize=4)
-def _index(seed: int) -> dict[str, Instrument]:
+@lru_cache(maxsize=8)
+def _index(seed: int, src: str) -> dict[str, Instrument]:
     idx: dict[str, Instrument] = {}
-    for i in _build(seed):
+    for i in _build(seed, src):
         idx[i.id] = i
-        for key in (i.isin, i.sedol, i.cusip, i.figi, i.composite, f"{i.ticker}.{i.mic}", f"{i.composite} EQUITY"):
+        # "BRK/B US" (Bloomberg-style) also answers to "BRK.B US" and "BRK-B US"; "BP/ LN" to "BP LN".
+        tickers = {i.ticker, i.ticker.replace("/", "."), i.ticker.replace("/", "-"), i.ticker.rstrip("/")}
+        keys = [i.isin, i.sedol, i.cusip, i.figi, i.composite_figi, i.share_class_figi]
+        for t in tickers:
+            keys += [f"{t} {i.exch_code}", f"{t} {i.exch_code} EQUITY", f"{t}.{i.mic}"]
+        for key in keys:
             if key:
-                idx[key.upper()] = i
+                idx.setdefault(key.upper(), i)
     return idx
 
 
+def _idx(seed: int | None) -> dict[str, Instrument]:
+    return _index(rng.get_seed() if seed is None else seed, source())
+
+
 def instrument_by_id(inst_id: str, seed: int | None = None) -> Instrument | None:
-    return _index(rng.get_seed() if seed is None else seed).get(inst_id)
+    return _idx(seed).get(inst_id)
 
 
 def resolve(query: str, seed: int | None = None) -> Instrument | None:
@@ -274,7 +423,7 @@ def resolve(query: str, seed: int | None = None) -> Instrument | None:
     q = " ".join(query.strip().upper().split())
     if q.startswith("@"):
         return placeholder(q, seed)
-    return _index(rng.get_seed() if seed is None else seed).get(q)
+    return _idx(seed).get(q)
 
 
 def placeholder(spec: str, seed: int | None = None) -> Instrument | None:

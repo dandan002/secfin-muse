@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 
-from fastapi import Depends, Header, HTTPException, Query, Request, WebSocket
+from fastapi import Depends, HTTPException, Query, Request, WebSocket
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import BigInteger, Date, DateTime, Identity, Integer, String, Text, select
@@ -23,8 +23,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from mockcore import clock, rng
 from mockcore.app import ServiceContext, ServiceSpec, create_app
-from mockcore.auth import derive_secret
 from mockcore.db import make_base
+from mockcore.keys import AuthSpec, Grant, Principal
 from refdata import calendar
 from refdata.counterparties import OUR_FIRM
 from refdata.universe import resolve
@@ -72,12 +72,18 @@ class OutMsg(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+SCOPES = {
+    "instructions:write": "Send settlement instructions (sese.023 XML or JSON) and cancel them",
+    "instructions:read": "Instruction status",
+    "outbox:read": "Outbound sese.024/sese.025 messages (REST and stream)",
+}
 spec = ServiceSpec(
     name="mock-custodian",
     label="Custodian",
     schema="custodian",
     base=Base,
     description="Simulated custodian: ISO 20022 sese.023 in; sese.024 status and sese.025 confirmations out.",
+    auth=AuthSpec(SCOPES, lambda: [Grant(OUR_FIRM["bic"], tuple(SCOPES), "partner", f"{OUR_FIRM['name']} (client)")]),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
@@ -85,14 +91,14 @@ _cfg: dict[str, Any] = {"fail_rate": 0.05, "unmatch_rate": 0.02, "max_attempts":
                         "match_latency_s": (2.0, 10.0), "settle_time_local": "10:00"}
 
 
-def api_key() -> str:
-    return derive_secret(rng.get_seed(), "custodian-api", OUR_FIRM["bic"])[:32]
+def client(scope: str):  # noqa: ANN201 - a FastAPI dependency
+    """The calling firm (the key's principal), entitled to ``scope`` (see mockcore.keys)."""
+    gate = ctx.require(scope)
 
+    async def dep(p: Principal = Depends(gate)) -> str:
+        return p.principal
 
-async def client(x_api_key: str | None = Header(default=None)) -> str:
-    if x_api_key != api_key():
-        raise HTTPException(401, "missing or bad X-Api-Key")
-    return OUR_FIRM["bic"]
+    return dep
 
 
 def instr_json(i: Instr) -> dict[str, Any]:
@@ -214,7 +220,7 @@ async def settle_job(instruction_id: str) -> None:
 
 # -- endpoints ------------------------------------------------------------------------------------
 @app.post("/iso/sese.023", tags=["iso20022"], response_class=Response)
-async def receive(request: Request, who: str = Depends(client)) -> Response:
+async def receive(request: Request, who: str = Depends(client("instructions:write"))) -> Response:
     raw = await request.body()
     try:
         ins = iso.parse_sese023(raw)
@@ -251,7 +257,7 @@ class InstructionIn(BaseModel):
 
 
 @app.post("/instructions", tags=["json"], status_code=202)
-async def create_json(body: InstructionIn, who: str = Depends(client)) -> dict:
+async def create_json(body: InstructionIn, who: str = Depends(client("instructions:write"))) -> dict:
     inst = resolve(body.instrument)
     if inst is None:
         raise HTTPException(422, "unknown instrument")
@@ -272,7 +278,7 @@ async def create_json(body: InstructionIn, who: str = Depends(client)) -> dict:
 
 
 @app.get("/instructions", tags=["json"])
-async def list_instr(status: str | None = None, who: str = Depends(client)) -> list[dict]:
+async def list_instr(status: str | None = None, who: str = Depends(client("instructions:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Instr).order_by(Instr.id)
         if status:
@@ -281,7 +287,7 @@ async def list_instr(status: str | None = None, who: str = Depends(client)) -> l
 
 
 @app.get("/instructions/{ref}", tags=["json"])
-async def get_instr(ref: str, who: str = Depends(client)) -> dict:
+async def get_instr(ref: str, who: str = Depends(client("instructions:read"))) -> dict:
     async with ctx.session() as s:
         return instr_json(await _get(s, ref))
 
@@ -305,7 +311,7 @@ async def _cancel(s, i: Instr, request_id: str) -> tuple[bool, dict[str, Any]]:
 
 
 @app.post("/iso/sese.020", tags=["iso20022"], response_class=Response)
-async def receive_cancellation(request: Request, who: str = Depends(client)) -> Response:
+async def receive_cancellation(request: Request, who: str = Depends(client("instructions:write"))) -> Response:
     """ISO 20022 cancellation request; answered with a sese.027 (and a sese.024 CAND when accepted)."""
     raw = await request.body()
     try:
@@ -327,7 +333,7 @@ async def receive_cancellation(request: Request, who: str = Depends(client)) -> 
 
 
 @app.post("/instructions/{ref}/cancel", tags=["json"])
-async def cancel(ref: str, who: str = Depends(client)) -> dict:
+async def cancel(ref: str, who: str = Depends(client("instructions:write"))) -> dict:
     """JSON convenience form of a sese.020: same flow and messages."""
     async with ctx.session() as s:
         i = await _get(s, ref)
@@ -339,7 +345,8 @@ async def cancel(ref: str, who: str = Depends(client)) -> dict:
 
 
 @app.get("/iso/outbox", tags=["iso20022"])
-async def outbox(after: int = 0, limit: int = Query(200, le=5000), who: str = Depends(client)) -> list[dict]:
+async def outbox(after: int = 0, limit: int = Query(200, le=5000),
+                 who: str = Depends(client("outbox:read"))) -> list[dict]:
     async with ctx.session() as s:
         rows = (await s.execute(select(OutMsg).where(OutMsg.id > after).order_by(OutMsg.id).limit(limit))).scalars()
         return [{"outId": m.id, "msgType": m.msg_type, "status": m.status, "instructionId": m.instruction_id,
@@ -347,16 +354,17 @@ async def outbox(after: int = 0, limit: int = Query(200, le=5000), who: str = De
 
 
 @app.websocket("/stream")
-async def stream(ws: WebSocket, key: str = Query("")) -> None:
-    if key != api_key():
-        await ws.close(code=4401)
+async def stream(ws: WebSocket) -> None:
+    """Pass the key as ``?key=``."""
+    if await ctx.gate.websocket(ws, "outbox:read") is None:
         return
     await ctx.ws_stream(ws, ["outbox"])
 
 
 @app.get("/_admin/credentials", tags=["admin"])
 async def credentials() -> dict:
-    return {"header": "X-Api-Key", "apiKey": api_key(), "ourBic": OUR_FIRM["bic"], "custodianBic": iso.CUSTODIAN_BIC}
+    return {"header": "X-Api-Key", "apiKey": ctx.gate.bootstrap_key(OUR_FIRM["bic"]), "ourBic": OUR_FIRM["bic"],
+            "custodianBic": iso.CUSTODIAN_BIC}
 
 
 @app.put("/_admin/config", tags=["admin"])

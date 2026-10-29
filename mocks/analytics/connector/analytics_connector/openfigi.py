@@ -1,7 +1,8 @@
 """A cached OpenFIGI v3 mapping client.
 
 Point it at the public service (``https://api.openfigi.com/v3``) for real identifiers, or at the
-analytics mock (``<url>/v1``), which answers the same request shape from the synthetic universe.
+analytics mock (``<url>/v1``), which answers the same request shape from the mock universe (its FIGIs
+are real; its ISINs, CUSIPs and SEDOLs are fictitious, so only the mock knows those).
 
 Mappings barely change, so look-ups are cached (hits for 30 days, misses for one day by default)
 and only the uncached ones are sent, batched to the service's per-request cap (10 jobs without a

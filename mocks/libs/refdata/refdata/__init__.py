@@ -1,7 +1,7 @@
 """Deterministic synthetic reference data: instruments, counterparties, fee and price processes.
 
 Every service regenerates the same universe from the global seed in-process (it takes well
-under a second), so no service depends on another to know what "QZNT US" is.
+under a second), so no service depends on another to know what "AAPL US" is.
 """
 
 from .counterparties import Counterparty, counterparties, counterparty_by_code

@@ -6,6 +6,7 @@ log, fault injection, and a scheduler that runs on simulated time.
 """
 
 DISCLAIMER = (
-    "Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, "
-    "S3 Partners or Bloomberg; all names are trademarks of their respective owners. All data is synthetic."
+    "Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, "
+    "FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. Listed instruments come from "
+    "public reference data (OpenFIGI, Yahoo Finance); lending data, counterparties and trades are synthetic."
 )

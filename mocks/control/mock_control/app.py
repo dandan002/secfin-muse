@@ -1,5 +1,8 @@
 """mock-control: the simulated clock, resets, fault fan-out and the scenario runner.
 
+Its own API (clock, reset, faults, scenarios) is gated like every mock's business API: an
+operator key (``sim:operate``) changes things, an observer key (``sim:read``) only looks.
+
 It owns the ``control.clock`` row in its own database and pushes the clock to every mock
 (``PUT /_admin/clock``) on each change and on a heartbeat, so the mocks share nothing but
 HTTP. In ``stepped`` mode it advances the clock and tells each service to run its due jobs
@@ -17,7 +20,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
@@ -26,6 +29,7 @@ from mockcore import clock
 from mockcore.app import ServiceContext, ServiceSpec, create_app
 from mockcore.db import make_base
 from mockcore.faults import FaultConfig
+from mockcore.keys import AuthSpec, Grant
 
 from . import scenarios as sc
 
@@ -42,6 +46,10 @@ class ScenarioRun(Base):
     log: Mapped[list[Any]] = mapped_column(default=list)
 
 
+SCOPES = {
+    "sim:read": "Clock, services, faults, scenarios and runs",
+    "sim:operate": "Move the clock, reset every mock, set faults, run and stop scenarios",
+}
 spec = ServiceSpec(
     name="mock-control",
     label="Simulation Control",
@@ -50,9 +58,15 @@ spec = ServiceSpec(
     description="Sim clock, seeded resets, fault toggles and scenario runner for every mock.",
     owns_clock=True,
     on_startup=lambda c: _start_heartbeat(c),
+    auth=AuthSpec(SCOPES, lambda: [
+        Grant("OPERATOR", tuple(SCOPES), "partner", "Simulation operator"),
+        Grant("OBSERVER", ("sim:read",), "standard", "Observer (read-only)"),
+    ]),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
+READ = [Depends(ctx.require("sim:read"))]
+OPERATE = [Depends(ctx.require("sim:operate"))]
 
 SCENARIO_DIR = Path(__file__).resolve().parents[1] / "scenarios"  # mocks/control/scenarios
 # Order matters for stepped ticks and resets; keep it fixed for determinism.
@@ -148,13 +162,13 @@ class AdvanceRequest(BaseModel):
     seconds: float | None = None
 
 
-@app.get("/clock", tags=["clock"])
+@app.get("/clock", tags=["clock"], dependencies=READ)
 async def get_clock() -> dict:
     clock.clock.state = await clock.load_clock(ctx.db.engine)
     return clock.clock.state.to_json()
 
 
-@app.put("/clock", tags=["clock"])
+@app.put("/clock", tags=["clock"], dependencies=OPERATE)
 async def update_clock(req: ClockUpdate) -> dict:
     clock.clock.state = await clock.load_clock(ctx.db.engine)
     changes = {k: v for k, v in req.model_dump().items() if v is not None}
@@ -163,17 +177,17 @@ async def update_clock(req: ClockUpdate) -> dict:
     return state.to_json()
 
 
-@app.post("/clock/start", tags=["clock"])
+@app.post("/clock/start", tags=["clock"], dependencies=OPERATE)
 async def start_clock() -> dict:
     return await update_clock(ClockUpdate(paused=False))
 
 
-@app.post("/clock/pause", tags=["clock"])
+@app.post("/clock/pause", tags=["clock"], dependencies=OPERATE)
 async def pause_clock() -> dict:
     return await update_clock(ClockUpdate(paused=True))
 
 
-@app.post("/clock/jump", tags=["clock"])
+@app.post("/clock/jump", tags=["clock"], dependencies=OPERATE)
 async def jump_clock(req: JumpRequest) -> dict:
     clock.clock.state = await clock.load_clock(ctx.db.engine)
     return (await _save_clock(clock.clock.jump(clock.parse_ts(req.to)))).to_json()
@@ -186,7 +200,7 @@ async def advance_to(target: datetime) -> dict:
     return {"now": clock.iso(target), "ticks": ticks}
 
 
-@app.post("/clock/advance", tags=["clock"])
+@app.post("/clock/advance", tags=["clock"], dependencies=OPERATE)
 async def advance(req: AdvanceRequest) -> dict:
     """Stepped mode: move sim time forward and run every service's due jobs up to it."""
     clock.clock.state = await clock.load_clock(ctx.db.engine)
@@ -210,7 +224,7 @@ class ResetAll(BaseModel):
     paused: bool = True
 
 
-@app.post("/reset", tags=["control"])
+@app.post("/reset", tags=["control"], dependencies=OPERATE)
 async def reset_all(req: ResetAll) -> dict:
     current = await clock.load_clock(ctx.db.engine)
     seed = req.seed if req.seed is not None else current.seed
@@ -224,7 +238,7 @@ async def reset_all(req: ResetAll) -> dict:
     return {"seed": seed, "clock": state.to_json(), "services": results}
 
 
-@app.get("/services", tags=["control"])
+@app.get("/services", tags=["control"], dependencies=READ)
 async def services() -> dict:
     out = {}
     for name, url in service_urls().items():
@@ -236,12 +250,12 @@ async def services() -> dict:
     return out
 
 
-@app.get("/faults", tags=["faults"])
+@app.get("/faults", tags=["faults"], dependencies=READ)
 async def all_faults() -> dict:
     return await _fan_out("GET", "/_admin/faults")
 
 
-@app.put("/faults/{service}", tags=["faults"])
+@app.put("/faults/{service}", tags=["faults"], dependencies=OPERATE)
 async def set_fault(service: str, cfg: FaultConfig) -> dict:
     url = service_urls().get(service)
     if url is None:
@@ -250,7 +264,7 @@ async def set_fault(service: str, cfg: FaultConfig) -> dict:
     return r.json()
 
 
-@app.delete("/faults", tags=["faults"])
+@app.delete("/faults", tags=["faults"], dependencies=OPERATE)
 async def clear_faults() -> dict:
     return await _fan_out("PUT", "/_admin/faults", json=FaultConfig().model_dump())
 
@@ -268,12 +282,12 @@ _run_tasks: dict[str, asyncio.Task] = {}
 _run_ids = itertools.count(1)
 
 
-@app.get("/scenarios", tags=["scenarios"])
+@app.get("/scenarios", tags=["scenarios"], dependencies=READ)
 async def list_scenarios() -> list[dict]:
     return [sc.load(p).summary() for p in sc.discover(SCENARIO_DIR).values()]
 
 
-@app.get("/scenarios/{name}", tags=["scenarios"])
+@app.get("/scenarios/{name}", tags=["scenarios"], dependencies=READ)
 async def get_scenario(name: str) -> dict:
     path = sc.discover(SCENARIO_DIR).get(name)
     if path is None:
@@ -363,7 +377,7 @@ async def _run(run_id: str, scenario: sc.Scenario, req: RunRequest) -> None:
             await s.commit()
 
 
-@app.post("/scenarios/{name}/run", tags=["scenarios"])
+@app.post("/scenarios/{name}/run", tags=["scenarios"], dependencies=OPERATE)
 async def run_scenario(name: str, req: RunRequest | None = None, wait: bool = False) -> dict:
     req = req or RunRequest()
     path = sc.discover(SCENARIO_DIR).get(name)
@@ -383,19 +397,19 @@ async def run_scenario(name: str, req: RunRequest | None = None, wait: bool = Fa
     return _runs[run_id]
 
 
-@app.get("/runs", tags=["scenarios"])
+@app.get("/runs", tags=["scenarios"], dependencies=READ)
 async def list_runs() -> list[dict]:
     return [{k: v for k, v in r.items() if k != "log"} for r in _runs.values()]
 
 
-@app.get("/runs/{run_id}", tags=["scenarios"])
+@app.get("/runs/{run_id}", tags=["scenarios"], dependencies=READ)
 async def get_run(run_id: str) -> dict:
     if run_id not in _runs:
         raise HTTPException(404, "no such run")
     return _runs[run_id]
 
 
-@app.post("/runs/{run_id}/stop", tags=["scenarios"])
+@app.post("/runs/{run_id}/stop", tags=["scenarios"], dependencies=OPERATE)
 async def stop_run(run_id: str) -> dict:
     task = _run_tasks.get(run_id)
     if task is None:
@@ -404,3 +418,9 @@ async def stop_run(run_id: str) -> dict:
     with contextlib.suppress(asyncio.CancelledError):
         await task
     return _runs[run_id]
+
+
+@app.get("/_admin/credentials", tags=["admin"])
+async def credentials() -> dict:
+    return {"header": "Authorization: Bearer", "operatorKey": ctx.gate.bootstrap_key("OPERATOR"),
+            "observerKey": ctx.gate.bootstrap_key("OBSERVER")}

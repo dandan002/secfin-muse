@@ -12,7 +12,7 @@ and **confirmations**, the same message flow a global custodian runs over SWIFTN
 | | |
 | --- | --- |
 | Base | `https://custodian.<domain>` (local `http://localhost:8060`); OpenAPI at `/docs`, snapshot in [`openapi.json`](openapi.json) |
-| Auth | `X-Api-Key: <key>`; WebSocket `?key=<key>` |
+| Auth | `X-Api-Key: <key>` (or `Authorization: Bearer`); WebSocket `?key=<key>`. Keys carry scopes and a rate-limit plan: see [Access](../README.md#access-api-keys-scopes-and-plans) |
 | Connector | [`connector/`](connector): `CustodianClient`, `SettlementInstruction`, ISO builders and parser (standard library only) |
 | Custodian BIC | `MKCUUS33XXX` |
 

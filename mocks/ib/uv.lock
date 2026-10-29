@@ -662,7 +662,12 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "loandesk-mockcore", editable = "../libs/mockcore" }]
+requires-dist = [
+    { name = "httpx", marker = "extra == 'fetch'", specifier = ">=0.27" },
+    { name = "loandesk-mockcore", editable = "../libs/mockcore" },
+    { name = "yfinance", marker = "extra == 'fetch'", specifier = ">=0.2.66" },
+]
+provides-extras = ["fetch"]
 
 [package.metadata.requires-dev]
 dev = [

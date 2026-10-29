@@ -17,15 +17,20 @@ def _ts(v: datetime | str) -> str:
 class SimControl:
     """Clock, seeded resets, fault injection and scenario runs.
 
-    >>> async with SimControl("https://control.mocks.example.com") as sim:
+    >>> async with SimControl("https://control.mocks.example.com", api_key=operator_key) as sim:
     ...     await sim.reset(seed=20261027, mode="stepped")
     ...     run = await sim.run_scenario("demo", mode="stepped", wait=True)
     ...     await sim.set_fault("ngt", outage=True)
     """
 
-    def __init__(self, base_url: str, admin_token: str | None = None, timeout: float = 120.0,
-                 transport: httpx.AsyncBaseTransport | None = None) -> None:
-        self._h = Http(base_url, {"X-Admin-Token": admin_token} if admin_token else {}, timeout, transport)
+    def __init__(self, base_url: str, api_key: str | None = None, admin_token: str | None = None,
+                 timeout: float = 120.0, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        """``api_key``: an operator key (``sim:operate``) or observer key (``sim:read``) from control's
+        ``/_admin/credentials``. ``admin_token`` is only needed for ``credentials()``."""
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        if admin_token:
+            headers["X-Admin-Token"] = admin_token
+        self._h = Http(base_url, headers, timeout, transport)
 
     async def __aenter__(self) -> SimControl:
         return self

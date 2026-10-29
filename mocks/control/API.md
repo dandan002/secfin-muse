@@ -8,7 +8,7 @@ admin token, so the systems stay independent.
 | | |
 | --- | --- |
 | Base | `https://control.<domain>` (local `http://localhost:8000`); OpenAPI at `/docs`, snapshot in [`openapi.json`](openapi.json) |
-| Auth | Operators only (IP allowlist). It calls the systems with `X-Admin-Token` (`MOCK_ADMIN_TOKEN`) |
+| Auth | `Authorization: Bearer <key>`: `operatorKey` (`sim:operate`) or `observerKey` (`sim:read`, read-only) from `GET /_admin/credentials`; operators only (IP allowlist). It calls the systems with `X-Admin-Token` (`MOCK_ADMIN_TOKEN`) |
 | Connector | [`connector/`](connector): `SimControl` |
 
 ## Connector
@@ -16,7 +16,7 @@ admin token, so the systems stay independent.
 ```python
 from control_connector import SimControl
 
-async with SimControl("https://control.mocks.example.com") as sim:
+async with SimControl("https://control.mocks.example.com", api_key=operator_key) as sim:
     await sim.reset(seed=20261027, mode="stepped", epoch="2026-10-27T08:55:00-04:00")
     run = await sim.run_scenario("demo", mode="stepped", wait=True)     # replays event for event
     await sim.set_fault("ngt", outage=True)                             # venue outage drill

@@ -12,7 +12,7 @@ recall).
 | | |
 | --- | --- |
 | Base | `https://wematch.<domain>` (local `http://localhost:8040`); OpenAPI at `/docs`, snapshot in [`openapi.json`](openapi.json) |
-| Auth | `X-Api-Key: <key>`; WebSocket `?key=<key>` |
+| Auth | `X-Api-Key: <key>` (or `Authorization: Bearer`); WebSocket `?key=<key>`. Keys carry scopes and a rate-limit plan: see [Access](../README.md#access-api-keys-scopes-and-plans) |
 | Connector | [`connector/`](connector): `VenueBClient`, `ListLine` |
 | Our entity | `LOANDESK` (see `GET /v1/entities`) |
 

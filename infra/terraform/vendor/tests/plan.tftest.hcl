@@ -9,20 +9,20 @@ mock_provider "aws" {
   mock_data "aws_route53_zone" {
     defaults = { zone_id = "Z123" }
   }
-  mock_data "aws_rds_engine_version" {
-    defaults = { version_actual = "16.9" }
-  }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{}" }
   }
-  mock_data "aws_secretsmanager_secret" {
-    defaults = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:loandesk-demo/admin-token" }
+  mock_data "aws_ssm_parameter" {
+    defaults = { arn = "arn:aws:ssm:us-east-1:111111111111:parameter/loandesk-demo/admin-token" }
   }
-  mock_data "aws_eip" {
-    defaults = { id = "eipalloc-0control", public_ip = "198.51.100.7" }
+  mock_data "aws_eips" {
+    defaults = { allocation_ids = ["eipalloc-0control"], public_ips = ["198.51.100.7"] }
   }
-  mock_resource "aws_secretsmanager_secret" {
-    defaults = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:db-url" }
+  mock_data "aws_caller_identity" {
+    defaults = { account_id = "111111111111" }
+  }
+  mock_data "aws_ecr_repository" {
+    defaults = { repository_url = "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/postgres" }
   }
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::111111111111:role/x" }
@@ -39,6 +39,7 @@ variables {
   hosted_zone_name = "example.com"
   domain_name      = "mocks.example.com"
   allowed_cidrs    = ["203.0.113.0/24"]
+  state_bucket     = "tfstate-example"
   client_cidrs     = ["192.0.2.10/32"]
   image_tag        = "abc123"
 }
@@ -67,6 +68,11 @@ run "control_is_operators_only_and_calls_vendors_publicly" {
   command = plan
   variables {
     stack = "demo-control"
+  }
+
+  assert {
+    condition     = module.system.running && length(module.system.ecr) == 1
+    error_message = "control runs"
   }
 
   assert {
@@ -122,7 +128,7 @@ run "llm_personas_get_the_key" {
     meta_ai_api_key = "sk-test"
   }
   assert {
-    condition     = [for s in local.secrets : s.name] == ["MOCK_ADMIN_TOKEN", "META_AI_API"]
+    condition     = [for s in local.secrets : s.name] == ["MOCK_ADMIN_TOKEN", "MOCK_KEY_SECRET", "META_AI_API"] && startswith(local.secrets[0].valueFrom, "arn:aws:ssm:")
     error_message = "ib gets the LLM key"
   }
 }
@@ -134,4 +140,45 @@ run "live_llm_needs_a_key" {
     llm_mode = "live"
   }
   expect_failures = [var.llm_mode]
+}
+
+run "each_system_resumes_from_its_own_snapshot" {
+  command = plan
+  variables {
+    stack              = "demo-sfp"
+    postgres_image_tag = "pg1"
+  }
+  assert {
+    condition = (local.snapshot == { bucket = "loandesk-demo-snapshots-111111111111", key = "sfp.sql.gz" }
+    && local.postgres_image == "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/postgres:pg1")
+    error_message = "the environment's Postgres image, saving to <system>.sql.gz"
+  }
+}
+
+run "standby_without_an_egress_ip" {
+  command = plan
+  variables {
+    stack   = "demo-ngt"
+    running = false
+  }
+  override_data {
+    target = data.aws_eips.control_egress
+    values = { allocation_ids = [], public_ips = [] }
+  }
+  assert {
+    condition     = local.ingress_cidrs == tolist(["203.0.113.0/24", "192.0.2.10/32"])
+    error_message = "no stale IP while it's released"
+  }
+}
+
+run "control_needs_its_egress_ip_to_run" {
+  command = plan
+  variables {
+    stack = "demo-control"
+  }
+  override_data {
+    target = data.aws_eips.control_egress
+    values = { allocation_ids = [], public_ips = [] }
+  }
+  expect_failures = [terraform_data.egress_ip]
 }

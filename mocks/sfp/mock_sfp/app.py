@@ -17,26 +17,40 @@ import io
 from datetime import date
 from typing import Any, Literal
 
-from fastapi import Depends, Header, HTTPException, Query, WebSocket
+from fastapi import Depends, HTTPException, Query, WebSocket
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from mockcore import clock, rng
 from mockcore.app import ServiceContext, ServiceSpec, create_app
-from mockcore.auth import derive_secret
+from mockcore.keys import AuthSpec, Grant, Principal
 from refdata import calendar, market
 from refdata.counterparties import OUR_FIRM, counterparty_by_code
 from refdata.universe import instrument_by_id, resolve
 
 from .models import Base, Break, Contract, Mark
 
+SCOPES = {
+    "trades:write": "Book trades",
+    "contracts:read": "Contracts, positions and open breaks",
+    "contracts:write": "Amend contracts and run lifecycle events (return, recall, re-rate)",
+    "reconcile": "Compare your view of a contract with the processor's",
+    "marks:read": "Marks and margin calls",
+    "marks:run": "Run the mark on demand",
+    "eod:read": "End-of-day contracts file",
+}
 spec = ServiceSpec(
     name="mock-sfp",
     label="Processor (FIS-style)",
     schema="sfp",
     base=Base,
     description="Simulated securities-finance processor: booking, positions, lifecycle, compare, marks, EOD file.",
+    auth=AuthSpec(SCOPES, lambda: [
+        Grant(OUR_FIRM["code"], tuple(SCOPES), "partner", f"{OUR_FIRM['name']} (client)"),
+        Grant(OUR_FIRM["code"], ("contracts:read", "marks:read", "eod:read"), "standard", "Operations (read-only)",
+              name="ops-readonly"),
+    ]),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
@@ -46,14 +60,14 @@ COMPARE_FIELDS = ("isin", "side", "counterparty", "quantity", "feeBps", "collate
                   "marginPct", "term", "termEndDate", "settlementDate", "legalAgreement", "bookingEntity")
 
 
-def api_key() -> str:
-    return derive_secret(rng.get_seed(), "sfp-api", OUR_FIRM["code"])[:32]
+def client(scope: str):  # noqa: ANN201 - a FastAPI dependency
+    """The calling firm (the key's principal), entitled to ``scope`` (see mockcore.keys)."""
+    gate = ctx.require(scope)
 
+    async def dep(p: Principal = Depends(gate)) -> str:
+        return p.principal
 
-async def client(x_api_key: str | None = Header(default=None)) -> str:
-    if x_api_key != api_key():
-        raise HTTPException(401, "missing or bad X-Api-Key")
-    return OUR_FIRM["code"]
+    return dep
 
 
 # -- input models ------------------------------------------------------------------------------
@@ -159,7 +173,7 @@ async def _contract(s, ref: str, lock: bool = False) -> Contract:
 
 # -- booking -------------------------------------------------------------------------------------
 @app.post("/trades", tags=["booking"], status_code=201)
-async def book(body: dict[str, Any], who: str = Depends(client)) -> dict:
+async def book(body: dict[str, Any], who: str = Depends(client("trades:write"))) -> dict:
     """Book a trade. Accepts the flat ``TradeIn`` form or a CDM-shaped document (has ``economicTerms``)."""
     cdm = body if "economicTerms" in body else None
     t = TradeIn.model_validate(cdm_to_flat(body) if cdm else body)
@@ -221,7 +235,7 @@ def _maybe_break(booked: dict[str, Any], country: str) -> dict[str, Any] | None:
 
 @app.get("/contracts", tags=["booking"])
 async def contracts(status: str | None = None, instrument: str | None = None, limit: int = Query(500, le=10_000),
-                    who: str = Depends(client)) -> list[dict]:
+                    who: str = Depends(client("contracts:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Contract).order_by(Contract.id).limit(limit)
         if status:
@@ -233,13 +247,13 @@ async def contracts(status: str | None = None, instrument: str | None = None, li
 
 
 @app.get("/contracts/{ref}", tags=["booking"])
-async def contract(ref: str, who: str = Depends(client)) -> dict:
+async def contract(ref: str, who: str = Depends(client("contracts:read"))) -> dict:
     async with ctx.session() as s:
         return contract_json(await _contract(s, ref))
 
 
 @app.get("/positions", tags=["positions"])
-async def positions(bookingEntity: str | None = None, who: str = Depends(client)) -> list[dict]:
+async def positions(bookingEntity: str | None = None, who: str = Depends(client("contracts:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Contract).where(Contract.status == "OPEN")
         if bookingEntity:
@@ -282,7 +296,7 @@ def _norm(field: str, v: Any) -> Any:
 
 
 @app.post("/compare", tags=["reconciliation"])
-async def compare(body: CompareIn, who: str = Depends(client)) -> dict:
+async def compare(body: CompareIn, who: str = Depends(client("reconcile"))) -> dict:
     ours = cdm_to_flat(body.trade) if "economicTerms" in body.trade else dict(body.trade)
     inst = resolve(str(ours.get("instrument") or ours.get("isin") or ""))
     if inst:
@@ -323,7 +337,7 @@ def _break_json(b: Break) -> dict[str, Any]:
 
 
 @app.get("/breaks", tags=["reconciliation"])
-async def breaks(status: str | None = None, who: str = Depends(client)) -> list[dict]:
+async def breaks(status: str | None = None, who: str = Depends(client("contracts:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Break).order_by(Break.id)
         if status:
@@ -342,7 +356,7 @@ _AMENDABLE = {"feeBps": "fee_bps", "quantity": "qty", "settlementDate": "settle_
 
 
 @app.post("/contracts/{ref}/amend", tags=["reconciliation"])
-async def amend(ref: str, body: AmendIn, who: str = Depends(client)) -> dict:
+async def amend(ref: str, body: AmendIn, who: str = Depends(client("contracts:write"))) -> dict:
     async with ctx.session() as s:
         c = await _contract(s, ref, lock=True)
         changes = {}
@@ -382,7 +396,7 @@ class LifecycleIn(BaseModel):
 
 
 @app.post("/lifecycle/{ref}", tags=["lifecycle"])
-async def lifecycle(ref: str, body: LifecycleIn, who: str = Depends(client)) -> dict:
+async def lifecycle(ref: str, body: LifecycleIn, who: str = Depends(client("contracts:write"))) -> dict:
     async with ctx.session() as s:
         c = await _contract(s, ref, lock=True)
         if c.status != "OPEN":
@@ -462,12 +476,12 @@ async def run_marks() -> dict[str, Any]:
 
 
 @app.post("/marks/run", tags=["lifecycle"])
-async def marks_run(who: str = Depends(client)) -> dict:
+async def marks_run(who: str = Depends(client("marks:run"))) -> dict:
     return await run_marks()
 
 
 @app.get("/marks", tags=["lifecycle"])
-async def marks(contractId: str | None = None, who: str = Depends(client)) -> list[dict]:
+async def marks(contractId: str | None = None, who: str = Depends(client("marks:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Mark).order_by(Mark.id)
         if contractId:
@@ -504,14 +518,14 @@ async def _calls(s, call_id: str | None = None) -> list[tuple[Mark, Contract]]:
 
 
 @app.get("/margin-calls", tags=["collateral"])
-async def margin_calls(since: date | None = None, who: str = Depends(client)) -> list[dict]:
+async def margin_calls(since: date | None = None, who: str = Depends(client("marks:read"))) -> list[dict]:
     """Every margin call from the marks, newest last."""
     async with ctx.session() as s:
         return [_call_json(m, c) for m, c in await _calls(s) if since is None or m.mark_date >= since]
 
 
 @app.get("/margin-calls/{call_id}/colr.003", tags=["collateral"], response_class=Response)
-async def margin_call_colr003(call_id: str, who: str = Depends(client)) -> Response:
+async def margin_call_colr003(call_id: str, who: str = Depends(client("marks:read"))) -> Response:
     """The margin call as an ISO 20022 colr.003 MarginCallRequest (simplified subset)."""
     from xml.etree import ElementTree as ET
 
@@ -552,12 +566,14 @@ async def margin_call_colr003(call_id: str, who: str = Depends(client)) -> Respo
 
 
 @app.websocket("/stream")
-async def stream(ws: WebSocket, key: str = Query(""), topics: str = "contracts,breaks,marks") -> None:
-    """Live events: contracts (booked, amended, lifecycle), breaks (opened, resolved), marks (margin calls)."""
-    if key != api_key():
-        await ws.close(code=4401)
+async def stream(ws: WebSocket, topics: str = "contracts,breaks,marks") -> None:
+    """Live events: contracts (booked, amended, lifecycle), breaks (opened, resolved), marks (margin calls).
+    Pass the key as ``?key=``; contracts and breaks need ``contracts:read``, marks ``marks:read``."""
+    wanted = [t.strip() for t in topics.split(",") if t.strip()]
+    need = {"contracts": "contracts:read", "breaks": "contracts:read", "marks": "marks:read"}
+    if await ctx.gate.websocket(ws, *{need[t] for t in wanted if t in need}) is None:
         return
-    await ctx.ws_stream(ws, [t.strip() for t in topics.split(",") if t.strip()])
+    await ctx.ws_stream(ws, wanted)
 
 
 # -- end-of-day file -------------------------------------------------------------------------------
@@ -567,7 +583,7 @@ EOD_COLUMNS = ("contract_id", "uti", "venue_ref", "booking_entity", "side", "cou
 
 
 @app.get("/eod/contracts.csv", tags=["eod"], response_class=PlainTextResponse)
-async def eod_file(asOf: str | None = None, who: str = Depends(client)) -> str:
+async def eod_file(asOf: str | None = None, who: str = Depends(client("eod:read"))) -> str:
     as_of = date.fromisoformat(asOf) if asOf else calendar.trade_date(clock.now())
     async with ctx.session() as s:
         rows = (await s.execute(select(Contract).where(Contract.trade_date <= as_of).order_by(Contract.id))).scalars()
@@ -605,7 +621,8 @@ ctx.scheduler.every(86_400, "nightly-marks", _nightly_marks)
 
 @app.get("/_admin/credentials", tags=["admin"])
 async def credentials() -> dict:
-    return {"header": "X-Api-Key", "apiKey": api_key()}
+    return {"header": "X-Api-Key", "apiKey": ctx.gate.bootstrap_key(OUR_FIRM["code"]),
+            "readOnlyKey": ctx.gate.bootstrap_key("ops-readonly")}
 
 
 @app.get("/_admin/flags", tags=["admin"])

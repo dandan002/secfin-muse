@@ -15,13 +15,13 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import MetaData, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -30,6 +30,7 @@ from . import DISCLAIMER, clock, rng
 from .db import Database
 from .events import EventLog, Hub, make_event_table
 from .faults import FaultConfig, Faults
+from .keys import AuthSpec, KeyRing, Plan, Principal, make_key_table
 from .sched import Scheduler
 from .settings import CoreSettings, settings
 
@@ -53,6 +54,8 @@ class ServiceSpec:
     tags: list[dict[str, str]] = field(default_factory=list)
     # Only mock-control owns the clock table; every other mock gets the clock pushed to it.
     owns_clock: bool = False
+    # API keys, scopes and plans for the business API (mockcore.keys); None leaves it open.
+    auth: AuthSpec | None = None
 
 
 class ServiceContext:
@@ -65,6 +68,10 @@ class ServiceContext:
         self.faults = Faults(spec.name)
         self.hub = Hub(self.faults)
         self.events = EventLog(self.event_table, self.hub)
+        self.keys: KeyRing | None = None
+        if spec.auth:
+            self.keys = KeyRing(spec.name, spec.auth, make_key_table(self.metadata), self.cfg.key_secret,
+                                rng.get_seed)
         self.scheduler = Scheduler()
         self.http = httpx.AsyncClient(timeout=10.0)
         self._tasks: list[asyncio.Task] = []
@@ -83,6 +90,17 @@ class ServiceContext:
 
     def session(self) -> AsyncSession:
         return self.db.session()
+
+    @property
+    def gate(self) -> KeyRing:
+        """The service's key ring; only services whose spec declares ``auth`` have one."""
+        if self.keys is None:
+            raise RuntimeError(f"{self.spec.name} declares no auth")
+        return self.keys
+
+    def require(self, *scopes: str) -> Callable[..., Any]:
+        """FastAPI dependency: a valid API key entitled to ``scopes`` (see mockcore.keys)."""
+        return self.gate.require(*scopes)
 
     async def get_session(self) -> AsyncIterator[AsyncSession]:
         async with self.db.session() as s:
@@ -104,6 +122,8 @@ class ServiceContext:
             await self.reset(clock.clock.state.seed)
         else:
             self.scheduler.reset()
+            if self.keys:
+                await self.keys.load(self.db)
         if self.spec.on_startup:
             await self.spec.on_startup(self)
         if background:
@@ -143,6 +163,8 @@ class ServiceContext:
             if not self.spec.owns_clock:  # truncate wiped the stored clock; keep it
                 await s.merge(meta(key="clock", value=self._clock_record()))
             await s.commit()
+        if self.keys:  # a new seed means new seed-derived bootstrap keys (none change with MOCK_KEY_SECRET)
+            await self.keys.load(self.db)
 
     # -- clock ---------------------------------------------------------------------------
     async def refresh_clock(self) -> None:
@@ -292,6 +314,30 @@ class ResetRequest(BaseModel):
     seed: int | None = None
 
 
+class KeyIn(BaseModel):
+    principal: str
+    scopes: list[str]
+    plan: str = "standard"
+    label: str = ""
+    ttlDays: float | None = None
+
+
+class KeyChange(BaseModel):
+    scopes: list[str] | None = None
+    plan: str | None = None
+
+
+class RotateIn(BaseModel):
+    graceSeconds: int = 3600
+
+
+class PlanIn(BaseModel):
+    ratePerSecond: float = Field(gt=0)
+    burst: float = Field(ge=1)
+    dailyQuota: int | None = Field(default=None, ge=1)
+    description: str = ""
+
+
 class ClockPush(BaseModel):
     state: dict[str, Any]
     rev: int
@@ -384,8 +430,60 @@ def create_app(ctx: ServiceContext) -> FastAPI:
             raise HTTPException(404, f"unknown scenario verb {verb!r}; have {sorted(ctx.verbs)}")
         return await fn(args or {})
 
+    if ctx.keys:
+        _key_routes(app, admin, ctx.keys)
     app.include_router(admin)
     return app
+
+
+def _key_routes(app: FastAPI, admin: APIRouter, ring: KeyRing) -> None:
+    """Key management on ``/_admin/keys`` (admin token), and ``GET /whoami`` for any valid key."""
+
+    @admin.get("/keys")
+    async def list_keys() -> dict[str, Any]:
+        return {**ring.catalog(), "keys": ring.list()}
+
+    @admin.post("/keys", status_code=201)
+    async def issue_key(body: KeyIn) -> dict[str, Any]:
+        """Issue a random key. The plaintext is in this response only; it is never stored."""
+        ttl = timedelta(days=body.ttlDays) if body.ttlDays else None
+        key, row = await ring.issue(body.principal, body.scopes, body.plan, body.label, ttl)
+        return {"apiKey": key, **ring.describe(row)}
+
+    @admin.patch("/keys/{key_id}")
+    async def change_key(key_id: str, body: KeyChange) -> dict[str, Any]:
+        """Change a key's entitlements (scopes) or plan; takes effect on its next call."""
+        return ring.describe(await ring.change(key_id, body.scopes, body.plan))
+
+    @admin.post("/keys/{key_id}/revoke")
+    async def revoke_key(key_id: str) -> dict[str, Any]:
+        return ring.describe(await ring.revoke(key_id))
+
+    @admin.post("/keys/{key_id}/rotate", status_code=201)
+    async def rotate_key(key_id: str, body: RotateIn | None = None) -> dict[str, Any]:
+        """A new key with the same entitlements; the old one expires after ``graceSeconds``."""
+        grace = timedelta(seconds=(body or RotateIn()).graceSeconds)
+        key, new, old = await ring.rotate(key_id, grace)
+        return {"apiKey": key, **ring.describe(new), "previous": ring.describe(old)}
+
+    @admin.put("/plans/{name}")
+    async def put_plan(name: str, plan: PlanIn) -> dict[str, Any]:
+        """Change a plan's limits for every key on it (until restart, or DELETE /_admin/plans)."""
+        ring.set_plan(Plan(name, plan.ratePerSecond, plan.burst, plan.dailyQuota, plan.description))
+        return ring.catalog()
+
+    @admin.delete("/plans")
+    async def reset_plans() -> dict[str, Any]:
+        ring.reset_plans()
+        return ring.catalog()
+
+    @app.get("/whoami", tags=["meta"])
+    async def whoami(principal: Principal = Depends(ring.require())) -> dict[str, Any]:
+        """Who this key belongs to, what it's entitled to, and how much of its plan is left."""
+        row = next(k for k in ring.list() if k["keyId"] == principal.key_id)
+        return {**principal.to_json(), "plan": ring.plans[principal.plan].to_json(), "usage": row["usage"],
+                "expiresAt": row["expiresAt"]}
+
 
 
 async def count(session: AsyncSession, stmt: Any) -> int:

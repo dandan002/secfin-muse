@@ -311,7 +311,7 @@ def test_desk_chat_bot_history_send_and_subscribe(mocks):
 # -- Simulation control -----------------------------------------------------------------------------------
 def test_sim_control(mocks):
     async def go():
-        async with SimControl(mocks.urls["control"]) as sim:
+        async with SimControl(mocks.urls["control"], api_key=mocks.creds("control")["operatorKey"]) as sim:
             before = await sim.clock()
             after = await sim.advance(seconds=90)
             assert before["mode"] == "stepped" and after["now"] > before["now"]
@@ -338,14 +338,15 @@ def test_analytics_feed_alerts_and_mapping(mocks):
             assert len(await data.history(hot)) == 31
 
             top = await data.screen(country="US", sort="squeezeRisk", limit=10)
-            assert top.total == 900 and len(top.items) == 10
+            assert top.total > 500 and len(top.items) == 10
             assert top.items[0].squeezeRisk >= top.items[-1].squeezeRisk
 
             reported = await data.exchange_short_interest(instrument=hot)
             assert reported[0].settlementDate.isoformat() == "2026-10-15"
 
             rows = await data.daily_file()
-            assert len(rows) == 2000 and {"si_pct_float", "days_to_cover", "indicative_fee_bps"} <= set(rows[0])
+            assert len(rows) == (await data.files())[0]["rows"] > 1000
+            assert {"si_pct_float", "days_to_cover", "indicative_fee_bps"} <= set(rows[0])
             mocks.verb("analytics", "flags", late_file=True)
             with pytest.raises(AnalyticsError) as late:
                 await data.daily_file(date.fromisoformat(rows[0]["as_of"]))
