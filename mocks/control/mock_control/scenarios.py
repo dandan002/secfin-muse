@@ -7,7 +7,7 @@ speed: 10                            # live-mode default
 steps:
   - at: "09:00:00"                   # local (America/New_York) time on the start date ...
     do: ib.persona                   # <service>.<verb> -> POST {service}/_admin/scenario/<verb>
-    args: {persona: pb-alpha, action: locate_blast, lines: 40}
+    args: {persona: kestrel-hf, action: rfq, qty: 500000}
   - at: "+00:30"                     # ... or an offset (mm:ss / hh:mm:ss) from the previous step
     do: gateway.burst
     args: {counterparty: KESTRELHF, lines: 25}

@@ -20,15 +20,20 @@ from mockcore import rng
 
 from . import personas as P
 
-MIX = (  # persona, action, weight
-    ("pb-alpha", "locate_blast", 30),
-    ("pb-bravo", "locate_blast", 15),
-    ("harbor-lending", "ioi", 15),
+MIX = (  # persona, action, weight: chat is for borrows and loans; a stray locate now and then
+    ("pb-alpha", "any_of_these", 22),
+    ("harbor-lending", "offer", 14),
+    ("pb-alpha", "rfq", 8),
+    ("pb-bravo", "borrow_list", 12),
+    ("harbor-lending", "ioi", 8),
+    ("harbor-lending", "recall", 8),
+    ("pb-alpha", "return", 6),
     ("kestrel-hf", "rfq", 15),
     ("delta-one", "internal_borrow", 10),
     ("juniper-hf", "rfq", 7),
     ("juniper-hf", "injection", 3),
     ("pb-alpha", "chatter", 5),
+    ("pb-alpha", "locate_blast", 4),
 )
 
 
@@ -43,11 +48,49 @@ def conversation(r, i: int, at: datetime) -> dict[str, Any]:
         else:
             msgs.append({"from": sender, "text": d.text, "chips": d.chips, "label": d.label})
 
-    if action == "locate_blast":
-        for d in P.locate_blast(r, p, r.choice((1, 2, 3, 5, 8)), per_message=r.choice((None, 1, 3))):
+    def ours(text: str, intent: str, lines: list[dict[str, Any]]) -> None:
+        """Our trader's side of the conversation, labelled like theirs (side US)."""
+        msgs.append({"from": "srivera", "text": text, "label": {"intent": intent, "counterparty": p.cp_code,
+                                                                 "persona": "us", "side": "US", "lines": lines}})
+
+    if action == "any_of_these":
+        d, hidden = P.any_of_these(r, p, at=at)
+        add(p.handle, d)
+        # We quote some of the list ("Maybe these"), as % a year, near the client's limit either side.
+        shown = [ln for ln in hidden["lines"] if r.random() < 0.7] or hidden["lines"][:1]
+        fees = {ln["instrumentId"]: max(round(ln["maxFeeBps"] * r.uniform(0.7, 1.2) / 5) * 5, 5) for ln in shown}
+        rows = [f"{ln['identifier']} {fees[ln['instrumentId']] / 100:g}%" for ln in shown]
+        intro = r.choice(("Maybe these", "can do these", "These ok:", "few of them"))
+        ours(intro + "\n" + "\n".join(rows), "QUOTE",
+             [{"instrumentId": ln["instrumentId"], "identifier": ln["identifier"], "idType": ln["idType"],
+               "quantity": ln["qty"], "feeBps": fees[ln["instrumentId"]]} for ln in shown])
+        out = P.answer_quote(r, p, msgs[-1]["text"], hidden)
+        if out:
+            add(p.handle, out[0])
+    elif action == "offer":
+        d = P.offer(r, p, at=at)
+        add(p.handle, d)
+        ln = d.label["lines"][0]
+        take = r.choice(("all", "part", "pass"))
+        if take == "pass":
+            ours(r.choice(("pass thx", "not for us today", "we're good thanks")), "DECLINE", [])
+        else:
+            q = ln["quantity"] if take == "all" else max(P.round_qty(ln["quantity"] * r.uniform(0.2, 0.7)), 100)
+            text = (r.choice(("Sure, send it", "yes pls, all of it", "send")) if take == "all"
+                    else r.choice((f"Sure, send {P.fmt_qty(r, q)}", f"send {P.fmt_qty(r, q)} pls",
+                                   f"we'll take {P.fmt_qty(r, q)}")))
+            ours(text, "ACCEPT", [{**ln, "quantity": q}])
+    elif action == "locate_blast":
+        for d in P.locate_blast(r, p, r.choice((1, 2, 3)), per_message=r.choice((None, 1))):
             add(p.handle, d)
     elif action == "ioi":
         add(p.handle, P.ioi(r, p, r.choice((2, 3, 4, 6)), at=at))
+    elif action == "borrow_list":
+        add(p.handle, P.borrow_list(r, p, r.choice((2, 3, 5))))
+    elif action == "recall":
+        add(p.handle, P.recall(r, p))
+    elif action == "return":
+        add(p.handle, P.return_shares(r, p))
     elif action == "internal_borrow":
         add(p.handle, P._locate_message(r, p, P.pick_instruments(r, 1)))
     elif action == "injection":
@@ -60,7 +103,7 @@ def conversation(r, i: int, at: datetime) -> dict[str, Any]:
         fee = round(hidden["maxFeeBps"] * r.uniform(0.85, 1.25))
         quote = r.choice((f"can show {fee}bps", f"{fee} open", f"we can do {fee}bp, {P.fmt_qty(r, hidden['qty'])}",
                           f"indic {fee / 100:.2f}%"))
-        add("loandesk-agent", quote)
+        ours(quote, "QUOTE", [{**{k: v for k, v in d.label["lines"][0].items()}, "feeBps": fee}])
         out = P.react(r, p, quote, hidden)
         if out:
             add(p.handle, out[1])

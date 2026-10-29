@@ -461,15 +461,24 @@ def _in_burst(ts: datetime) -> bool:
     return a <= local < b
 
 
-def _gen_lines(r, n: int) -> list[dict[str, Any]]:
+_FX = {"USD": 1.0, "GBP": 1.27, "EUR": 1.08, "JPY": 0.0067}  # rough USD rates, as the desk uses
+
+
+def _gen_lines(r, n: int, tier_counts: dict[str, int] | None = None) -> list[dict[str, Any]]:
+    """``n`` lines drawn by the load's tier mix, or exactly ``tier_counts`` per tier (shuffled)."""
     mix = _load["tier_mix"]
     pools: dict[str, list] = {}
     for i in universe():
-        if not i.restricted:
+        # Exact counts are a scripted "34 ETB names": no threshold-list names, and no penny stocks a desk's
+        # under-$1 filter would decline.
+        scripted_out = tier_counts and (i.tier == "GC" and i.threshold_flag or i.base_px * _FX.get(i.ccy, 1.0) < 1)
+        if not i.restricted and not scripted_out:
             pools.setdefault(i.tier, []).append(i)
+    tiers = [t for t, k in (tier_counts or {}).items() for _ in range(k)]
+    r.shuffle(tiers)
     out = []
-    for _ in range(n):
-        tier = r.choices(list(mix), list(mix.values()))[0]
+    for k in range(len(tiers) or n):
+        tier = tiers[k] if tiers else r.choices(list(mix), list(mix.values()))[0]
         inst = r.choice(pools[tier])
         style = r.choice(("isin", "isin", "sedol", "cusip", "ticker"))
         ident = {"isin": inst.isin, "sedol": inst.sedol, "cusip": inst.cusip or inst.isin,
@@ -529,14 +538,14 @@ async def verb_loadgen(args: dict[str, Any]) -> dict:
 
 @ctx.verb("burst")
 async def verb_burst(args: dict[str, Any]) -> dict:
-    """One API batch from a counterparty right now: {counterparty, lines, tierMix?}"""
+    """One API batch from a counterparty right now: {counterparty, lines, tierMix?, tierCounts?}"""
     cp = counterparty_by_code(args.get("counterparty", "KESTRELHF"))
     if cp is None:
         raise HTTPException(404, "unknown counterparty")
     if args.get("tierMix"):
         _load["tier_mix"] = args["tierMix"]
     r = rng.stream("gateway", "burst")
-    lines = _gen_lines(r, int(args.get("lines", 25)))
+    lines = _gen_lines(r, int(args.get("lines", 25)), args.get("tierCounts"))
     _, body = await create_locate(cp, "FLAT", args.get("requestId") or f"{cp.code}-BATCH-{clock.now():%H%M%S}",
                                   None, None, lines, None, hashlib.sha256(json.dumps(lines).encode()).hexdigest())
     return body
