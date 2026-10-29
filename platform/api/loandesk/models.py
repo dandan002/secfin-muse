@@ -1,0 +1,234 @@
+"""The desk's system of record (spec: *Data model and API contracts*).
+
+Records keep CDM-shaped JSON where a standard shape exists, plus indexed columns for the grids.
+``events`` is append-only: every state change lands there, so a day can be audited and replayed.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any
+
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .db import Base
+
+
+class Instrument(Base):
+    """Static reference data, loaded from the security-master feed. Live fields are computed on read."""
+
+    __tablename__ = "instruments"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    mic: Mapped[str] = mapped_column(String(4))
+    composite: Mapped[str] = mapped_column(String(24), index=True)  # "AAPL US"
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    country: Mapped[str] = mapped_column(String(2))
+    ccy: Mapped[str] = mapped_column(String(3))
+    sector: Mapped[str] = mapped_column(String(48))
+    cfi: Mapped[str] = mapped_column(String(6))
+    isin: Mapped[str] = mapped_column(String(12), unique=True)
+    sedol: Mapped[str] = mapped_column(String(7), index=True)
+    cusip: Mapped[str | None] = mapped_column(String(9), index=True)
+    figi: Mapped[str] = mapped_column(String(12), index=True)
+    shs_out: Mapped[int] = mapped_column(BigInteger)
+    free_float_pct: Mapped[float] = mapped_column(Float)
+    adv_20d: Mapped[int] = mapped_column(BigInteger)
+    adv_90d: Mapped[int] = mapped_column(BigInteger)
+    si_pct: Mapped[float] = mapped_column(Float)
+    index_name: Mapped[str | None] = mapped_column(String(32))
+    threshold_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    restricted: Mapped[bool] = mapped_column(Boolean, default=False)
+    next_ex_div: Mapped[str | None] = mapped_column(String(10))
+
+
+class Counterparty(Base):
+    __tablename__ = "counterparties"
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))
+    region: Mapped[str] = mapped_column(String(4))
+    ngt_code: Mapped[str] = mapped_column(String(8), index=True)
+    wematch_entity: Mapped[str] = mapped_column(String(32))
+    lei: Mapped[str] = mapped_column(String(20), unique=True)
+    bic: Mapped[str] = mapped_column(String(11))
+    credit_limit_usd: Mapped[int] = mapped_column(BigInteger)
+    agreement: Mapped[str] = mapped_column(String(16))
+    collateral_schedule: Mapped[str] = mapped_column(String(128))
+    persona: Mapped[str | None] = mapped_column(String(32))
+
+
+class Availability(Base):
+    """Supply by source: INTERNAL inventory, VENUE_A and VENUE_B feeds."""
+
+    __tablename__ = "availability"
+    __table_args__ = (UniqueConstraint("instrument_id", "source"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instrument_id: Mapped[str] = mapped_column(String(16), index=True)
+    source: Mapped[str] = mapped_column(String(12))
+    qty: Mapped[int] = mapped_column(BigInteger)
+    indicative_fee_bps: Mapped[float | None] = mapped_column(Float)
+    lenders: Mapped[int] = mapped_column(Integer, default=0)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Print(Base):
+    """Last traded fees seen on a venue (for last-fee, trend and fat-finger checks)."""
+
+    __tablename__ = "prints"
+    __table_args__ = (Index("ix_prints_inst_ts", "instrument_id", "ts"), UniqueConstraint("venue", "venue_ref"))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    venue: Mapped[str] = mapped_column(String(12))
+    venue_ref: Mapped[str] = mapped_column(String(64))
+    instrument_id: Mapped[str] = mapped_column(String(16))
+    qty: Mapped[int] = mapped_column(BigInteger)
+    fee_bps: Mapped[float] = mapped_column(Float)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Locate(Base):
+    """One locate line. ``request_ref`` groups lines that arrived together (a gateway request, a chat message)."""
+
+    __tablename__ = "locates"
+    __table_args__ = (Index("ix_locates_status", "status"),
+                      UniqueConstraint("source_channel", "request_ref", "line_no"))
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    request_ref: Mapped[str] = mapped_column(String(64))
+    line_no: Mapped[int] = mapped_column(Integer)
+    requester_cp: Mapped[str] = mapped_column(String(16), index=True)
+    identifier: Mapped[str] = mapped_column(String(64))
+    instrument_id: Mapped[str | None] = mapped_column(String(16), index=True)
+    qty_req: Mapped[int] = mapped_column(BigInteger)
+    qty_approved: Mapped[int] = mapped_column(BigInteger, default=0)
+    qty_used: Mapped[int] = mapped_column(BigInteger, default=0)
+    # RECEIVED | APPROVED | PARTIAL | REJECTED | EXPIRED | USED | RELEASED | INVALID
+    status: Mapped[str] = mapped_column(String(12))
+    route: Mapped[str] = mapped_column(String(8))  # AUTO | REVIEW | HOLD: who the rules engine says decides
+    route_reasons: Mapped[list[Any]] = mapped_column(default=list)
+    tier_at_decision: Mapped[str | None] = mapped_column(String(8))
+    fee_ind_bps: Mapped[float | None] = mapped_column(Float)
+    decided_by: Mapped[str | None] = mapped_column(String(48))  # policy:<name> | agent:<model> | trader:<user>
+    rationale: Mapped[str | None] = mapped_column(Text)
+    source_channel: Mapped[str] = mapped_column(String(8))  # API | CHAT | PASTE | FILE | MANUAL | INTERNAL
+    source_ref: Mapped[str | None] = mapped_column(String(128))
+    reg_sho_basis: Mapped[str | None] = mapped_column(String(256))
+    reply_status: Mapped[str | None] = mapped_column(String(12))  # PENDING | SENT | FAILED | N/A
+    error: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Order(Base):
+    __tablename__ = "orders"
+    __table_args__ = (Index("ix_orders_status", "status"),)
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    side: Mapped[str] = mapped_column(String(8))  # BORROW | LEND
+    type: Mapped[str] = mapped_column(String(12))  # BID | OFFER | FIRM_BID | INTEREST_LIST
+    instrument_id: Mapped[str] = mapped_column(String(16), index=True)
+    qty: Mapped[int] = mapped_column(BigInteger)
+    fee_bps: Mapped[float] = mapped_column(Float)
+    cp_code: Mapped[str | None] = mapped_column(String(16))
+    venue: Mapped[str] = mapped_column(String(12))  # VENUE_A | VENUE_B
+    venue_order_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    route_reason: Mapped[str] = mapped_column(Text)
+    collateral_type: Mapped[str] = mapped_column(String(8))
+    collateral_ccy: Mapped[str] = mapped_column(String(3))
+    margin_pct: Mapped[float] = mapped_column(Float)
+    term: Mapped[str] = mapped_column(String(8))
+    term_end: Mapped[date | None] = mapped_column(Date)
+    settle_date: Mapped[date] = mapped_column(Date)
+    legal_agreement: Mapped[str] = mapped_column(String(16))
+    booking_entity: Mapped[str] = mapped_column(String(64))
+    # NEW | SENT | PENDING | COUNTERED | EXECUTED | CANCELLED | EXPIRED | REJECTED | FAILED
+    status: Mapped[str] = mapped_column(String(12))
+    filled_qty: Mapped[int] = mapped_column(BigInteger, default=0)
+    counter_fee_bps: Mapped[float | None] = mapped_column(Float)
+    counter_qty: Mapped[int | None] = mapped_column(BigInteger)
+    reject_reason: Mapped[str | None] = mapped_column(Text)
+    checks: Mapped[list[Any]] = mapped_column(default=list)
+    created_by: Mapped[str] = mapped_column(String(48))
+    action_id: Mapped[str | None] = mapped_column(String(24))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Trade(Base):
+    __tablename__ = "trades"
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    order_id: Mapped[str | None] = mapped_column(String(24), index=True)
+    venue: Mapped[str] = mapped_column(String(12))
+    venue_trade_id: Mapped[str] = mapped_column(String(64), unique=True)
+    uti: Mapped[str | None] = mapped_column(String(52))
+    side: Mapped[str] = mapped_column(String(8))
+    instrument_id: Mapped[str] = mapped_column(String(16))
+    cp_code: Mapped[str] = mapped_column(String(16))
+    qty: Mapped[int] = mapped_column(BigInteger)
+    fee_bps: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    ccy: Mapped[str] = mapped_column(String(3))
+    settle_date: Mapped[date] = mapped_column(Date)
+    venue_json: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    cdm_json: Mapped[dict[str, Any] | None] = mapped_column()
+    sfp_contract_id: Mapped[str | None] = mapped_column(String(32))
+    # UNBOOKED | BOOKED | MATCHED | UNMATCHED | AMENDED | FAILED
+    compare_status: Mapped[str] = mapped_column(String(12), default="UNBOOKED")
+    compare_diffs: Mapped[list[Any]] = mapped_column(default=list)
+    break_id: Mapped[str | None] = mapped_column(String(32))
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Action(Base):
+    """A proposed external side effect, waiting at the approval gate."""
+
+    __tablename__ = "actions"
+    __table_args__ = (Index("ix_actions_status", "status"),)
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # locate_decision | chat_send | order | booking | recall | amend
+    title: Mapped[str] = mapped_column(String(256))
+    payload: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    original: Mapped[dict[str, Any] | None] = mapped_column()  # the request it answers, for the diff
+    proposed_by: Mapped[str] = mapped_column(String(48))
+    rationale: Mapped[str | None] = mapped_column(Text)
+    risk_flags: Mapped[list[Any]] = mapped_column(default=list)
+    status: Mapped[str] = mapped_column(String(12))  # PENDING | APPROVED | REJECTED | EXECUTED | FAILED | TAKEN_OVER
+    approver: Mapped[str | None] = mapped_column(String(48))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result: Mapped[dict[str, Any] | None] = mapped_column()
+    transcript: Mapped[list[Any]] = mapped_column(default=list)  # source, parse, tools called, model output
+    source_ref: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PasteSession(Base):
+    __tablename__ = "paste_sessions"
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # TABLE | BLOOMBERG | CHAT | EMPTY
+    raw: Mapped[str] = mapped_column(Text)
+    rows: Mapped[list[Any]] = mapped_column(default=list)
+    columns: Mapped[list[Any]] = mapped_column(default=list)
+    applied_as: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Event(Base):
+    __tablename__ = "events"
+    __table_args__ = (Index("ix_events_entity", "entity", "entity_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    entity: Mapped[str] = mapped_column(String(16))
+    entity_id: Mapped[str] = mapped_column(String(64))
+    type: Mapped[str] = mapped_column(String(32))
+    before: Mapped[dict[str, Any] | None] = mapped_column()
+    after: Mapped[dict[str, Any] | None] = mapped_column()
+    actor: Mapped[str] = mapped_column(String(48))
+
+
+class SyncCursor(Base):
+    """Where each poller left off (gateway inbox seq, venue trade time...)."""
+
+    __tablename__ = "sync_cursors"
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    value: Mapped[str] = mapped_column(String(64))

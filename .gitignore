@@ -11,3 +11,6 @@ mocks/ib/cassettes/*.local.jsonl
 mocks/out/
 mocks/harness/out/
 infra/out/
+platform/api/*.db
+platform/api/cassettes/
+.playwright-mcp/

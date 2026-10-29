@@ -1,0 +1,52 @@
+[project]
+name = "loandesk-platform"
+version = "0.1.0"
+description = "LoanDesk AI: the desk platform (security master, locates, trading, booking, approval gate, agent bases)."
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "asyncpg>=0.29",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    # The reference-data feed (instrument universe, identifiers, counterparties). The platform uses it the way
+    # a desk uses a vendor's security-master file; it never imports a mock system.
+    "loandesk-refdata",
+]
+
+[project.optional-dependencies]
+# Only needed once the agent talks to the Meta Model API (LOANDESK_AGENT_MODE=record|live).
+agent = ["openai>=1.50"]
+
+[tool.uv.sources]
+loandesk-refdata = { path = "../../mocks/libs/refdata" }
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["loandesk"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["loandesk", "refdata", "mockcore"]
