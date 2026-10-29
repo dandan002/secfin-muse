@@ -1,4 +1,4 @@
-"""API keys and signed webhooks.
+"""Signed webhooks. (API keys live in ``mockcore.keys``.)
 
 Webhook signature header: ``X-Mock-Signature: t=<unix>,v1=<hex hmac-sha256(secret, "t.body")>``.
 """
@@ -10,11 +10,6 @@ import hmac
 import time
 
 SIGNATURE_HEADER = "X-Mock-Signature"
-
-
-def derive_secret(seed: int, *parts: str) -> str:
-    """Deterministic per-counterparty secret, so tests and demo scripts can compute it."""
-    return hashlib.sha256("|".join([str(seed), *parts]).encode()).hexdigest()[:32]
 
 
 def sign(secret: str, body: bytes, ts: int | None = None) -> str:

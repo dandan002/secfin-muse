@@ -3,8 +3,9 @@
 #   terraform workspace select -or-create demo-ngt
 #   terraform apply -var-file=../demo.tfvars
 #
-# Apply `shared` for the environment first (admin token, mock-control's egress IP). Each system
-# owns its image registry; infra/deploy.sh creates it, pushes the project's image, then applies.
+# Apply `shared` for the environment first (admin token, mock-control's egress IP, snapshots, the
+# Postgres image). Each system owns its image registry; infra/up.sh creates it, pushes the
+# project's image, then applies.
 
 terraform {
   required_version = ">= 1.11"
@@ -63,14 +64,27 @@ locals {
   )
 
   secrets = concat(
-    [{ name = "MOCK_ADMIN_TOKEN", valueFrom = data.aws_secretsmanager_secret.admin_token.arn }],
-    [for s in data.aws_secretsmanager_secret.llm_key : { name = "META_AI_API", valueFrom = s.arn }],
+    [{ name = "MOCK_ADMIN_TOKEN", valueFrom = data.aws_ssm_parameter.admin_token.arn }],
+    [{ name = "MOCK_KEY_SECRET", valueFrom = data.aws_ssm_parameter.key_secret.arn }],
+    [for p in data.aws_ssm_parameter.llm_key : { name = "META_AI_API", valueFrom = p.arn }],
   )
+
+  postgres_image = "${data.aws_ecr_repository.postgres.repository_url}:${var.postgres_image_tag}"
+  snapshot = {
+    bucket = "${local.prefix}-snapshots-${data.aws_caller_identity.this.account_id}"
+    key    = "${local.service}.sql.gz"
+  }
+
+  # Released while every system is stopped (see shared), so it may not exist; a running system
+  # always has one, as up.sh applies shared first.
+  control_egress = one(data.aws_eips.control_egress.allocation_ids) == null ? null : {
+    id = one(data.aws_eips.control_egress.allocation_ids), ip = one(data.aws_eips.control_egress.public_ips)
+  }
 
   # mock-control is the operators' console. Everything else is an external system its clients
   # (and mock-control, from its fixed egress IP) call into.
   ingress_cidrs = local.is.control ? var.allowed_cidrs : distinct(concat(
-    var.allowed_cidrs, var.client_cidrs, ["${data.aws_eip.control_egress.public_ip}/32"],
+    var.allowed_cidrs, var.client_cidrs, local.control_egress == null ? [] : ["${local.control_egress.ip}/32"],
   ))
 }
 
@@ -92,17 +106,39 @@ data "aws_route53_zone" "this" {
   private_zone = false
 }
 
-data "aws_secretsmanager_secret" "admin_token" {
-  name = "${local.prefix}/admin-token"
+data "aws_caller_identity" "this" {}
+
+data "aws_ssm_parameter" "admin_token" {
+  name            = "/${local.prefix}/admin-token"
+  with_decryption = false # only its ARN is needed; ECS reads the value
 }
 
-data "aws_secretsmanager_secret" "llm_key" {
-  count = local.is.ib && var.meta_ai_api_key != "" ? 1 : 0
-  name  = "${local.prefix}/meta-ai-api"
+data "aws_ssm_parameter" "key_secret" {
+  name            = "/${local.prefix}/key-secret"
+  with_decryption = false
 }
 
-data "aws_eip" "control_egress" {
+data "aws_ssm_parameter" "llm_key" {
+  count           = local.is.ib && var.meta_ai_api_key != "" ? 1 : 0
+  name            = "/${local.prefix}/meta-ai-api"
+  with_decryption = false
+}
+
+data "aws_eips" "control_egress" {
   tags = { Name = "${local.prefix}-control-egress" }
+}
+
+data "aws_ecr_repository" "postgres" {
+  name = "${local.prefix}/postgres"
+}
+
+resource "terraform_data" "egress_ip" {
+  lifecycle {
+    precondition {
+      condition     = !(var.running && local.is.control && local.control_egress == null)
+      error_message = "mock-control's egress IP is missing: apply shared first (infra/up.sh does)."
+    }
+  }
 }
 
 module "system" {
@@ -119,18 +155,18 @@ module "system" {
   app_module        = "mock_${local.service}.app:app"
   environment       = local.environment
   secrets           = local.secrets
+  postgres_image    = local.postgres_image
+  snapshot          = local.snapshot
 
   ingress_cidrs = local.ingress_cidrs
   # mock-control egresses through a NAT on the shared Elastic IP, so the others can allowlist it.
-  nat_eip_allocation_id = local.is.control ? data.aws_eip.control_egress.id : null
+  nat_eip_allocation_id = local.is.control ? try(local.control_egress.id, null) : null
 
   fix       = local.is.ngt ? { port = 9878, hostname = "fix.${var.domain_name}" } : null
   desk_chat = local.is.ib ? { hostname = "chat.${var.domain_name}" } : null
 
-  db_instance_class      = var.db_instance_class
-  db_deletion_protection = var.db_deletion_protection
-  running                = var.running
-  log_retention_days     = var.log_retention_days
+  running            = var.running
+  log_retention_days = var.log_retention_days
 }
 
 output "urls" {
@@ -147,4 +183,8 @@ output "cluster" {
 
 output "ecr" {
   value = module.system.ecr
+}
+
+output "running" {
+  value = module.system.running
 }

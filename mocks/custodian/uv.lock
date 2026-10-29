@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -547,7 +547,12 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "loandesk-mockcore", directory = "../libs/mockcore" }]
+requires-dist = [
+    { name = "httpx", marker = "extra == 'fetch'", specifier = ">=0.27" },
+    { name = "loandesk-mockcore", directory = "../libs/mockcore" },
+    { name = "yfinance", marker = "extra == 'fetch'", specifier = ">=0.2.66" },
+]
+provides-extras = ["fetch"]
 
 [package.metadata.requires-dev]
 dev = [

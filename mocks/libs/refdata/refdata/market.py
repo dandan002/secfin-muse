@@ -1,13 +1,14 @@
 """Deterministic market processes: lending fee, utilization and price as functions of sim time.
 
 The value at time t depends only on (seed, instrument, t), never on who asked first, so two
-venues that both quote "QZNT US" at 09:31 see the same underlying fair fee.
+venues that both quote "AAPL US" at 09:31 see the same underlying fair fee.
 
 * Fee: Ornstein-Uhlenbeck in log space on a 15-minute grid, re-anchored daily from the
   stationary distribution, linearly interpolated between grid points. Each name has a small
   per-day chance of a squeeze that multiplies the fee 3-8x from a random intraday start.
 * Utilization drifts with the fee's deviation from its mean.
-* Price: daily geometric Brownian motion from the base price, plus intraday 15-minute steps.
+* Price: daily geometric Brownian motion from the base price (the last public close, for the public
+  universe) at each name's own volatility, plus intraday 15-minute steps.
 """
 
 from __future__ import annotations
@@ -80,19 +81,19 @@ def tier_at(inst: Instrument, ts: datetime) -> str:
 
 
 @lru_cache(maxsize=50_000)
-def _day_open_log_px(seed: int, inst_id: str, base_px: float, day: date) -> float:
+def _day_open_log_px(seed: int, inst_id: str, base_px: float, day: date, vol: float = PX_VOL_DAILY) -> float:
     days = (day - EPOCH_DAY).days
     x = math.log(base_px)
     step = 1 if days >= 0 else -1
     for d in range(0, days, step):
-        x += step * PX_VOL_DAILY * rng.hash_normal("px-day", inst_id, (EPOCH_DAY + timedelta(days=d)).isoformat())
+        x += step * vol * rng.hash_normal("px-day", inst_id, (EPOCH_DAY + timedelta(days=d)).isoformat())
     return x
 
 
 @lru_cache(maxsize=200_000)
-def _log_px_path(seed: int, inst_id: str, base_px: float, day: date) -> tuple[float, ...]:
-    x = _day_open_log_px(seed, inst_id, base_px, day)
-    sigma = PX_VOL_DAILY / math.sqrt(STEPS_PER_DAY)
+def _log_px_path(seed: int, inst_id: str, base_px: float, day: date, vol: float = PX_VOL_DAILY) -> tuple[float, ...]:
+    x = _day_open_log_px(seed, inst_id, base_px, day, vol)
+    sigma = vol / math.sqrt(STEPS_PER_DAY)
     path = [x]
     for k in range(1, STEPS_PER_DAY + 1):
         x += sigma * rng.hash_normal("px", inst_id, day.isoformat(), k)
@@ -102,7 +103,7 @@ def _log_px_path(seed: int, inst_id: str, base_px: float, day: date) -> tuple[fl
 
 def price(inst: Instrument, ts: datetime) -> float:
     day, step, frac = _grid(ts)
-    path = _log_px_path(rng.get_seed(), inst.id, inst.base_px, day)
+    path = _log_px_path(rng.get_seed(), inst.id, inst.base_px, day, inst.px_vol_daily)
     x = path[step] * (1 - frac) + path[step + 1] * frac
     return round(math.exp(x), 0 if inst.ccy == "JPY" else 2)
 

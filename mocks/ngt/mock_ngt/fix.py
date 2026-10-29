@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import logging
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
@@ -18,9 +19,8 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from mockcore import clock, rng
+from mockcore import clock
 from mockcore.app import ServiceContext
-from mockcore.auth import derive_secret
 
 from . import engine
 from .models import FixMessage, FixSession
@@ -131,8 +131,9 @@ class FrameReader:
             self.buf = self.buf[stop + 1 :]
 
 
-def participant_password(comp_id: str) -> str:
-    return derive_secret(rng.get_seed(), "ngt-fix", comp_id)[:24]
+def participant_password(ctx: ServiceContext, comp_id: str) -> str:
+    """Derived from the key ring's master secret, like the REST keys (see mockcore.keys)."""
+    return ctx.gate.derive("fix-password", comp_id, n=24)
 
 
 ALLOWED_CLIENTS = {"LOANDESK": "0001"}  # SenderCompID -> venue participant code
@@ -285,7 +286,7 @@ class Session:
             self.writer.write(encode("5", [(58, "unknown CompID")], VENUE_COMP_ID, client or "?", 1).encode())
             self.closed = True
             return
-        if f.get(554) != participant_password(client):
+        if not hmac.compare_digest(f.get(554, ""), participant_password(self.ctx, client)):
             self.writer.write(encode("5", [(58, "bad password")], VENUE_COMP_ID, client, 1).encode())
             self.closed = True
             return

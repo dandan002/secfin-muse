@@ -10,23 +10,11 @@ mock_provider "aws" {
   mock_data "aws_route53_zone" {
     defaults = { zone_id = "Z123" }
   }
-  mock_data "aws_rds_engine_version" {
-    defaults = { version_actual = "16.9" }
-  }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{}" }
   }
   mock_data "aws_ecr_repository" {
     defaults = { repository_url = "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/mocks" }
-  }
-  mock_data "aws_secretsmanager_secret" {
-    defaults = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:loandesk-demo/admin-token" }
-  }
-  mock_data "aws_eip" {
-    defaults = { id = "eipalloc-0control", public_ip = "198.51.100.7" }
-  }
-  mock_resource "aws_secretsmanager_secret" {
-    defaults = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:db-url" }
   }
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::111111111111:role/x" }
@@ -42,6 +30,12 @@ mock_provider "aws" {
   }
 }
 
+override_resource {
+  target          = random_password.db
+  override_during = plan
+  values          = { result = "testpassword" }
+}
+
 variables {
   name              = "ld-demo-ngt"
   service           = "ngt"
@@ -54,7 +48,9 @@ variables {
   port              = 8030
   app_module        = "mock_ngt.app:app"
   environment       = [{ name = "MOCK_SEED", value = "20261027" }]
-  secrets           = [{ name = "MOCK_ADMIN_TOKEN", valueFrom = "arn:aws:secretsmanager:us-east-1:111111111111:secret:admin" }]
+  secrets           = [{ name = "MOCK_ADMIN_TOKEN", valueFrom = "arn:aws:ssm:us-east-1:111111111111:parameter/admin" }]
+  postgres_image    = "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/postgres:pg1"
+  snapshot          = { bucket = "snapshots", key = "ngt.sql.gz" }
   fix               = { port = 9878, hostname = "fix.mocks.example.com" }
 }
 
@@ -62,8 +58,17 @@ run "system_with_fix" {
   command = plan
 
   assert {
-    condition     = aws_db_instance.this.identifier == "ld-demo-ngt" && aws_db_instance.this.db_name == "mock" && !aws_db_instance.this.publicly_accessible
-    error_message = "its own private database"
+    condition = (
+      [for c in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions) : c.name] == ["ngt", "postgres"]
+      && jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].dependsOn == [{ containerName = "postgres", condition = "HEALTHY" }]
+      && anytrue([for e in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].environment :
+      e.name == "MOCK_DATABASE_URL" && strcontains(e.value, "@127.0.0.1:5432/mock")])
+    )
+    error_message = "its own Postgres, in the task, started first and reached over loopback"
+  }
+  assert {
+    condition     = !contains([for r in aws_vpc_security_group_ingress_rule.tasks : r.from_port], 5432)
+    error_message = "Postgres is never exposed"
   }
   assert {
     condition     = length(aws_lb.fix) == 1 && length(aws_nat_gateway.this) == 0 && keys(aws_ecs_service.app) == ["ngt"]
@@ -85,15 +90,46 @@ run "system_with_fix" {
     error_message = "REST and FIX ports"
   }
   assert {
-    condition = [for s in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].secrets : s.name] == [
-      "MOCK_DATABASE_URL", "MOCK_ADMIN_TOKEN",
-    ]
-    error_message = "own database URL plus the passed-in secrets"
+    condition     = [for s in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].secrets : s.name] == ["MOCK_ADMIN_TOKEN"]
+    error_message = "the passed-in secrets"
   }
   assert {
     condition = (keys(aws_ecr_repository.this) == ["mock"] && aws_ecr_repository.this["mock"].name == "loandesk-demo/ngt"
     && endswith(jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].image, "/repo:abc123"))
     error_message = "its own image registry, tagged with its project's version"
+  }
+}
+
+run "postgres_saves_and_restores_its_snapshot" {
+  command = plan
+
+  assert {
+    condition = (
+      jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].image == "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/postgres:pg1"
+      && contains(jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].environment, { name = "SNAPSHOT_URL", value = "s3://snapshots/ngt.sql.gz" })
+      && jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].stopTimeout == 120
+    )
+    error_message = "the snapshot image, its S3 key, and time to save on stop"
+  }
+  assert {
+    condition     = strcontains(jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].healthCheck.command[1], "-h 127.0.0.1")
+    error_message = "healthy only once it takes TCP, i.e. after the restore"
+  }
+  assert {
+    condition     = length(aws_iam_role_policy.task_snapshot) == 1
+    error_message = "the task may read and write its snapshot"
+  }
+}
+
+run "without_a_snapshot" {
+  command = plan
+  variables {
+    snapshot = null
+  }
+  assert {
+    condition = (length(aws_iam_role_policy.task_snapshot) == 0
+    && !anytrue([for e in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].environment : e.name == "SNAPSHOT_URL"]))
+    error_message = "plain Postgres, empty every start"
   }
 }
 
@@ -127,18 +163,25 @@ run "with_desk_chat" {
   }
   assert {
     condition = (aws_ecr_repository.this["desk-chat"].name == "loandesk-demo/ngt-desk-chat"
-    && !can(jsondecode(aws_ecs_task_definition.app["chat"].container_definitions)[0].secrets))
-    error_message = "Desk Chat: static image, no secrets"
+      && !can(jsondecode(aws_ecs_task_definition.app["chat"].container_definitions)[0].secrets)
+    && length(jsondecode(aws_ecs_task_definition.app["chat"].container_definitions)) == 1)
+    error_message = "Desk Chat: static image, no secrets, no database"
   }
 }
 
-run "parked" {
+run "stopped" {
   command = plan
   variables {
-    running = false
+    running               = false
+    nat_eip_allocation_id = "eipalloc-0control"
   }
   assert {
-    condition     = aws_ecs_service.app["ngt"].desired_count == 0
-    error_message = "running=false scales to zero"
+    condition = (length(aws_lb.alb) + length(aws_lb.fix) + length(aws_nat_gateway.this) + length(aws_ecs_service.app)
+    + length(aws_ecs_task_definition.app) + length(aws_route53_record.app) + length(aws_route53_record.fix)) == 0
+    error_message = "nothing billed by the hour while stopped"
+  }
+  assert {
+    condition     = aws_acm_certificate.this.domain_name == "ngt.mocks.example.com" && keys(aws_ecr_repository.this) == ["mock"] && aws_vpc.this.cidr_block == "10.40.0.0/16"
+    error_message = "the free base stays, so the next start is quick"
   }
 }

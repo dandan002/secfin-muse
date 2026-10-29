@@ -11,14 +11,14 @@ import contextlib
 import os
 from typing import Any
 
-from fastapi import Depends, Header, HTTPException, Query, WebSocket
+from fastapi import Depends, HTTPException, Query, WebSocket
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from mockcore import clock, rng
+from mockcore import clock
 from mockcore.app import ServiceContext, ServiceSpec, create_app
-from mockcore.auth import derive_secret
+from mockcore.keys import AuthSpec, Grant, Principal
 from refdata.counterparties import OUR_FIRM, counterparties, counterparty_by_code
 from refdata.universe import resolve
 
@@ -28,6 +28,13 @@ from .models import Base, Inventory, Order, Print, Trade
 FIX_HOST = os.environ.get("MOCK_NGT_FIX_HOST", "0.0.0.0")
 FIX_PORT = int(os.environ.get("MOCK_NGT_FIX_PORT", "9878"))
 
+SCOPES = {
+    "reference:read": "Participant code table",
+    "market:read": "Availability feed and last prints (REST and stream)",
+    "orders:read": "Your orders, and order events on the stream",
+    "orders:write": "Place, counter, accept and cancel orders",
+    "trades:read": "Executed trades, and trade events on the stream",
+}
 spec = ServiceSpec(
     name="mock-ngt",
     label="Venue A (NGT-style)",
@@ -37,6 +44,10 @@ spec = ServiceSpec(
         "Simulated electronic sec-lending venue: lender availability feed, last prints, BID/OFFER/COUNTER/"
         f"ACCEPT/CANCEL/FIRM_BID orders, execution ledger with UTIs, and a FIX 4.4-style session on port {FIX_PORT}."
     ),
+    auth=AuthSpec(SCOPES, lambda: [
+        Grant(OUR_FIRM["ngt_code"], tuple(SCOPES), "partner", f"{OUR_FIRM['name']} (participant)"),
+        Grant("MARKETDATA", ("reference:read", "market:read"), "standard", "Market data only"),
+    ]),
 )
 ctx = ServiceContext(spec)
 ctx.fix_sessions = {}  # type: ignore[attr-defined]
@@ -44,14 +55,14 @@ app = create_app(ctx)
 _server: dict[str, Any] = {}
 
 
-def participant_key(code: str = "0001") -> str:
-    return derive_secret(rng.get_seed(), "ngt-api", code)[:32]
+def participant(scope: str):  # noqa: ANN201 - a FastAPI dependency
+    """The calling participant's venue code (a key's principal), entitled to ``scope``."""
+    gate = ctx.require(scope)
 
+    async def dep(p: Principal = Depends(gate)) -> str:
+        return p.principal
 
-async def participant(x_participant_key: str | None = Header(default=None)) -> str:
-    if x_participant_key != participant_key():
-        raise HTTPException(401, "missing or bad X-Participant-Key")
-    return OUR_FIRM["ngt_code"]
+    return dep
 
 
 @app.exception_handler(engine.VenueError)
@@ -91,7 +102,7 @@ ctx.scheduler.every(engine.config.prints_every_s, "prints", lambda: engine.print
 
 
 # -- reference ------------------------------------------------------------------------------------
-@app.get("/v1/participants", tags=["reference"])
+@app.get("/v1/participants", tags=["reference"], dependencies=[Depends(ctx.require("reference:read"))])
 async def participants() -> list[dict]:
     """Venue participant code table."""
     rows = [{"code": OUR_FIRM["ngt_code"], "name": OUR_FIRM["name"], "lei": OUR_FIRM["lei"], "role": "PARTICIPANT",
@@ -102,7 +113,7 @@ async def participants() -> list[dict]:
     return rows
 
 
-@app.get("/v1/availability", tags=["market"])
+@app.get("/v1/availability", tags=["market"], dependencies=[Depends(ctx.require("market:read"))])
 async def get_availability(instrument: str | None = None, lender: str | None = None,
                            minQuantity: int = 0, limit: int = Query(500, le=5000), offset: int = 0) -> dict:
     iid = None
@@ -122,7 +133,7 @@ async def get_availability(instrument: str | None = None, lender: str | None = N
             "byLender": rows if instrument else None}
 
 
-@app.get("/v1/prints", tags=["market"])
+@app.get("/v1/prints", tags=["market"], dependencies=[Depends(ctx.require("market:read"))])
 async def prints(instrument: str | None = None, limit: int = Query(50, le=1000)) -> list[dict]:
     async with ctx.session() as s:
         q = select(Print).order_by(Print.ts.desc(), Print.id.desc()).limit(limit)
@@ -136,10 +147,11 @@ async def prints(instrument: str | None = None, limit: int = Query(50, le=1000))
 
 
 @app.websocket("/v1/stream")
-async def stream(ws: WebSocket, topics: str = "availability,prints,orders,trades", key: str = Query("")) -> None:
+async def stream(ws: WebSocket, topics: str = "availability,prints,orders,trades") -> None:
+    """Pass the key as ``?key=``; each topic needs its scope (orders and trades are private)."""
     wanted = [t.strip() for t in topics.split(",") if t.strip()]
-    if any(t in ("orders", "trades") for t in wanted) and key != participant_key():
-        await ws.close(code=4401)
+    need = {"availability": "market:read", "prints": "market:read", "orders": "orders:read", "trades": "trades:read"}
+    if await ctx.gate.websocket(ws, *{need[t] for t in wanted if t in need}) is None:
         return
 
     async def snapshot() -> list[dict]:
@@ -159,7 +171,7 @@ class CounterBody(BaseModel):
 
 
 @app.post("/v1/orders", tags=["orders"], status_code=201)
-async def place_order(req: engine.OrderRequest, who: str = Depends(participant)) -> dict:
+async def place_order(req: engine.OrderRequest, who: str = Depends(participant("orders:write"))) -> dict:
     async with ctx.session() as s:
         o = await engine.place(ctx, s, req, who, "REST")
         await s.commit()
@@ -168,7 +180,7 @@ async def place_order(req: engine.OrderRequest, who: str = Depends(participant))
 
 @app.get("/v1/orders", tags=["orders"])
 async def list_orders(status: str | None = None, limit: int = Query(200, le=5000),
-                      who: str = Depends(participant)) -> list[dict]:
+                      who: str = Depends(participant("orders:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Order).where(Order.participant == who).order_by(Order.id.desc()).limit(limit)
         if status:
@@ -177,13 +189,13 @@ async def list_orders(status: str | None = None, limit: int = Query(200, le=5000
 
 
 @app.get("/v1/orders/{order_id}", tags=["orders"])
-async def get_order(order_id: str, who: str = Depends(participant)) -> dict:
+async def get_order(order_id: str, who: str = Depends(participant("orders:read"))) -> dict:
     async with ctx.session() as s:
         return engine.order_json(await engine.get_order(s, order_id))
 
 
 @app.post("/v1/orders/{order_id}/counter", tags=["orders"])
-async def counter_order(order_id: str, body: CounterBody, who: str = Depends(participant)) -> dict:
+async def counter_order(order_id: str, body: CounterBody, who: str = Depends(participant("orders:write"))) -> dict:
     async with ctx.session() as s:
         o = await engine.counter(ctx, s, await engine.get_order(s, order_id, lock=True), body.feeBps, body.quantity)
         await s.commit()
@@ -191,7 +203,7 @@ async def counter_order(order_id: str, body: CounterBody, who: str = Depends(par
 
 
 @app.post("/v1/orders/{order_id}/accept", tags=["orders"])
-async def accept_order(order_id: str, who: str = Depends(participant)) -> dict:
+async def accept_order(order_id: str, who: str = Depends(participant("orders:write"))) -> dict:
     async with ctx.session() as s:
         t = await engine.accept(ctx, s, await engine.get_order(s, order_id, lock=True))
         await s.commit()
@@ -199,7 +211,7 @@ async def accept_order(order_id: str, who: str = Depends(participant)) -> dict:
 
 
 @app.post("/v1/orders/{order_id}/cancel", tags=["orders"])
-async def cancel_order(order_id: str, who: str = Depends(participant)) -> dict:
+async def cancel_order(order_id: str, who: str = Depends(participant("orders:write"))) -> dict:
     async with ctx.session() as s:
         o = await engine.cancel(ctx, s, await engine.get_order(s, order_id, lock=True))
         await s.commit()
@@ -208,7 +220,7 @@ async def cancel_order(order_id: str, who: str = Depends(participant)) -> dict:
 
 @app.get("/v1/trades", tags=["trades"])
 async def trades(since: str | None = None, limit: int = Query(500, le=5000),
-                 who: str = Depends(participant)) -> list[dict]:
+                 who: str = Depends(participant("trades:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Trade).order_by(Trade.id).limit(limit)
         if since:
@@ -217,7 +229,7 @@ async def trades(since: str | None = None, limit: int = Query(500, le=5000),
 
 
 @app.get("/v1/trades/{trade_id}", tags=["trades"])
-async def trade(trade_id: str, who: str = Depends(participant)) -> dict:
+async def trade(trade_id: str, who: str = Depends(participant("trades:read"))) -> dict:
     async with ctx.session() as s:
         t = (await s.execute(select(Trade).where((Trade.trade_id == trade_id) | (Trade.uti == trade_id)))).scalar()
         if t is None:
@@ -231,9 +243,10 @@ async def credentials() -> dict:
     return {
         "participantCode": OUR_FIRM["ngt_code"],
         "restHeader": "X-Participant-Key",
-        "participantKey": participant_key(),
+        "participantKey": ctx.gate.bootstrap_key(OUR_FIRM["ngt_code"]),
+        "marketDataKey": ctx.gate.bootstrap_key("MARKETDATA"),
         "fix": {"host": FIX_HOST, "port": FIX_PORT, "senderCompID": "LOANDESK", "targetCompID": fix.VENUE_COMP_ID,
-                "password": fix.participant_password("LOANDESK")},
+                "password": fix.participant_password(ctx, "LOANDESK")},
     }
 
 

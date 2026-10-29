@@ -40,23 +40,19 @@ variable "client_cidrs" {
 variable "image_tag" {
   type        = string
   default     = "latest"
-  description = "Tag for both images (infra/deploy.sh passes the git SHA)."
+  description = "Tag for both images (infra/up.sh passes the git SHA)."
+}
+
+variable "postgres_image_tag" {
+  type        = string
+  default     = "latest"
+  description = "Tag of the environment's Postgres image (infra/up.sh passes infra/postgres's last commit)."
 }
 
 variable "running" {
   type        = bool
   default     = true
-  description = "false scales the system's tasks to 0 (its database keeps running)."
-}
-
-variable "db_instance_class" {
-  type    = string
-  default = "db.t4g.micro"
-}
-
-variable "db_deletion_protection" {
-  type    = bool
-  default = false
+  description = "false removes the system's load balancers, NAT and task (infra/down.sh); its free base stays."
 }
 
 variable "seed" {
@@ -96,13 +92,19 @@ variable "log_retention_days" {
   default = 14
 }
 
-variable "monthly_budget_usd" {
-  type    = number
-  default = 500
+variable "state_bucket" {
+  type        = string
+  description = "The Terraform state bucket (as in backend.hcl). The auto-stop job reads its copy of this config from it."
+}
+
+variable "credit_guard_usd" {
+  type        = number
+  default     = 40
+  description = "Month-to-date spend, before credits, at which every running system is stopped."
 }
 
 variable "budget_email" {
   type        = string
   default     = ""
-  description = "If set, AWS Budgets emails this address at 80% actual and 100% forecast spend for the environment."
+  description = "If set, AWS Budgets emails this address at 80% and 100% of credit_guard_usd."
 }

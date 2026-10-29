@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 
 from mockcore import rng
-from mockcore.auth import derive_secret
 
 from . import identifiers as ids
 
@@ -25,15 +24,11 @@ class Counterparty:
     agreement: str  # GMSLA_2010 | GMSLA_2018 | MSLA
     collateral_schedule: str
     persona: str | None  # chat persona handle in mock-ib, if any
-    api_key: str
-    webhook_secret: str
+    # API keys and webhook secrets aren't reference data: each mock's key ring holds its own
+    # (mockcore.keys), the way every vendor issues its own credentials.
 
-    def to_json(self, include_secrets: bool = False) -> dict:
-        d = asdict(self)
-        if not include_secrets:
-            d.pop("api_key")
-            d.pop("webhook_secret")
-        return d
+    def to_json(self) -> dict:
+        return asdict(self)
 
 
 # (code, name, kind, region, persona)
@@ -96,8 +91,6 @@ def _build(seed: int) -> tuple[Counterparty, ...]:
                 agreement=agreement,
                 collateral_schedule=_COLLATERAL[region],
                 persona=persona,
-                api_key="mk_" + derive_secret(seed, "api", code)[:24],
-                webhook_secret=derive_secret(seed, "webhook", code),
             )
         )
     return tuple(out)
@@ -111,13 +104,6 @@ def counterparty_by_code(code: str, seed: int | None = None) -> Counterparty | N
     code = code.upper()
     for cp in counterparties(seed):
         if code in (cp.code, cp.ngt_code, cp.wematch_entity, cp.lei):
-            return cp
-    return None
-
-
-def counterparty_by_api_key(key: str, seed: int | None = None) -> Counterparty | None:
-    for cp in counterparties(seed):
-        if cp.api_key == key:
             return cp
     return None
 

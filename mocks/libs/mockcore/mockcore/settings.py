@@ -28,6 +28,9 @@ class CoreSettings(BaseSettings):
     custodian_url: str = "http://localhost:8060"
     # Shared admin token for /_admin routes. Empty disables the check (local dev).
     admin_token: str = ""
+    # Master secret for API keys, webhook secrets and FIX passwords (mockcore.keys). Empty derives them
+    # from the public seed instead (local dev).
+    key_secret: str = ""
 
 
 @lru_cache
