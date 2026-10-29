@@ -1,7 +1,7 @@
 # System-one models for locate review: evaluation (Oct 29, 2026)
 
-**Outcome: not adopted. The locate review stays on Muse (Spark, escalating to Wonder).** This folder keeps the
-code, the eval scripts, the cases and the results, so the idea can be picked up again with more data.
+**Outcome: not adopted. The locate review stays on Muse (Spark, escalating to Wonder).** This write-up keeps what
+was tried and what came out of it; the integration was removed. The cases and raw results are in `data/`.
 
 ## The idea
 
@@ -42,7 +42,7 @@ Question types: `noul` (yes/no, answer `noul` = P(yes)), `choice` (criteria `{na
 level, `probabilities`, `confidence`). Baseten direct is `https://inference.baseten.co/v1/systemone` with
 `Authorization: Api-Key <key>` and model `decision-models/baseten-mammoth-27b-latest`.
 
-## What was built (in `system-one.patch`, not merged)
+## What was built and tested (removed, not merged)
 
 * **Gateway:** `ModelGateway.systemone()` on the same recordings, budget and spend meter as Muse.
 * **Graph:** a `system1` step after `gather`, plus a `handoff` back to Spark when its answer fails any check.
@@ -54,10 +54,7 @@ level, `probabilities`, `confidence`). Baseten direct is `https://inference.base
   The floor and the counterparty limits hold by construction. The hard checks and the trader gate are unchanged.
 * **Final input:** a desk brief (what an SBL desk does and the risks it manages) plus an 8-line summary of the
   case. Counterparty-supplied text is left out entirely.
-* **Tests:** 4 tests (shadow, confident decide, unsure hand-off, answers to desk numbers). With the patch, 44 pass.
-
-To revive it: `git apply platform/docs/system-one/system-one.patch`, set `OPENROUTER_API_KEY`, then run with
-`LOANDESK_SYSTEM1_MODE=shadow`.
+* **Tests:** 4 tests (shadow, confident decide, unsure hand-off, answers to desk numbers); 44 passed with it in.
 
 ## Results
 
@@ -90,7 +87,7 @@ of 5 cases.
 * **Yes/no "is the full request safe?":** 0.12 to 0.20 on WARM, 0.02 on HOT and limit-capped. It **separates
   risky from safe** but not "fill in full" from "cut".
 
-### 3. Three models, with and without the desk brief (8 cases, `eval/compare.py`)
+### 3. Three models, with and without the desk brief (8 cases)
 
 Size is scored against `fillableQty`, in levels from decline to all of fillable. An over-approval means the
 model sized above Muse.
@@ -117,7 +114,7 @@ size options slightly differently, dropped elephant-1's confident cases at 0.75 
 Jev asked for a senior reviewer on every case (p 0.71 to 0.87), possibly because the brief opens with "You
 are the senior trader".
 
-### 4. Two calls: decide first, then size only if cutting (8 cases, `eval/two_stage.py`)
+### 4. Two calls: decide first, then size only if cutting (8 cases)
 
 The first call asks approve, partial or reject. The second is told the desk is cutting and picks a quarter,
 half or three quarters of fillable.
@@ -160,10 +157,6 @@ half or three quarters of fillable.
 
 ## Files
 
-* **`system-one.patch`:** the integration (gateway, graph step, settings, tests), against `main` at `af253cc`.
-* **`eval/compare.py`:** 3 models × 2 framings × 8 cases; writes `data/compare-results.json`.
-* **`eval/two_stage.py`:** the decide-then-size design; writes `data/two-stage-results.json`.
 * **`data/cases.json`:** the 8 cases (synthetic mock data) with Muse's decisions.
-
-Run the scripts with `OPENROUTER_API_KEY` set: `python3 eval/compare.py`, then `python3 eval/two_stage.py`.
-Each run costs under $0.01.
+* **`data/compare-results.json`:** raw answers for 3 models × 2 framings × 8 cases (section 3).
+* **`data/two-stage-results.json`:** raw answers for the decide-then-size design (section 4).
