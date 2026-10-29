@@ -92,6 +92,9 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
 * `agent/tools.py`: the spec's tool list over the same services the screens use.
 * `uv sync --extra agent` installs LangGraph and the SDK; without it the desk runs and the agent endpoints say so.
   API: `POST /agent/locates/{id}/review` (202, runs in the background), `GET /agent/runs`, `GET /agent/runs/{id}`.
+* System-one decision models (mammoth-1, elephant-1, Jev) were tried as a cheap first reviewer and not adopted:
+  confident only on the cases the rules already make easy, and they cut by default. The write-up and results are
+  in [`docs/system-one`](docs/system-one/README.md).
 
 Not built yet: chat ingest (parser subagent on Desk Chat), RFQ quoting,
 plain-language policies, Venue B negotiation, FIX transport, and logins for the desk itself (the `X-Trader`
