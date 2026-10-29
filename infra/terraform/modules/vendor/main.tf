@@ -4,6 +4,11 @@
 #
 # The mock keeps its scheduler, WebSocket hub, FIX sessions and faults in process memory, so it
 # runs as exactly one task and deploys stop the old task before starting the new one.
+#
+# `running` splits the system in two. The base (VPC, security groups, certificate, image registry,
+# logs, IAM) costs nothing and always exists. Everything billed by the hour (load balancers, NAT,
+# the task and its public IP) exists only while running = true, so infra/up.sh and infra/down.sh
+# are plain applies and a stopped system costs ~$0.
 
 terraform {
   required_providers {
@@ -14,6 +19,7 @@ terraform {
 
 locals {
   nat = var.nat_eip_allocation_id != null
+  on  = var.running ? 1 : 0
 
   # Every ECS service in this system: the mock itself, plus Desk Chat for mock-ib.
   apps = merge(
@@ -76,7 +82,7 @@ resource "aws_route_table_association" "public" {
 }
 
 resource "aws_nat_gateway" "this" {
-  count         = local.nat ? 1 : 0
+  count         = local.nat ? local.on : 0
   allocation_id = var.nat_eip_allocation_id
   subnet_id     = aws_subnet.public[0].id
   tags          = { Name = var.name }
@@ -127,7 +133,7 @@ resource "aws_vpc_security_group_egress_rule" "lb" {
 
 resource "aws_security_group" "tasks" {
   name        = "${var.name}-tasks"
-  description = "From this system's load balancers only; all egress"
+  description = "From this system load balancers only, all egress" # EC2 rejects apostrophes and semicolons
   vpc_id      = aws_vpc.this.id
 }
 
@@ -146,72 +152,15 @@ resource "aws_vpc_security_group_egress_rule" "tasks" {
   ip_protocol       = "-1"
 }
 
-resource "aws_security_group" "db" {
-  name        = "${var.name}-db"
-  description = "Postgres from this system's task only"
-  vpc_id      = aws_vpc.this.id
-}
-
-resource "aws_vpc_security_group_ingress_rule" "db" {
-  security_group_id            = aws_security_group.db.id
-  referenced_security_group_id = aws_security_group.tasks.id
-  from_port                    = 5432
-  to_port                      = 5432
-  ip_protocol                  = "tcp"
-}
-
 # -- database ---------------------------------------------------------------------------------
-data "aws_rds_engine_version" "postgres" {
-  engine  = "postgres"
-  version = "16"
-  latest  = true
-}
-
+# The system's own Postgres runs as a second container in its task (see the task definition). A
+# session is ~1000 trades, so there is nothing to provision and nothing billed while stopped: when
+# the task stops, Postgres dumps itself to the snapshot in S3, and the next task restores it before
+# the mock connects (infra/postgres). Only the mock reaches it, over the task's loopback; the tasks
+# security group never opens 5432.
 resource "random_password" "db" {
   length  = 32
   special = false # it goes into a URL
-}
-
-resource "aws_db_subnet_group" "this" {
-  name       = var.name
-  subnet_ids = aws_subnet.private[*].id
-}
-
-resource "aws_db_instance" "this" {
-  identifier                 = var.name
-  engine                     = "postgres"
-  engine_version             = data.aws_rds_engine_version.postgres.version_actual
-  instance_class             = var.db_instance_class # one mock pools at most 30 connections
-  allocated_storage          = 20
-  storage_type               = "gp3"
-  storage_encrypted          = true
-  db_name                    = "mock"
-  username                   = "mock"
-  password                   = random_password.db.result
-  db_subnet_group_name       = aws_db_subnet_group.this.name
-  vpc_security_group_ids     = [aws_security_group.db.id]
-  publicly_accessible        = false
-  multi_az                   = false
-  backup_retention_period    = 1
-  auto_minor_version_upgrade = true
-  apply_immediately          = true
-  deletion_protection        = var.db_deletion_protection
-  skip_final_snapshot        = !var.db_deletion_protection
-  final_snapshot_identifier  = var.db_deletion_protection ? "${var.name}-final" : null
-
-  lifecycle {
-    ignore_changes = [engine_version] # minor upgrades happen in place; don't fight them
-  }
-}
-
-resource "aws_secretsmanager_secret" "db_url" {
-  name_prefix             = "${var.name}/database-url-"
-  recovery_window_in_days = 0
-}
-
-resource "aws_secretsmanager_secret_version" "db_url" {
-  secret_id     = aws_secretsmanager_secret.db_url.id
-  secret_string = "postgresql+asyncpg://mock:${random_password.db.result}@${aws_db_instance.this.address}:5432/mock"
 }
 
 # -- edge -------------------------------------------------------------------------------------
@@ -241,7 +190,9 @@ resource "aws_acm_certificate_validation" "this" {
   validation_record_fqdns = [for r in aws_route53_record.cert_validation : r.fqdn]
 }
 
+# The certificate stays while stopped (it's free and re-validating it would slow every start).
 resource "aws_lb" "alb" {
+  count              = local.on
   name               = var.name
   load_balancer_type = "application"
   subnets            = aws_subnet.public[*].id
@@ -250,7 +201,7 @@ resource "aws_lb" "alb" {
 }
 
 resource "aws_lb_target_group" "app" {
-  for_each             = local.apps
+  for_each             = var.running ? local.apps : {}
   name                 = each.key == var.service ? var.name : "${var.name}-${each.key}"
   port                 = each.value.port
   protocol             = "HTTP"
@@ -268,7 +219,8 @@ resource "aws_lb_target_group" "app" {
 }
 
 resource "aws_lb_listener" "https" {
-  load_balancer_arn = aws_lb.alb.arn
+  count             = local.on
+  load_balancer_arn = aws_lb.alb[0].arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
@@ -285,7 +237,8 @@ resource "aws_lb_listener" "https" {
 }
 
 resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.alb.arn
+  count             = local.on
+  load_balancer_arn = aws_lb.alb[0].arn
   port              = 80
   protocol          = "HTTP"
 
@@ -300,37 +253,37 @@ resource "aws_lb_listener" "http" {
 }
 
 resource "aws_lb_listener_rule" "app" {
-  for_each     = local.apps
-  listener_arn = aws_lb_listener.https.arn
+  for_each     = aws_lb_target_group.app
+  listener_arn = aws_lb_listener.https[0].arn
   priority     = 100 + index(keys(local.apps), each.key)
 
   condition {
     host_header {
-      values = [each.value.hostname]
+      values = [local.apps[each.key].hostname]
     }
   }
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app[each.key].arn
+    target_group_arn = each.value.arn
   }
 }
 
 resource "aws_route53_record" "app" {
-  for_each = local.apps
+  for_each = var.running ? local.apps : {}
   zone_id  = var.zone_id
   name     = each.value.hostname
   type     = "A"
 
   alias {
-    name                   = aws_lb.alb.dns_name
-    zone_id                = aws_lb.alb.zone_id
+    name                   = aws_lb.alb[0].dns_name
+    zone_id                = aws_lb.alb[0].zone_id
     evaluate_target_health = false
   }
 }
 
 resource "aws_lb" "fix" {
-  count              = var.fix == null ? 0 : 1
+  count              = var.fix == null ? 0 : local.on
   name               = "${var.name}-tcp"
   load_balancer_type = "network"
   subnets            = aws_subnet.public[*].id
@@ -338,7 +291,7 @@ resource "aws_lb" "fix" {
 }
 
 resource "aws_lb_target_group" "fix" {
-  count                = var.fix == null ? 0 : 1
+  count                = length(aws_lb.fix)
   name                 = "${var.name}-tcp"
   port                 = var.fix.port
   protocol             = "TCP"
@@ -355,7 +308,7 @@ resource "aws_lb_target_group" "fix" {
 }
 
 resource "aws_lb_listener" "fix" {
-  count             = var.fix == null ? 0 : 1
+  count             = length(aws_lb.fix)
   load_balancer_arn = aws_lb.fix[0].arn
   port              = var.fix.port
   protocol          = "TCP"
@@ -367,7 +320,7 @@ resource "aws_lb_listener" "fix" {
 }
 
 resource "aws_route53_record" "fix" {
-  count   = var.fix == null ? 0 : 1
+  count   = length(aws_lb.fix)
   zone_id = var.zone_id
   name    = var.fix.hostname
   type    = "A"
@@ -412,7 +365,7 @@ resource "aws_ecs_cluster" "this" {
   name = var.name
   setting {
     name  = "containerInsights"
-    value = "enabled"
+    value = "disabled" # billed per metric; the service's basic CPU/memory metrics are enough here
   }
 }
 
@@ -444,8 +397,8 @@ resource "aws_iam_role_policy_attachment" "execution" {
 
 data "aws_iam_policy_document" "read_secrets" {
   statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = concat([aws_secretsmanager_secret.db_url.arn], [for s in var.secrets : s.valueFrom])
+    actions   = ["ssm:GetParameters"]
+    resources = [for s in var.secrets : s.valueFrom]
   }
 }
 
@@ -454,7 +407,8 @@ resource "aws_iam_role_policy" "execution_secrets" {
   policy = data.aws_iam_policy_document.read_secrets.json
 }
 
-# The mocks call no AWS APIs; the task role only enables `aws ecs execute-command`.
+# The mocks call no AWS APIs. The task role enables `aws ecs execute-command`, and lets Postgres
+# read and write this system's snapshot.
 resource "aws_iam_role" "task" {
   name_prefix        = "${var.name}-task-"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
@@ -477,6 +431,30 @@ resource "aws_iam_role_policy" "task_exec_command" {
   policy = data.aws_iam_policy_document.exec_command.json
 }
 
+data "aws_iam_policy_document" "snapshot" {
+  count = var.snapshot == null ? 0 : 1
+  statement {
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["arn:aws:s3:::${var.snapshot.bucket}/${var.snapshot.key}"]
+  }
+  statement {
+    # Without it a missing snapshot reads as 403 rather than 404 (the first start).
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${var.snapshot.bucket}"]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:prefix"
+      values   = [var.snapshot.key]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "task_snapshot" {
+  count  = length(data.aws_iam_policy_document.snapshot)
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.snapshot[0].json
+}
+
 locals {
   # Container fields only the Python mock gets (Desk Chat is a static nginx image).
   mock_container = {
@@ -486,26 +464,61 @@ locals {
         "uvicorn", var.app_module, "--host", "0.0.0.0", "--port", tostring(var.port),
         "--proxy-headers", "--forwarded-allow-ips", "*", # behind the ALB: keep https in redirects
       ]
-      environment = concat(var.environment, [{ name = "PORT", value = tostring(var.port) }])
-      secrets = concat(
-        [{ name = "MOCK_DATABASE_URL", valueFrom = aws_secretsmanager_secret.db_url.arn }],
-        var.secrets,
-      )
+      environment = concat(var.environment, [
+        { name = "PORT", value = tostring(var.port) },
+        { name = "MOCK_DATABASE_URL", value = "postgresql+asyncpg://mock:${random_password.db.result}@127.0.0.1:5432/mock" },
+      ])
+      secrets = var.secrets
       portMappings = concat(
         [{ containerPort = var.port, protocol = "tcp" }],
         var.fix == null ? [] : [{ containerPort = var.fix.port, protocol = "tcp" }],
       )
+      dependsOn = [{ containerName = "postgres", condition = "HEALTHY" }]
+    }
+  }
+
+  # The mock's own database, in the same task (so on the same loopback). ECS stops the mock first
+  # (it depends on Postgres), then gives Postgres up to stopTimeout to save its snapshot.
+  postgres = {
+    name        = "postgres"
+    essential   = true
+    image       = var.postgres_image
+    stopTimeout = 120 # the Fargate maximum; a session's dump takes seconds
+    environment = concat([
+      { name = "POSTGRES_USER", value = "mock" },
+      { name = "POSTGRES_PASSWORD", value = random_password.db.result },
+      { name = "POSTGRES_DB", value = "mock" },
+      { name = "AWS_REGION", value = var.region },
+      ], var.snapshot == null ? [] : [
+      { name = "SNAPSHOT_URL", value = "s3://${var.snapshot.bucket}/${var.snapshot.key}" },
+    ])
+    healthCheck = {
+      # Over TCP: during the restore Postgres listens only on its socket, and the mock must wait.
+      command     = ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U mock -d mock"]
+      interval    = 5
+      timeout     = 3
+      retries     = 10
+      startPeriod = 60 # covers the restore
+    }
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.app[var.service].name
+        awslogs-region        = var.region
+        awslogs-stream-prefix = "postgres"
+      }
     }
   }
 }
 
+# Task definitions only exist while running, so stopping a system needs no image tag.
 resource "aws_ecs_task_definition" "app" {
-  for_each                 = local.apps
+  for_each                 = var.running ? local.apps : {}
   family                   = "${var.name}-${each.key}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = 256 # ~100 MB RSS per mock after the full demo
-  memory                   = 512
+  cpu                      = 256  # ~100 MB RSS per mock after the full demo
+  memory                   = 1024 # the smallest Fargate size with room for the mock and Postgres
   execution_role_arn       = aws_iam_role.execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
@@ -514,7 +527,7 @@ resource "aws_ecs_task_definition" "app" {
     cpu_architecture        = "X86_64"
   }
 
-  container_definitions = jsonencode([merge(
+  container_definitions = jsonencode(concat([merge(
     {
       name         = each.key
       essential    = true
@@ -530,16 +543,16 @@ resource "aws_ecs_task_definition" "app" {
       }
     },
     try(local.mock_container[each.key], {}),
-  )])
+  )], each.value.mock ? [local.postgres] : []))
 }
 
 resource "aws_ecs_service" "app" {
-  for_each               = local.apps
+  for_each               = aws_ecs_task_definition.app
   name                   = each.key
   cluster                = aws_ecs_cluster.this.id
-  task_definition        = aws_ecs_task_definition.app[each.key].arn
+  task_definition        = each.value.arn
   launch_type            = "FARGATE"
-  desired_count          = var.running ? 1 : 0
+  desired_count          = 1
   enable_execute_command = true
 
   # Exactly one task, ever: stop the old one before starting the new one, so two schedulers
@@ -562,11 +575,11 @@ resource "aws_ecs_service" "app" {
   load_balancer {
     target_group_arn = aws_lb_target_group.app[each.key].arn
     container_name   = each.key
-    container_port   = each.value.port
+    container_port   = local.apps[each.key].port
   }
 
   dynamic "load_balancer" {
-    for_each = each.value.mock ? aws_lb_target_group.fix : []
+    for_each = local.apps[each.key].mock ? aws_lb_target_group.fix : []
     content {
       target_group_arn = load_balancer.value.arn
       container_name   = each.key
@@ -574,5 +587,5 @@ resource "aws_ecs_service" "app" {
     }
   }
 
-  depends_on = [aws_lb_listener_rule.app, aws_lb_listener.fix, aws_db_instance.this, aws_nat_gateway.this]
+  depends_on = [aws_lb_listener_rule.app, aws_lb_listener.fix, aws_nat_gateway.this]
 }

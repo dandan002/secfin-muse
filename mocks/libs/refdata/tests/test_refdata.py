@@ -1,10 +1,14 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from mockcore import rng
 from refdata import identifiers as ids
 from refdata import market
 from refdata.counterparties import counterparties
-from refdata.universe import resolve, universe
+from refdata.universe import resolve, snapshot, universe
+
+needs_snapshot = pytest.mark.skipif(snapshot() is None, reason="no public snapshot (run `refdata fetch`)")
 
 
 def test_known_real_world_check_digits():
@@ -15,6 +19,8 @@ def test_known_real_world_check_digits():
     assert ids.is_valid_sedol("0263494")
     assert ids.is_valid_sedol("B0YBKJ7")
     assert ids.is_valid_lei("5493001KJTIIGC8Y1R12")
+    assert ids.is_valid_figi("BBG000B9XRY4") and ids.is_valid_figi("BBG000BLNNH6")  # Apple, IBM
+    assert not ids.is_valid_figi("BBG000B9XRY5")
     assert not ids.is_valid_isin("US0378331006")
     assert not ids.is_valid_cusip("037833101")
     assert not ids.is_valid_sedol("0263495")
@@ -36,12 +42,12 @@ def test_detect_and_suggest():
     assert "US0378331005" in ids.suggest_fix("US0378331006")
 
 
-def test_universe_is_deterministic_and_valid():
-    a = universe(1)
-    b = universe(1)
+def test_synthetic_universe_is_deterministic_and_valid():
+    a = universe(1, "synthetic")
+    b = universe(1, "synthetic")
     assert a == b
     assert len(a) == 2000
-    assert universe(2)[0] != a[0]
+    assert universe(2, "synthetic")[0] != a[0]
     for inst in a:
         assert ids.is_valid_isin(inst.isin), inst
         assert ids.is_valid_sedol(inst.sedol) and inst.sedol.startswith("9")
@@ -54,11 +60,32 @@ def test_universe_is_deterministic_and_valid():
     assert 300 < tiers["WARM"] < 500
     assert 120 < tiers["HOT"] < 280
     assert len({i.isin for i in a}) == 2000
+    assert all(i.source == "synthetic" and i.figi.startswith("MKG") for i in a)
 
+
+@needs_snapshot
+def test_public_universe_is_real_listings_with_fictitious_licensed_ids():
+    a = universe(1, "public")
+    assert a == universe(1, "public") and len(snapshot()["instruments"]) >= len(a) > 1500
+    assert len({i.isin for i in a}) == len(a) == len({i.figi for i in a})
+    for inst in a:
+        assert inst.source == "public" and inst.figi.startswith("BBG") and ids.is_valid_figi(inst.figi)
+        assert ids.is_valid_isin(inst.isin) and inst.sedol.startswith("9")  # licensed ids stay fictitious
+        assert inst.base_px > 0 and inst.shs_out > 0 and 0.005 <= inst.px_vol_daily <= 0.12
+    by_country = {c: [i for i in a if i.country == c] for c in ("US", "GB", "DE", "FR", "NL", "JP")}
+    for country, insts in by_country.items():  # every market has every tier, close to 70/20/10
+        share = {t: sum(i.tier == t for i in insts) / len(insts) for t in ("GC", "WARM", "HOT")}
+        assert 0.6 < share["GC"] < 0.8 and 0.12 < share["WARM"] < 0.28 and 0.06 < share["HOT"] < 0.16, country
+    us = by_country["US"]
+    gc_cap = sorted(i.mkt_cap or 0 for i in us if i.tier == "GC")
+    hot_cap = sorted(i.mkt_cap or 0 for i in us if i.tier == "HOT")
+    assert hot_cap[len(hot_cap) // 2] < gc_cap[len(gc_cap) // 2] / 5  # specials skew small
+    assert resolve("AAPL US", 1).name.startswith("Apple")
+    assert resolve("BRK.B US", 1) is resolve("BRK/B US", 1) is not None
 
 def test_resolve_by_every_identifier():
     rng.set_seed(7)
-    inst = universe()[123]
+    inst = universe()[123]  # whichever source is active
     for q in (inst.isin, inst.sedol, inst.figi, inst.composite, inst.composite.lower() + " equity",
               f"{inst.ticker}.{inst.mic}"):
         assert resolve(q) is inst, q

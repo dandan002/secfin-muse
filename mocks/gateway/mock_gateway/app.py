@@ -1,10 +1,10 @@
 """mock-gateway: the "smart API" counterparties use to send us locates and orders.
 
-Counterparty side (bearer API key per counterparty):
+Counterparty side (bearer API key per counterparty, see mockcore.keys):
   ``POST /v1/locates`` single or batch (<= 5,000 lines) as CDM-shaped JSON, flat JSON or CSV,
-  with ``Idempotency-Key`` and per-counterparty rate limits; ``GET /v1/locates/{id}``;
+  with ``Idempotency-Key`` and per-key rate limits and quotas; ``GET /v1/locates/{id}``;
   ``POST /v1/orders``.
-Our platform's side (platform token):
+Our platform's side (the platform's bearer key):
   ``GET /v1/inbox`` / WS ``/v1/inbox/stream`` to pull new requests (or set a downstream URL to
   have them pushed), and ``POST /v1/decisions`` to answer; decisions go back to the
   counterparty's callback URL as HMAC-signed webhooks with retries.
@@ -20,7 +20,6 @@ import io
 import json
 import math
 import os
-import time
 from datetime import date, datetime
 from datetime import time as dtime
 from typing import Any, Literal
@@ -32,15 +31,34 @@ from sqlalchemy import select
 
 from mockcore import auth, clock, rng
 from mockcore.app import ServiceContext, ServiceSpec, create_app
+from mockcore.keys import DEFAULT_PLANS, AuthSpec, Grant, Plan, Principal
 from refdata import calendar
 from refdata import identifiers as ids
-from refdata.counterparties import Counterparty, counterparties, counterparty_by_api_key, counterparty_by_code
+from refdata.counterparties import Counterparty, counterparties, counterparty_by_code
 from refdata.universe import resolve, universe
 
 from .models import Base, CpOrder, CpReceived, Delivery, LocateLine, LocateRequest
 
 MAX_LINES = 5000
 DOWNSTREAM = os.environ.get("MOCK_GATEWAY_DOWNSTREAM_URL", "")
+
+CP_SCOPES = {
+    "locates:write": "Send locate requests",
+    "locates:read": "Your locate requests and their decisions",
+    "orders:write": "Send orders",
+}
+PLATFORM_SCOPES = {
+    "inbox:read": "Pull new requests (REST and stream)",
+    "decisions:write": "Answer locate requests",
+    "deliveries:read": "Webhook delivery log",
+}
+PLATFORM = "PLATFORM"
+
+
+def _grants() -> list[Grant]:
+    cps = [Grant(c.code, tuple(CP_SCOPES), "standard", c.name) for c in counterparties() if c.kind != "INTERNAL"]
+    return [Grant(PLATFORM, tuple(PLATFORM_SCOPES), "partner", "LoanDesk platform"), *cps]
+
 
 spec = ServiceSpec(
     name="mock-gateway",
@@ -50,49 +68,34 @@ spec = ServiceSpec(
     description=(
         "Counterparty-facing locate/order API with idempotency, rate limits, signed webhooks and a load generator."
     ),
+    auth=AuthSpec({**CP_SCOPES, **PLATFORM_SCOPES}, _grants),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
 
 
-def platform_token() -> str:
-    return auth.derive_secret(rng.get_seed(), "gateway-platform")[:32]
+def webhook_secret(code: str) -> str:
+    """Signs webhooks to a counterparty; derived from the key ring's master secret, like its API key."""
+    return ctx.gate.derive("webhook", code)
 
 
-# -- auth & rate limits ------------------------------------------------------------------------------
-class _Bucket:
-    def __init__(self, rate: float, burst: float) -> None:
-        self.rate, self.burst, self.tokens, self.ts = rate, burst, burst, time.monotonic()
-
-    def take(self) -> float:
-        now = time.monotonic()
-        self.tokens = min(self.burst, self.tokens + (now - self.ts) * self.rate)
-        self.ts = now
-        if self.tokens >= 1:
-            self.tokens -= 1
-            return 0.0
-        return (1 - self.tokens) / self.rate
+def downstream_token() -> str:
+    """Sent as ``X-Gateway-Token`` on pushes to the platform, so it can tell them from anyone else's."""
+    return ctx.gate.derive("downstream")
 
 
-_limits: dict[str, Any] = {"rate_per_s": 20.0, "burst": 40.0}
-_buckets: dict[str, _Bucket] = {}
+# -- auth -------------------------------------------------------------------------------------------
+def counterparty(scope: str):  # noqa: ANN201 - a FastAPI dependency
+    """The calling counterparty (its key's principal), entitled to ``scope``."""
+    gate = ctx.require(scope)
 
+    async def dep(p: Principal = Depends(gate)) -> Counterparty:
+        cp = counterparty_by_code(p.principal)
+        if cp is None:
+            raise HTTPException(403, {"error": "forbidden", "detail": f"{p.principal} is not a counterparty"})
+        return cp
 
-async def counterparty(authorization: str | None = Header(default=None)) -> Counterparty:
-    key = (authorization or "").removeprefix("Bearer ").strip()
-    cp = counterparty_by_api_key(key) if key else None
-    if cp is None:
-        raise HTTPException(401, "missing or bad API key", headers={"WWW-Authenticate": "Bearer"})
-    b = _buckets.setdefault(cp.code, _Bucket(_limits["rate_per_s"], _limits["burst"]))
-    wait = b.take()
-    if wait:
-        raise HTTPException(429, "rate limit exceeded", headers={"Retry-After": f"{math.ceil(wait)}"})
-    return cp
-
-
-async def platform(authorization: str | None = Header(default=None)) -> None:
-    if authorization != f"Bearer {platform_token()}":
-        raise HTTPException(401, "missing or bad platform token")
+    return dep
 
 
 # -- normalisation ---------------------------------------------------------------------------------
@@ -218,7 +221,7 @@ async def forward_job(locate_id: str, attempt: int) -> None:
         payload = request_json(req, list(lines))
         try:
             r = await ctx.http.post(f"{DOWNSTREAM.rstrip('/')}/locates", json=payload,
-                                    headers={"X-Gateway-Token": platform_token()})
+                                    headers={"X-Gateway-Token": downstream_token()})
             ok = r.status_code < 300
         except Exception:
             ok = False
@@ -230,7 +233,7 @@ async def forward_job(locate_id: str, attempt: int) -> None:
 
 # -- counterparty API -------------------------------------------------------------------------------
 @app.post("/v1/locates", tags=["counterparty"], status_code=202)
-async def post_locates(request: Request, cp: Counterparty = Depends(counterparty),
+async def post_locates(request: Request, cp: Counterparty = Depends(counterparty("locates:write")),
                        idempotency_key: str | None = Header(default=None)) -> JSONResponse:
     raw = await request.body()
     ctype = request.headers.get("content-type", "")
@@ -256,7 +259,7 @@ async def post_locates(request: Request, cp: Counterparty = Depends(counterparty
 
 
 @app.get("/v1/locates/{locate_id}", tags=["counterparty"])
-async def get_locate(locate_id: str, cp: Counterparty = Depends(counterparty)) -> dict:
+async def get_locate(locate_id: str, cp: Counterparty = Depends(counterparty("locates:read"))) -> dict:
     async with ctx.session() as s:
         req = (await s.execute(select(LocateRequest).where(LocateRequest.locate_id == locate_id,
                                                            LocateRequest.cp_code == cp.code))).scalar()
@@ -268,7 +271,8 @@ async def get_locate(locate_id: str, cp: Counterparty = Depends(counterparty)) -
 
 
 @app.get("/v1/locates", tags=["counterparty"])
-async def my_locates(limit: int = Query(100, le=1000), cp: Counterparty = Depends(counterparty)) -> list[dict]:
+async def my_locates(limit: int = Query(100, le=1000),
+                     cp: Counterparty = Depends(counterparty("locates:read"))) -> list[dict]:
     async with ctx.session() as s:
         reqs = (await s.execute(select(LocateRequest).where(LocateRequest.cp_code == cp.code)
                                 .order_by(LocateRequest.id.desc()).limit(limit))).scalars().all()
@@ -286,7 +290,7 @@ class OrderIn(BaseModel):
 
 
 @app.post("/v1/orders", tags=["counterparty"], status_code=202)
-async def post_order(body: OrderIn, cp: Counterparty = Depends(counterparty),
+async def post_order(body: OrderIn, cp: Counterparty = Depends(counterparty("orders:write")),
                      idempotency_key: str | None = Header(default=None)) -> dict:
     inst = resolve(body.identifier)
     if inst is None:
@@ -310,7 +314,7 @@ async def post_order(body: OrderIn, cp: Counterparty = Depends(counterparty),
 
 
 # -- platform API ---------------------------------------------------------------------------------
-@app.get("/v1/inbox", tags=["platform"], dependencies=[Depends(platform)])
+@app.get("/v1/inbox", tags=["platform"], dependencies=[Depends(ctx.require("inbox:read"))])
 async def inbox(status: str = "RECEIVED", after: int = 0, limit: int = Query(200, le=5000)) -> list[dict]:
     async with ctx.session() as s:
         reqs = (await s.execute(select(LocateRequest).where(LocateRequest.status == status.upper(),
@@ -325,9 +329,9 @@ async def inbox(status: str = "RECEIVED", after: int = 0, limit: int = Query(200
 
 
 @app.websocket("/v1/inbox/stream")
-async def inbox_stream(ws: WebSocket, token: str = Query("")) -> None:
-    if token != platform_token():
-        await ws.close(code=4401)
+async def inbox_stream(ws: WebSocket) -> None:
+    """Pass the platform key as ``?token=`` (or ``?key=``)."""
+    if await ctx.gate.websocket(ws, "inbox:read") is None:
         return
     await ctx.ws_stream(ws, ["inbox", "decisions"])
 
@@ -347,7 +351,7 @@ class DecisionIn(BaseModel):
     lines: list[LineDecision] = Field(..., min_length=1)
 
 
-@app.post("/v1/decisions", tags=["platform"], dependencies=[Depends(platform)])
+@app.post("/v1/decisions", tags=["platform"], dependencies=[Depends(ctx.require("decisions:write"))])
 async def decide(body: DecisionIn) -> dict:
     async with ctx.session() as s:
         req = (await s.execute(select(LocateRequest).where(LocateRequest.locate_id == body.locateId)
@@ -391,9 +395,9 @@ async def deliver_job(locate_id: str, url: str, payload: dict[str, Any], attempt
     status_code, err = None, None
     for b in sends:
         try:
-            r = await ctx.http.post(url, content=b, headers={"content-type": "application/json",
-                                                             auth.SIGNATURE_HEADER: auth.sign(cp.webhook_secret, b),
-                                                             "X-Mock-Delivery-Attempt": str(attempt)})
+            headers = {"content-type": "application/json", "X-Mock-Delivery-Attempt": str(attempt),
+                       auth.SIGNATURE_HEADER: auth.sign(webhook_secret(cp.code), b)}
+            r = await ctx.http.post(url, content=b, headers=headers)
             status_code = r.status_code
         except Exception as e:
             err = type(e).__name__
@@ -407,7 +411,7 @@ async def deliver_job(locate_id: str, url: str, payload: dict[str, Any], attempt
                             attempt + 1)
 
 
-@app.get("/v1/deliveries", tags=["platform"], dependencies=[Depends(platform)])
+@app.get("/v1/deliveries", tags=["platform"], dependencies=[Depends(ctx.require("deliveries:read"))])
 async def deliveries(locateId: str | None = None) -> list[dict]:
     async with ctx.session() as s:
         q = select(Delivery).order_by(Delivery.id)
@@ -424,7 +428,7 @@ async def cp_callback(code: str, request: Request) -> dict:
     if cp is None:
         raise HTTPException(404, "unknown counterparty")
     raw = await request.body()
-    ok = auth.verify(cp.webhook_secret, raw, request.headers.get(auth.SIGNATURE_HEADER, ""), tolerance_s=0)
+    ok = auth.verify(webhook_secret(cp.code), raw, request.headers.get(auth.SIGNATURE_HEADER, ""), tolerance_s=0)
     async with ctx.session() as s:
         s.add(CpReceived(cp_code=cp.code, signature_ok=ok, body=json.loads(raw or b"{}"), ts=clock.now()))
         await s.commit()
@@ -541,25 +545,27 @@ async def verb_burst(args: dict[str, Any]) -> dict:
 @app.get("/_admin/credentials", tags=["admin"])
 async def credentials() -> dict:
     return {
-        "platformToken": platform_token(),
+        "platformToken": ctx.gate.bootstrap_key(PLATFORM),
         "downstreamUrl": DOWNSTREAM or None,
-        "counterparties": [{"code": c.code, "apiKey": c.api_key, "webhookSecret": c.webhook_secret}
-                           for c in counterparties()],
+        "downstreamToken": downstream_token(),
+        "counterparties": [{"code": c.code, "apiKey": ctx.gate.bootstrap_key(c.code),
+                            "webhookSecret": webhook_secret(c.code)} for c in counterparties()
+                           if c.kind != "INTERNAL"],
     }
 
 
 @app.put("/_admin/limits", tags=["admin"])
 async def set_limits(rate_per_s: float = Query(..., gt=0), burst: float = Query(..., ge=1)) -> dict:
-    _limits.update(rate_per_s=rate_per_s, burst=burst)
-    _buckets.clear()
-    return dict(_limits)
+    """Shorthand for ``PUT /_admin/plans/standard``: the plan every counterparty key starts on."""
+    std = DEFAULT_PLANS["standard"]
+    ctx.gate.set_plan(Plan("standard", rate_per_s, burst, std.daily_quota, std.description))
+    return {"rate_per_s": rate_per_s, "burst": burst}
 
 
 async def on_reset(c: ServiceContext) -> None:
     _load.clear()
     _load.update(_load_defaults())
-    _buckets.clear()
-    _limits.update(rate_per_s=20.0, burst=40.0)
+    ctx.gate.reset_plans()
 
 
 spec.on_reset = on_reset

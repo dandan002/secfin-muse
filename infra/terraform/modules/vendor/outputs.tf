@@ -1,5 +1,10 @@
 output "urls" {
-  value = { for k, a in local.apps : k => "https://${a.hostname}" }
+  description = "Where the system answers while running."
+  value       = { for k, a in local.apps : k => "https://${a.hostname}" }
+}
+
+output "running" {
+  value = var.running
 }
 
 output "fix_endpoint" {
@@ -8,10 +13,6 @@ output "fix_endpoint" {
 
 output "cluster" {
   value = aws_ecs_cluster.this.name
-}
-
-output "database" {
-  value = aws_db_instance.this.address
 }
 
 output "ecr" {

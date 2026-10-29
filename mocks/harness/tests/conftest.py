@@ -51,12 +51,19 @@ def stack() -> Iterator[Stack]:
         if "MOCK_TEST_DATABASE_ADMIN_URL" in os.environ:  # a database was promised (e.g. CI): don't go green
             pytest.fail(f"MOCK_TEST_DATABASE_ADMIN_URL is set but Postgres is unreachable: {e}")
         pytest.skip(f"no Postgres for integration tests: {e}")
+    # A fixed key secret: bootstrap keys then stay put across the tests' resets to other seeds.
     s = start_stack(base_port=18000, db_url=db_url, fix_port=19878,
-                    log_dir=Path(__file__).resolve().parents[1] / "out" / "test-logs")
+                    log_dir=Path(__file__).resolve().parents[1] / "out" / "test-logs",
+                    extra_env={"MOCK_KEY_SECRET": "harness-test-secret"})
     try:
         yield s
     finally:
         s.stop()
+
+
+# Who the tests are when a call doesn't say: control's operator, our Venue A participant, the desk.
+DEFAULT_KEYS = {"control": ("authorization", "operatorKey"), "ngt": ("x-participant-key", "participantKey"),
+                "ib": ("x-api-key", "deskKey")}
 
 
 class Mocks:
@@ -66,18 +73,33 @@ class Mocks:
         self.stack = stack
         self.urls = stack.urls
         self.http = httpx.Client(timeout=60)
+        self._keys: dict[str, dict[str, str]] = {}
 
     def url(self, svc: str, path: str) -> str:
         return self.urls[svc] + path
 
+    def _auth(self, svc: str, kw: dict) -> dict:
+        """Add the service's default key; a caller's own headers (say a Bearer) win."""
+        if svc in DEFAULT_KEYS and svc not in self._keys:
+            header, field = DEFAULT_KEYS[svc]
+            key = self.creds(svc)[field]
+            self._keys[svc] = {header: f"Bearer {key}" if header == "authorization" else key}
+        return {**kw, "headers": {**self._keys.get(svc, {}), **(kw.get("headers") or {})}}
+
     def get(self, svc: str, path: str, **kw) -> httpx.Response:
-        return self.http.get(self.url(svc, path), **kw)
+        return self.http.get(self.url(svc, path), **self._auth(svc, kw))
 
     def post(self, svc: str, path: str, **kw) -> httpx.Response:
-        return self.http.post(self.url(svc, path), **kw)
+        return self.http.post(self.url(svc, path), **self._auth(svc, kw))
 
     def put(self, svc: str, path: str, **kw) -> httpx.Response:
-        return self.http.put(self.url(svc, path), **kw)
+        return self.http.put(self.url(svc, path), **self._auth(svc, kw))
+
+    def delete(self, svc: str, path: str, **kw) -> httpx.Response:
+        return self.http.delete(self.url(svc, path), **self._auth(svc, kw))
+
+    def patch(self, svc: str, path: str, **kw) -> httpx.Response:
+        return self.http.patch(self.url(svc, path), **self._auth(svc, kw))
 
     def reset(self, mode: str = "stepped", seed: int = 20261027, epoch: str = "2026-10-27T09:00:00-04:00") -> dict:
         r = self.post("control", "/reset", json={"seed": seed, "mode": mode, "epoch": epoch})
@@ -93,7 +115,7 @@ class Mocks:
         return r.json()
 
     def creds(self, svc: str) -> dict:
-        return self.get(svc, "/_admin/credentials").json()
+        return self.http.get(self.url(svc, "/_admin/credentials")).raise_for_status().json()
 
     def verb(self, svc: str, verb: str, **args) -> dict:
         r = self.post(svc, f"/_admin/scenario/{verb}", json=args)

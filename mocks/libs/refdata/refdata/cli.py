@@ -1,7 +1,8 @@
 """``refdata`` command: export the synthetic universe and counterparties for other teams.
 
     uv run refdata export --out out/refdata [--seed 20261027]
-    uv run refdata resolve "QZNT US"
+    uv run refdata resolve "AAPL US"
+    uv run --extra fetch refdata fetch      # rebuild the public-data snapshot (network)
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ def _export(out: Path, seed: int) -> None:
         w.writeheader()
         for row in insts:
             w.writerow({**row, "tags": "|".join(row["tags"])})
-    cps = [c.to_json(include_secrets=True) for c in counterparties(seed)]
+    cps = [c.to_json() for c in counterparties(seed)]
     (out / "counterparties.json").write_text(json.dumps({"ourFirm": OUR_FIRM, "counterparties": cps}, indent=1))
     tiers: dict[str, int] = {}
     for i in insts:
@@ -44,7 +45,14 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--out", type=Path, default=Path("out/refdata"))
     r = sub.add_parser("resolve")
     r.add_argument("query")
+    f = sub.add_parser("fetch")
+    f.add_argument("--out", type=Path, default=None)
     args = p.parse_args(argv)
+    if args.cmd == "fetch":
+        from . import fetch
+
+        fetch.fetch(args.out or fetch.DEFAULT_OUT)
+        return 0
     rng.set_seed(args.seed)
     if args.cmd == "export":
         _export(args.out, args.seed)

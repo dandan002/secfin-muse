@@ -47,7 +47,9 @@ class Database:
             await conn.run_sync(self.metadata.create_all)
 
     async def truncate(self) -> None:
-        names = ", ".join(f'"{self.schema}"."{t.name}"' for t in self.metadata.sorted_tables)
+        # Tables marked keep_on_reset (API keys) are identity, not sim state.
+        names = ", ".join(f'"{self.schema}"."{t.name}"' for t in self.metadata.sorted_tables
+                          if not t.info.get("keep_on_reset"))
         if not names:
             return
         async with self.engine.begin() as conn:

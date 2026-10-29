@@ -33,18 +33,28 @@ class Smoke:
         token = os.environ.get("MOCK_ADMIN_TOKEN")
         self.h = httpx.Client(timeout=120, headers={"x-admin-token": token} if token else None)
         self.results: list[tuple[str, bool, str]] = []
+        self._keys: dict[str, dict[str, str]] = {}
 
     def check(self, name: str, ok: bool, detail: str = "") -> None:
         self.results.append((name, ok, detail))
         print(f"{'PASS' if ok else 'FAIL'}  {name}{'  - ' + detail if detail else ''}")
 
+    def _auth(self, svc: str, kw: dict[str, Any]) -> dict[str, Any]:
+        """Default credentials for services whose calls below don't name their own."""
+        if svc in ("control", "ngt", "ib") and svc not in self._keys:
+            cred = self.h.get(self.u[svc] + "/_admin/credentials").raise_for_status().json()
+            self._keys[svc] = {"control": {"authorization": f"Bearer {cred.get('operatorKey')}"},
+                               "ngt": {"x-participant-key": cred.get("participantKey")},
+                               "ib": {"x-api-key": cred.get("deskKey")}}[svc]
+        return {**kw, "headers": {**self._keys.get(svc, {}), **(kw.get("headers") or {})}}
+
     def get(self, svc: str, path: str, **kw: Any) -> Any:
-        r = self.h.get(self.u[svc] + path, **kw)
+        r = self.h.get(self.u[svc] + path, **self._auth(svc, kw))
         r.raise_for_status()
         return r.json()
 
     def post(self, svc: str, path: str, **kw: Any) -> Any:
-        r = self.h.post(self.u[svc] + path, **kw)
+        r = self.h.post(self.u[svc] + path, **self._auth(svc, kw))
         r.raise_for_status()
         return r.json() if r.content else None
 

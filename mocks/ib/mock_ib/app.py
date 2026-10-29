@@ -1,10 +1,11 @@
 """mock-ib: "Desk Chat", a chat server with IB-like behaviours and a bot API.
 
 Two surfaces:
-* Human API (``/api``, ``/ws``) used by the Desk Chat React client. Identity comes from
-  the ``X-User`` header (or ``?as=`` on the WebSocket) so one browser can act as anyone.
+* Human API (``/api``, ``/ws``) used by the Desk Chat React client, behind the desk key
+  (``X-Api-Key``, or ``?key=`` on the WebSocket). Who you act as comes from the ``X-User``
+  header (or ``?as=``), so one browser can play any persona in a demo.
 * Bot API (``/streams``, ``/chats``, ``/compose``), shaped like a chat-bot integration and
-  authenticated with a bearer token. This is what the LoanDesk agent will use.
+  authenticated with the bot's bearer key. This is what the LoanDesk agent will use.
 
 Persona counterparties post scripted (or LLM-restyled) desk shorthand and react to what
 we send them. Every persona message stores a gold label for parser evals.
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mockcore import clock, rng
 from mockcore.app import ServiceContext, ServiceSpec, create_app
-from mockcore.auth import derive_secret
+from mockcore.keys import AuthSpec, Grant, Principal
 from refdata import market
 from refdata.universe import resolve
 
@@ -32,6 +33,13 @@ from . import personas as P
 from .llm import LLM
 from .models import Base, Label, Member, Message, PersonaState, Room, User
 
+SCOPES = {
+    "chat:read": "Desk Chat: rooms, messages, search, users, instrument cards",
+    "chat:write": "Desk Chat: send, Blast, create rooms, read marks, typing, room prefs",
+    "streams:read": "Bot: list streams, read messages, subscribe",
+    "messages:write": "Bot: post into a stream",
+    "compose": "Bot: push a draft into a human's composer",
+}
 spec = ServiceSpec(
     name="mock-ib",
     label="Desk Chat",
@@ -42,6 +50,10 @@ spec = ServiceSpec(
         "(streams, subscribe, post as bot, push to composer). Behaviour modelled on institutional chat; "
         "the API shape and look are our own."
     ),
+    auth=AuthSpec(SCOPES, lambda: [
+        Grant(BOT_HANDLE, ("streams:read", "messages:write", "compose"), "partner", "LoanDesk agent (bot)"),
+        Grant("DESK", ("chat:read", "chat:write"), "standard", "Desk Chat terminal", name="desk"),
+    ]),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
@@ -57,10 +69,6 @@ _ambient: dict[str, Any] = {"on": False, "every_s": 240}
 
 def uid(handle: str) -> str:
     return str(uuid.uuid5(NS, f"ib:{handle}"))
-
-
-def bot_token() -> str:
-    return derive_secret(rng.get_seed(), "ib-bot")
 
 
 # -- seeding -------------------------------------------------------------------------------
@@ -332,20 +340,34 @@ async def persona_act(persona_key: str, action: str, args: dict[str, Any]) -> di
 
 
 # -- auth ----------------------------------------------------------------------------------------
-async def current_user(x_user: str | None = Header(default=None), as_: str | None = Query(None, alias="as")) -> User:
-    handle = x_user or as_ or "srivera"
-    async with ctx.session() as s:
-        u = (await s.execute(select(User).where((User.handle == handle) | (User.id == handle)))).scalar()
-    if u is None:
-        raise HTTPException(401, f"unknown user {handle!r}")
-    return u
+def current_user(scope: str):  # noqa: ANN201 - a FastAPI dependency
+    """The human the desk key is acting as (``X-User``), once the key is entitled to ``scope``."""
+    gate = ctx.require(scope)
+
+    async def dep(_: Principal = Depends(gate), x_user: str | None = Header(default=None),
+                  as_: str | None = Query(None, alias="as")) -> User:
+        handle = x_user or as_ or "srivera"
+        async with ctx.session() as s:
+            u = (await s.execute(select(User).where((User.handle == handle) | (User.id == handle)))).scalar()
+        if u is None:
+            raise HTTPException(401, f"unknown user {handle!r}")
+        return u
+
+    return dep
 
 
-async def bot_user(authorization: str | None = Header(default=None)) -> User:
-    if authorization != f"Bearer {bot_token()}":
-        raise HTTPException(401, "bad or missing bot token")
-    async with ctx.session() as s:
-        return await s.get(User, uid(BOT_HANDLE))
+def bot_user(scope: str):  # noqa: ANN201 - a FastAPI dependency
+    """The bot user a bot key belongs to (its principal), entitled to ``scope``."""
+    gate = ctx.require(scope)
+
+    async def dep(p: Principal = Depends(gate)) -> User:
+        async with ctx.session() as s:
+            u = (await s.execute(select(User).where(User.handle == p.principal))).scalar()
+        if u is None or u.kind != "bot":
+            raise HTTPException(403, {"error": "forbidden", "detail": f"{p.principal} is not a bot user"})
+        return u
+
+    return dep
 
 
 async def _member_or_404(s: AsyncSession, room_id: str, user: User) -> tuple[Room, Member]:
@@ -384,11 +406,11 @@ class ReadBody(BaseModel):
 
 
 @app.get("/api/me", tags=["human"])
-async def me(user: User = Depends(current_user)) -> dict:
+async def me(user: User = Depends(current_user("chat:read"))) -> dict:
     return user_json(user)
 
 
-@app.get("/api/users", tags=["human"])
+@app.get("/api/users", tags=["human"], dependencies=[Depends(ctx.require("chat:read"))])
 async def users() -> list[dict]:
     async with ctx.session() as s:
         return [user_json(u) for u in (await s.execute(select(User).order_by(User.kind, User.handle))).scalars()]
@@ -417,13 +439,13 @@ async def _rooms_for(s: AsyncSession, user: User) -> list[dict[str, Any]]:
 
 
 @app.get("/api/rooms", tags=["human"])
-async def rooms(user: User = Depends(current_user)) -> list[dict]:
+async def rooms(user: User = Depends(current_user("chat:read"))) -> list[dict]:
     async with ctx.session() as s:
         return await _rooms_for(s, user)
 
 
 @app.post("/api/rooms", tags=["human"])
-async def create_room(body: RoomCreate, user: User = Depends(current_user)) -> dict:
+async def create_room(body: RoomCreate, user: User = Depends(current_user("chat:write"))) -> dict:
     async with ctx.session() as s:
         n = (await s.execute(select(func.count()).select_from(Room))).scalar_one()
         room = Room(id=f"room-{n + 1:04d}", name=body.name, kind=body.kind, created_at=clock.now())
@@ -441,7 +463,7 @@ async def create_room(body: RoomCreate, user: User = Depends(current_user)) -> d
 
 @app.get("/api/rooms/{room_id}/messages", tags=["human"])
 async def room_messages(room_id: str, before: int | None = None, after: int | None = None,
-                        limit: int = Query(50, le=500), user: User = Depends(current_user)) -> dict:
+                        limit: int = Query(50, le=500), user: User = Depends(current_user("chat:read"))) -> dict:
     async with ctx.session() as s:
         await _member_or_404(s, room_id, user)
         return await _page(s, room_id, before, after, limit)
@@ -462,7 +484,7 @@ async def _page(s: AsyncSession, room_id: str, before: int | None, after: int | 
 
 
 @app.post("/api/rooms/{room_id}/messages", tags=["human"])
-async def send(room_id: str, body: SendBody, user: User = Depends(current_user)) -> dict:
+async def send(room_id: str, body: SendBody, user: User = Depends(current_user("chat:write"))) -> dict:
     async with ctx.session() as s:
         await _member_or_404(s, room_id, user)
     via = "persona" if user.kind == "persona" else "human"
@@ -470,7 +492,7 @@ async def send(room_id: str, body: SendBody, user: User = Depends(current_user))
 
 
 @app.post("/api/blast", tags=["human"])
-async def blast(body: BlastBody, user: User = Depends(current_user)) -> dict:
+async def blast(body: BlastBody, user: User = Depends(current_user("chat:write"))) -> dict:
     blast_id = f"blast-{clock.now().strftime('%H%M%S%f')}-{user.handle}"
     sent = []
     for rid in body.roomIds:
@@ -481,7 +503,7 @@ async def blast(body: BlastBody, user: User = Depends(current_user)) -> dict:
 
 
 @app.post("/api/rooms/{room_id}/read", tags=["human"])
-async def mark_read(room_id: str, body: ReadBody, user: User = Depends(current_user)) -> dict:
+async def mark_read(room_id: str, body: ReadBody, user: User = Depends(current_user("chat:write"))) -> dict:
     async with ctx.session() as s:
         _, mem = await _member_or_404(s, room_id, user)
         mem.last_read_seq = max(mem.last_read_seq, body.seq)
@@ -491,13 +513,13 @@ async def mark_read(room_id: str, body: ReadBody, user: User = Depends(current_u
 
 
 @app.post("/api/rooms/{room_id}/typing", tags=["human"])
-async def typing(room_id: str, user: User = Depends(current_user)) -> dict:
+async def typing(room_id: str, user: User = Depends(current_user("chat:write"))) -> dict:
     ctx.hub.publish(f"room:{room_id}", {"type": "typing", "data": {"streamId": room_id, "user": user.id}})
     return {"ok": True}
 
 
 @app.put("/api/rooms/{room_id}/prefs", tags=["human"])
-async def prefs(room_id: str, body: Prefs, user: User = Depends(current_user)) -> dict:
+async def prefs(room_id: str, body: Prefs, user: User = Depends(current_user("chat:write"))) -> dict:
     async with ctx.session() as s:
         _, mem = await _member_or_404(s, room_id, user)
         for k, attr in (("folder", "folder"), ("tabPos", "tab_pos"), ("muted", "muted")):
@@ -509,7 +531,7 @@ async def prefs(room_id: str, body: Prefs, user: User = Depends(current_user)) -
 
 @app.get("/api/search", tags=["human"])
 async def search(q: str = Query(..., min_length=1), roomId: str | None = None, limit: int = Query(50, le=200),
-                 user: User = Depends(current_user)) -> list[dict]:
+                 user: User = Depends(current_user("chat:read"))) -> list[dict]:
     async with ctx.session() as s:
         my_rooms = select(Member.room_id).where(Member.user_id == user.id)
         stmt = (select(Message, User).join(User, User.id == Message.sender_id)
@@ -520,7 +542,7 @@ async def search(q: str = Query(..., min_length=1), roomId: str | None = None, l
         return [message_json(m, u) for m, u in (await s.execute(stmt)).all()]
 
 
-@app.get("/api/instruments/resolve", tags=["human"])
+@app.get("/api/instruments/resolve", tags=["human"], dependencies=[Depends(ctx.require("chat:read"))])
 async def resolve_instrument(q: str) -> dict:
     inst = resolve(q)
     if inst is None:
@@ -530,6 +552,9 @@ async def resolve_instrument(q: str) -> dict:
 
 @app.websocket("/ws")
 async def human_ws(ws: WebSocket, as_: str = Query("srivera", alias="as")) -> None:
+    """The desk key goes in ``?key=``; ``?as=`` picks who you act as."""
+    if await ctx.gate.websocket(ws, "chat:read") is None:
+        return
     async with ctx.session() as s:
         user = (await s.execute(select(User).where((User.handle == as_) | (User.id == as_)))).scalar()
         if user is None:
@@ -554,7 +579,7 @@ class ComposeBody(BaseModel):
 
 
 @app.get("/streams", tags=["bot"])
-async def streams(bot: User = Depends(bot_user)) -> list[dict]:
+async def streams(bot: User = Depends(bot_user("streams:read"))) -> list[dict]:
     async with ctx.session() as s:
         return [{"streamId": r["id"], "name": r["name"], "type": r["kind"], "members": r["members"],
                  "lastSeq": r["lastSeq"]} for r in await _rooms_for(s, bot)]
@@ -562,31 +587,32 @@ async def streams(bot: User = Depends(bot_user)) -> list[dict]:
 
 @app.get("/streams/{stream_id}/messages", tags=["bot"])
 async def stream_messages(stream_id: str, after: int = 0, limit: int = Query(100, le=1000),
-                          bot: User = Depends(bot_user)) -> dict:
+                          bot: User = Depends(bot_user("streams:read"))) -> dict:
     async with ctx.session() as s:
         await _member_or_404(s, stream_id, bot)
         return await _page(s, stream_id, None, after, limit)
 
 
 @app.websocket("/streams/subscribe")
-async def bot_ws(ws: WebSocket, token: str = Query(...)) -> None:
-    if token != bot_token():
-        await ws.close(code=4401)
+async def bot_ws(ws: WebSocket) -> None:
+    """The bot key goes in ``?token=`` (or ``?key=``)."""
+    p = await ctx.gate.websocket(ws, "streams:read")
+    if p is None:
         return
     async with ctx.session() as s:
-        room_ids = (await s.execute(select(Member.room_id).where(Member.user_id == uid(BOT_HANDLE)))).scalars().all()
+        room_ids = (await s.execute(select(Member.room_id).where(Member.user_id == uid(p.principal)))).scalars().all()
     await ctx.ws_stream(ws, [f"room:{r}" for r in room_ids] + ["rooms"])
 
 
 @app.post("/chats/{room_id}/messages", tags=["bot"])
-async def bot_send(room_id: str, body: SendBody, bot: User = Depends(bot_user)) -> dict:
+async def bot_send(room_id: str, body: SendBody, bot: User = Depends(bot_user("messages:write"))) -> dict:
     async with ctx.session() as s:
         await _member_or_404(s, room_id, bot)
     return await send_and_react(room_id, bot.handle, body.text, body.chips, via="bot", client_msg_id=body.clientMsgId)
 
 
 @app.post("/compose", tags=["bot"])
-async def compose(body: ComposeBody, bot: User = Depends(bot_user)) -> dict:
+async def compose(body: ComposeBody, bot: User = Depends(bot_user("compose"))) -> dict:
     async with ctx.session() as s:
         target = (await s.execute(select(User).where(User.handle == body.user))).scalar()
         if target is None or target.kind != "human":
@@ -600,7 +626,8 @@ async def compose(body: ComposeBody, bot: User = Depends(bot_user)) -> dict:
 # -- admin / scenario verbs -------------------------------------------------------------------------
 @app.get("/_admin/credentials", tags=["admin"])
 async def credentials() -> dict:
-    return {"botHandle": BOT_HANDLE, "botToken": bot_token()}
+    return {"botHandle": BOT_HANDLE, "botToken": ctx.gate.bootstrap_key(BOT_HANDLE),
+            "deskKey": ctx.gate.bootstrap_key("desk")}
 
 
 @app.get("/_admin/labels", tags=["admin"])

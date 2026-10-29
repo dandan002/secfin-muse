@@ -9,38 +9,52 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends, Header, HTTPException, Query, Request, UploadFile, WebSocket
+from fastapi import Depends, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from mockcore import rng
 from mockcore.app import ServiceContext, ServiceSpec, create_app
-from mockcore.auth import derive_secret
+from mockcore.keys import AuthSpec, Grant, Principal
 from refdata.counterparties import OUR_FIRM, counterparties
 
 from . import engine
 from .models import Base, InterestList, ListLine, Loan, Match
 
+SCOPES = {
+    "reference:read": "Entity table",
+    "lists:read": "Your interest lists",
+    "lists:write": "Upload and withdraw interest lists",
+    "matching:run": "Run the optimiser on demand",
+    "matches:read": "Proposed matches and optimiser runs",
+    "matches:negotiate": "Propose, counter, accept and reject matches",
+    "loans:read": "Loans and venue stats",
+    "loans:manage": "Re-rate, return and recall loans",
+}
+READ = ("reference:read", "lists:read", "matches:read", "loans:read")
 spec = ServiceSpec(
     name="mock-wematch",
     label="Venue B (Wematch-style)",
     schema="wematch",
     base=Base,
     description="Simulated list-matching venue: interest lists, optimiser matching, negotiation and loan lifecycle.",
+    auth=AuthSpec(SCOPES, lambda: [
+        Grant(OUR_FIRM["wematch_entity"], tuple(SCOPES), "partner", f"{OUR_FIRM['name']} (member)"),
+        Grant(OUR_FIRM["wematch_entity"], READ, "standard", "Reporting (read-only)", name="reporting"),
+    ]),
 )
 ctx = ServiceContext(spec)
 app = create_app(ctx)
 
 
-def api_key() -> str:
-    return derive_secret(rng.get_seed(), "wematch-api", OUR_FIRM["wematch_entity"])[:32]
+def member(scope: str):  # noqa: ANN201 - a FastAPI dependency
+    """The calling firm (the key's principal), entitled to ``scope`` (see mockcore.keys)."""
+    gate = ctx.require(scope)
 
+    async def dep(p: Principal = Depends(gate)) -> str:
+        return p.principal
 
-async def member(x_api_key: str | None = Header(default=None)) -> str:
-    if x_api_key != api_key():
-        raise HTTPException(401, "missing or bad X-Api-Key")
-    return OUR_FIRM["wematch_entity"]
+    return dep
 
 
 @app.exception_handler(engine.EngineError)
@@ -64,7 +78,7 @@ spec.on_reset = on_reset
 ctx.scheduler.every(engine.config.optimiser_every_s, "optimiser", _optimiser_tick)
 
 
-@app.get("/v1/entities", tags=["reference"])
+@app.get("/v1/entities", tags=["reference"], dependencies=[Depends(ctx.require("reference:read"))])
 async def entities() -> list[dict]:
     rows = [{"entity": OUR_FIRM["wematch_entity"], "name": OUR_FIRM["name"], "lei": OUR_FIRM["lei"], "self": True}]
     rows += [{"entity": c.wematch_entity, "name": c.name, "lei": c.lei, "kind": c.kind} for c in counterparties()
@@ -73,7 +87,7 @@ async def entities() -> list[dict]:
 
 
 @app.post("/v1/interest-lists", tags=["lists"], status_code=201)
-async def upload_list(request: Request, who: str = Depends(member)) -> dict:
+async def upload_list(request: Request, who: str = Depends(member("lists:write"))) -> dict:
     """Upload a list as JSON (``ListIn``), as ``text/csv``, or as a multipart ``file`` field."""
     ctype = request.headers.get("content-type", "")
     if ctype.startswith("application/json"):
@@ -101,14 +115,14 @@ async def upload_list(request: Request, who: str = Depends(member)) -> dict:
 
 
 @app.get("/v1/interest-lists", tags=["lists"])
-async def lists(who: str = Depends(member)) -> list[dict]:
+async def lists(who: str = Depends(member("lists:read"))) -> list[dict]:
     async with ctx.session() as s:
         rows = (await s.execute(select(InterestList).order_by(InterestList.id))).scalars()
         return [engine.list_json(x) for x in rows]
 
 
 @app.get("/v1/interest-lists/{list_id}", tags=["lists"])
-async def get_list(list_id: str, who: str = Depends(member)) -> dict:
+async def get_list(list_id: str, who: str = Depends(member("lists:read"))) -> dict:
     async with ctx.session() as s:
         lst = (await s.execute(select(InterestList).where(InterestList.list_id == list_id))).scalar()
         if lst is None:
@@ -119,7 +133,7 @@ async def get_list(list_id: str, who: str = Depends(member)) -> dict:
 
 
 @app.delete("/v1/interest-lists/{list_id}", tags=["lists"])
-async def withdraw_list(list_id: str, who: str = Depends(member)) -> dict:
+async def withdraw_list(list_id: str, who: str = Depends(member("lists:write"))) -> dict:
     async with ctx.session() as s:
         lst = (await s.execute(select(InterestList).where(InterestList.list_id == list_id))).scalar()
         if lst is None:
@@ -135,7 +149,7 @@ class OptimiserRun(BaseModel):
 
 
 @app.post("/v1/optimiser/run", tags=["matching"])
-async def optimiser(body: OptimiserRun | None = None, who: str = Depends(member)) -> dict:
+async def optimiser(body: OptimiserRun | None = None, who: str = Depends(member("matching:run"))) -> dict:
     async with ctx.session() as s:
         out = await engine.run_optimiser(ctx, s, body.listId if body else None)
         await s.commit()
@@ -144,7 +158,7 @@ async def optimiser(body: OptimiserRun | None = None, who: str = Depends(member)
 
 @app.get("/v1/matches", tags=["matching"])
 async def matches(status: str | None = None, listId: str | None = None, limit: int = Query(500, le=10_000),
-                  who: str = Depends(member)) -> list[dict]:
+                  who: str = Depends(member("matches:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Match).order_by(Match.id).limit(limit)
         if status:
@@ -155,7 +169,7 @@ async def matches(status: str | None = None, listId: str | None = None, limit: i
 
 
 @app.get("/v1/matches/{match_id}", tags=["matching"])
-async def match(match_id: str, who: str = Depends(member)) -> dict:
+async def match(match_id: str, who: str = Depends(member("matches:read"))) -> dict:
     async with ctx.session() as s:
         m = (await s.execute(select(Match).where(Match.match_id == match_id))).scalar()
         if m is None:
@@ -169,7 +183,7 @@ class ProposeBody(BaseModel):
 
 
 @app.post("/v1/matches/{match_id}/propose", tags=["negotiation"])
-async def propose(match_id: str, body: ProposeBody, who: str = Depends(member)) -> dict:
+async def propose(match_id: str, body: ProposeBody, who: str = Depends(member("matches:negotiate"))) -> dict:
     async with ctx.session() as s:
         m = await engine.propose(ctx, s, match_id, body.feeBps, body.quantity)
         await s.commit()
@@ -177,12 +191,12 @@ async def propose(match_id: str, body: ProposeBody, who: str = Depends(member)) 
 
 
 @app.post("/v1/matches/{match_id}/counter", tags=["negotiation"])
-async def counter(match_id: str, body: ProposeBody, who: str = Depends(member)) -> dict:
+async def counter(match_id: str, body: ProposeBody, who: str = Depends(member("matches:negotiate"))) -> dict:
     return await propose(match_id, body, who)
 
 
 @app.post("/v1/matches/{match_id}/accept", tags=["negotiation"])
-async def accept(match_id: str, who: str = Depends(member)) -> dict:
+async def accept(match_id: str, who: str = Depends(member("matches:negotiate"))) -> dict:
     async with ctx.session() as s:
         m = await engine.accept(ctx, s, match_id)
         await s.commit()
@@ -190,7 +204,7 @@ async def accept(match_id: str, who: str = Depends(member)) -> dict:
 
 
 @app.post("/v1/matches/{match_id}/reject", tags=["negotiation"])
-async def reject(match_id: str, who: str = Depends(member)) -> dict:
+async def reject(match_id: str, who: str = Depends(member("matches:negotiate"))) -> dict:
     async with ctx.session() as s:
         m = await engine.reject(ctx, s, match_id)
         await s.commit()
@@ -198,7 +212,7 @@ async def reject(match_id: str, who: str = Depends(member)) -> dict:
 
 
 @app.get("/v1/loans", tags=["lifecycle"])
-async def loans(status: str | None = None, who: str = Depends(member)) -> list[dict]:
+async def loans(status: str | None = None, who: str = Depends(member("loans:read"))) -> list[dict]:
     async with ctx.session() as s:
         q = select(Loan).order_by(Loan.id)
         if status:
@@ -215,7 +229,7 @@ class ReturnBody(BaseModel):
 
 
 @app.post("/v1/loans/{loan_id}/rerate", tags=["lifecycle"])
-async def rerate(loan_id: str, body: RerateBody, who: str = Depends(member)) -> dict:
+async def rerate(loan_id: str, body: RerateBody, who: str = Depends(member("loans:manage"))) -> dict:
     async with ctx.session() as s:
         ln = await engine.rerate(ctx, s, loan_id, body.feeBps)
         await s.commit()
@@ -223,7 +237,7 @@ async def rerate(loan_id: str, body: RerateBody, who: str = Depends(member)) -> 
 
 
 @app.post("/v1/loans/{loan_id}/return", tags=["lifecycle"])
-async def return_loan(loan_id: str, body: ReturnBody | None = None, who: str = Depends(member)) -> dict:
+async def return_loan(loan_id: str, body: ReturnBody | None = None, who: str = Depends(member("loans:manage"))) -> dict:
     async with ctx.session() as s:
         ln = await engine.return_qty(ctx, s, loan_id, body.quantity if body else None)
         await s.commit()
@@ -231,27 +245,31 @@ async def return_loan(loan_id: str, body: ReturnBody | None = None, who: str = D
 
 
 @app.post("/v1/loans/{loan_id}/recall", tags=["lifecycle"])
-async def recall_loan(loan_id: str, body: ReturnBody | None = None, who: str = Depends(member)) -> dict:
+async def recall_loan(loan_id: str, body: ReturnBody | None = None, who: str = Depends(member("loans:manage"))) -> dict:
     return await return_loan(loan_id, body, who)
 
 
 @app.get("/v1/stats", tags=["lifecycle"])
-async def stats(who: str = Depends(member)) -> dict:
+async def stats(who: str = Depends(member("loans:read"))) -> dict:
     async with ctx.session() as s:
         return await engine.stats(s)
 
 
 @app.websocket("/v1/stream")
-async def stream(ws: WebSocket, key: str = Query(""), topics: str = "lists,matches,loans,optimiser") -> None:
-    if key != api_key():
-        await ws.close(code=4401)
+async def stream(ws: WebSocket, topics: str = "lists,matches,loans,optimiser") -> None:
+    """Pass the key as ``?key=``; each topic needs its read scope."""
+    wanted = [t.strip() for t in topics.split(",") if t.strip()]
+    need = {"lists": "lists:read", "matches": "matches:read", "optimiser": "matches:read", "loans": "loans:read"}
+    if await ctx.gate.websocket(ws, *{need[t] for t in wanted if t in need}) is None:
         return
-    await ctx.ws_stream(ws, [t.strip() for t in topics.split(",") if t.strip()])
+    await ctx.ws_stream(ws, wanted)
 
 
 @app.get("/_admin/credentials", tags=["admin"])
 async def credentials() -> dict:
-    return {"entity": OUR_FIRM["wematch_entity"], "header": "X-Api-Key", "apiKey": api_key()}
+    return {"entity": OUR_FIRM["wematch_entity"], "header": "X-Api-Key",
+            "apiKey": ctx.gate.bootstrap_key(OUR_FIRM["wematch_entity"]),
+            "readOnlyKey": ctx.gate.bootstrap_key("reporting")}
 
 
 @app.get("/_admin/dealer-lines", tags=["admin"])

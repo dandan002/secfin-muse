@@ -67,25 +67,27 @@ variable "desk_chat" {
   description = "Also serve the Desk Chat UI (mock-ib's terminal) from this system."
 }
 
+variable "postgres_image" {
+  type        = string
+  description = "The Postgres image with the snapshot hooks (infra/postgres), e.g. <registry>/loandesk-demo/postgres:<tag>."
+}
+
+variable "snapshot" {
+  type        = object({ bucket = string, key = string })
+  default     = null
+  description = "Where Postgres saves itself when the task stops and restores from on the next start. null: start empty every time."
+}
+
 variable "nat_eip_allocation_id" {
   type        = string
   default     = null
   description = "If set, tasks run in private subnets behind a NAT gateway with this Elastic IP (a fixed egress address)."
 }
 
-variable "db_instance_class" {
-  type    = string
-  default = "db.t4g.micro"
-}
-
-variable "db_deletion_protection" {
-  type    = bool
-  default = false
-}
-
 variable "running" {
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
+  description = "false removes everything billed by the hour (load balancers, NAT, the task); the free base stays."
 }
 
 variable "log_retention_days" {

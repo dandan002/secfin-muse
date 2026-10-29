@@ -81,18 +81,59 @@ export class ApiError extends Error {
   }
 }
 
+const KEY_STORE = "deskchat.key";
+
+/**
+ * The desk key that opens mock-ib's human API (`deskKey` in its `GET /_admin/credentials`). Open the
+ * app once with `?key=...` and it's remembered; otherwise it asks.
+ */
+export function deskKey(): string {
+  const url = new URL(window.location.href);
+  let key = url.searchParams.get("key");
+  if (key) {
+    url.searchParams.delete("key"); // keep it out of the address bar and history
+    window.history.replaceState(null, "", url);
+  } else {
+    try {
+      key = localStorage.getItem(KEY_STORE);
+    } catch {
+      /* storage blocked */
+    }
+    key ??= window.prompt("Desk Chat access key") ?? "";
+  }
+  try {
+    localStorage.setItem(KEY_STORE, key);
+  } catch {
+    /* storage blocked: ask again next load */
+  }
+  return key;
+}
+
+let key: string | null = null;
+const currentKey = (): string => (key ??= deskKey());
+
 async function call<T>(as: string, path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(IB_URL + path, {
     ...init,
-    headers: { "content-type": "application/json", "x-user": as, ...(init.headers ?? {}) },
+    headers: { "content-type": "application/json", "x-user": as, "x-api-key": currentKey(), ...(init.headers ?? {}) },
   });
   if (!res.ok) {
-    let detail = res.statusText;
+    if (res.status === 401) {
+      key = null; // wrong, revoked or expired: ask again on the next call
+      try {
+        localStorage.removeItem(KEY_STORE);
+      } catch {
+        /* storage blocked */
+      }
+    }
+    let detail: unknown = res.statusText;
     try {
       detail = (await res.json()).detail ?? detail;
     } catch {
       /* not json */
     }
+    // The gate answers {"detail": {"error", "detail"}}; the app's own errors are plain strings.
+    if (detail && typeof detail === "object" && "detail" in detail) detail = (detail as { detail: unknown }).detail;
     throw new ApiError(res.status, String(detail));
   }
   return res.json() as Promise<T>;
@@ -128,5 +169,5 @@ export const api = {
 };
 
 export function wsUrl(as: string): string {
-  return IB_URL.replace(/^http/, "ws") + `/ws?as=${encodeURIComponent(as)}`;
+  return IB_URL.replace(/^http/, "ws") + `/ws?as=${encodeURIComponent(as)}&key=${encodeURIComponent(currentKey())}`;
 }
