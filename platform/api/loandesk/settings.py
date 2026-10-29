@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     hot_min_fee_bps: float = 300.0
     hot_min_util_pct: float = 85.0
     locate_name_cap: int = 1_000_000
+    # Chat ingest: read every Desk Chat room the bot is in. "model": the parser model reads each message in its
+    # conversation (desk chat leans on context: "Send"); "rules": the rules alone, context-free.
+    chat_ingest: bool = True
+    chat_parser: Literal["model", "rules"] = "model"
+    chat_context_hours: float = 10.0  # how far back a conversation reaches: a trade can take hours to agree
+    chat_confident: float = 0.8  # least confidence for a reading to stand without the trader
     auto_approve_etb: bool = True  # the standing policy that clears GC/ETB locates without a human
     # Pre-routing filters: a matching line is declined by policy:FILTER before any trader or model sees it
     # ("hold" sends it to the trader instead, "off" disables the filter).
@@ -87,6 +93,7 @@ class Settings(BaseSettings):
     cassette_path: Path = Path("cassettes/agent.jsonl")
     reviewer_effort: str = "medium"  # reasoning_effort per model (spec: Spark on medium reasoning)
     orchestrator_effort: str = "high"
+    parser_effort: str = "low"  # chat parsing runs on every message (spec: Spark on low reasoning)
     escalate_below: float = 0.7  # Spark confidence under this hands the locate to Wonder
     # Where agent runs keep their checkpoints: "memory", a sqlite path, or a postgres URL.
     # Unset: the desk's own Postgres, or a sibling ``*.agent.db`` next to its SQLite file.

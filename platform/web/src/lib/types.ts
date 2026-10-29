@@ -221,3 +221,36 @@ export interface AuditEvent {
   actor: string;
   after: Record<string, unknown> | null;
 }
+
+export type ChatIntent = "RFQ" | "OFFER" | "IOI" | "QUOTE" | "COUNTER" | "ACCEPT" | "DECLINE" | "RECALL" | "RETURN"
+  | "INTERNAL_BORROW" | "INJECTION" | "LOCATE" | "CHATTER" | "UNKNOWN";
+
+export interface ChatLine {
+  identifier: string | null;
+  instrumentId: string | null;
+  quantity: number | null;
+  feeBps: number | null;
+  rate?: "GC" | null;
+  error?: string | null;
+}
+
+export interface ChatMessage {
+  id: string;
+  streamId: string;
+  seq: number;
+  sender: string;
+  senderName: string | null;
+  counterparty: string | null;
+  text: string;
+  sentAt: string;
+  intent: ChatIntent;
+  confidence: number;
+  parser: string;
+  lines: ChatLine[];
+  status: "OPEN" | "AGREED" | "OURS" | "FLAGGED" | "UNSURE" | "IGNORED" | "DISMISSED";
+  side: "US" | "THEM";
+  refersTo: number | null;
+  ourSide: "LEND" | "BORROW" | null;
+  note: string | null;
+  receivedAt: string;
+}

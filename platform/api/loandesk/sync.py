@@ -1,5 +1,5 @@
-"""Background sync with the outside world: clock, gateway inbox, Venue A market data, our orders and
-the processor's positions (internal inventory).
+"""Background sync with the outside world: clock, gateway inbox, Desk Chat, Venue A market data, our orders
+and the processor's positions (internal inventory).
 
 Polling keeps the scaffold simple and restart-safe (cursors live in ``sync_cursors``). The venues
 also offer WebSocket streams; switching to them changes only this module.
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import clock, db, events
 from .adapters import AdapterError, systems
+from .ingest import chat
 from .models import Order, SyncCursor
 from .services import inventory, locates, market, orders
 from .settings import get_settings
@@ -57,6 +58,28 @@ async def sync_inbox() -> None:
             after = max(after, int(r["seq"]))
         await _set_cursor(s, "gateway_inbox", str(after))
         await s.commit()
+
+
+async def sync_chat() -> None:
+    """Read every room the bot is in. A room seen for the first time starts at its current end, so history
+    from before the desk started (yesterday's locates) is never acted on."""
+    dc = systems().chat
+    for st in await dc.streams():
+        name = f"chat:{st['streamId']}"[:32]
+        async with db.session() as s:
+            if await s.get(SyncCursor, name) is None:
+                await _set_cursor(s, name, str(st.get("lastSeq") or 0))
+                await s.commit()
+                continue
+            after = int(await _cursor(s, name))
+        if int(st.get("lastSeq") or 0) <= after:
+            continue
+        page = await dc.messages(st["streamId"], after=after)
+        for msg in page.get("messages", []):
+            async with db.session() as s:  # one transaction per message: a bad one never blocks the room
+                await chat.ingest(s, msg)  # ours too: our quotes and acceptances are half the conversation
+                await _set_cursor(s, name, str(msg["seq"]))
+                await s.commit()
 
 
 async def sync_market() -> None:
@@ -130,6 +153,7 @@ class Syncer:
     def start(self) -> None:
         cfg = get_settings()
         jobs = {"clock": (5.0, sync_clock), "inbox": (cfg.poll_s, sync_inbox),
+                **({"chat": (cfg.poll_s, sync_chat)} if cfg.chat_ingest else {}),
                 "market": (cfg.availability_every_s, sync_market), "orders": (cfg.poll_s, sync_orders),
                 "inventory": (cfg.inventory_every_s, sync_inventory),
                 "housekeeping": (30.0, housekeeping)}
