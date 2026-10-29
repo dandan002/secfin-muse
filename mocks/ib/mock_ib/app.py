@@ -276,11 +276,20 @@ async def _persona_send(persona_key: str, room_id: str, draft: P.Draft) -> None:
 def _generate(r, p: P.PersonaDef, action: str, args: dict[str, Any], at=None) -> list[P.Draft]:
     """Drafts for a persona action. ``auto`` picks something in character."""
     if action == "auto":
-        action = {"terse": "locate_blast", "list": "locate_blast", "chatty": "ioi", "rfq": "rfq",
+        action = {"terse": "any_of_these", "list": "borrow_list", "chatty": "offer", "rfq": "rfq",
                   "internal": "internal_borrow", "redteam": "rfq"}[p.style]
-        if r.random() < 0.15:
+        roll = r.random()
+        if p.style == "chatty" and roll < 0.2:
+            action = "recall"
+        elif p.style == "chatty" and roll < 0.45:
+            action = "ioi"
+        elif p.style == "terse" and roll < 0.35:
+            action = "rfq"
+        elif p.style == "terse" and roll < 0.2:
+            action = "return"
+        elif roll > 0.85:
             action = "chatter"
-        args = {"n": r.choice((1, 2, 3, 5))} if action == "locate_blast" else {}
+        args = {"n": r.choice((3, 4, 6))} if action == "borrow_list" else {}
     tier_mix = args.get("tierMix")
     inst = resolve(str(args["instrument"])) if args.get("instrument") else None
     if args.get("instrument") and inst is None:
@@ -292,12 +301,28 @@ def _generate(r, p: P.PersonaDef, action: str, args: dict[str, Any], at=None) ->
     if action == "internal_borrow":
         q = args.get("qty")
         insts = [inst] if inst else P.pick_instruments(r, 1, tier_mix)
-        d = P._locate_message(r, p if p.style == "internal" else P.PERSONAS["delta-one"], insts)
-        if q:
-            d.label["lines"][0]["quantity"] = q
-        return [d]
+        # The text and the label both carry ``qty``: overriding only the label left them disagreeing.
+        return [P._locate_message(r, p if p.style == "internal" else P.PERSONAS["delta-one"], insts, q)]
     if action == "ioi":
         return [P.ioi(r, p, int(args.get("n", 4)), at=at or clock.now())]
+    if action == "borrow_list":
+        return [P.borrow_list(r, p, int(args.get("n", 5)))]
+    if action == "any_of_these":
+        insts = [resolve(str(x)) for x in args.get("instruments") or []]
+        if any(i is None for i in insts):
+            raise HTTPException(422, f"unknown instrument in {args.get('instruments')}")
+        d, hidden = P.any_of_these(r, p, insts or None, args.get("qtys"), at=at or clock.now())
+        if args.get("maxFeeBps"):  # a scripted limit, so the demo's answer to our quote is known
+            for ln in hidden["lines"]:
+                ln["maxFeeBps"] = float(args["maxFeeBps"])
+        d.label["_hidden"] = hidden
+        return [d]
+    if action == "offer":
+        return [P.offer(r, p, inst, args.get("qty"), at=at or clock.now(), gc=args.get("gc"))]
+    if action == "recall":
+        return [P.recall(r, p, inst, args.get("qty"))]
+    if action == "return":
+        return [P.return_shares(r, p, inst, args.get("qty"))]
     if action == "rfq":
         d, _hidden = P.rfq(r, p, inst, args.get("qty"), at=at or clock.now(), max_fee_bps=args.get("maxFeeBps"))
         d.label["_hidden"] = _hidden
@@ -653,7 +678,9 @@ async def llm_stats() -> dict:
 
 @ctx.verb("persona")
 async def verb_persona(args: dict[str, Any]) -> dict:
-    """Make a persona act: {persona, action: locate_blast|rfq|ioi|internal_borrow|injection|chatter|auto, ...}"""
+    """Make a persona act: {persona, action: any_of_these|offer|rfq|borrow_list|ioi|recall|return|internal_borrow|
+    injection|chatter|
+    locate_blast (a stray locate: those belong to sales and the API)|auto, ...}"""
     return await persona_act(args["persona"], args.get("action", "auto"), args)
 
 

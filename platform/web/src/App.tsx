@@ -7,13 +7,14 @@ import { useStream } from "./lib/stream";
 import { Agent } from "./views/Agent";
 import { Audit } from "./views/Audit";
 import { BlotterView } from "./views/Blotter";
+import { Chat } from "./views/Chat";
 import { Locates } from "./views/Locates";
 import { Market } from "./views/Market";
 import { Paste } from "./views/Paste";
 import { Ticket } from "./views/Ticket";
 
 const SCREENS = { blotter: BlotterView, locates: Locates, ticket: Ticket, market: Market, agent: Agent, paste: Paste,
-  audit: Audit };
+  audit: Audit, chat: Chat };
 
 export function App() {
   useStream();

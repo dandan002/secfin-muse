@@ -1,5 +1,9 @@
 """Scripted chat personas that write in desk shorthand and emit gold labels.
 
+Chat is where stock-loan traders work borrows and loans: borrow requests and RFQs, lenders' availability,
+counters, confirms, recalls and returns. Locates come through sales and the API (mock-counterparty-gateway);
+``locate_blast`` only makes the occasional stray locate a counterparty drops in chat anyway.
+
 All counterparties are fictional. Each generator returns ``Draft`` objects: the text a
 persona sends, optional instrument chips (structured links), and the label a perfect
 parser would extract. Generation is pure given a ``random.Random``, so the eval corpus and
@@ -44,14 +48,16 @@ PERSONAS: dict[str, PersonaDef] = {
     p.key: p
     for p in (
         PersonaDef("pb-alpha", "jkowalski.pba", "Jan Kowalski", "PBALPHA", "Alpha Prime Services",
-                   "America/New_York", "terse", "pbalpha-locates", "PB-ALPHA ⇄ LoanDesk Locates", "Clients",
-                   "Terse prime-broker locate desk. Lowercase, no greetings, abbreviations like 'loc', 'pls', 'ty'."),
+                   "America/New_York", "terse", "pbalpha-desk", "PB-ALPHA ⇄ LoanDesk", "Clients",
+                   "Terse prime-broker stock-loan trader borrowing for clients. Lowercase, no greetings, "
+                   "abbreviations like 'bid', 'pls', 'ty'."),
         PersonaDef("pb-bravo", "achen.pbb", "Amelia Chen", "PBBRAVO", "Bravo Prime Brokerage",
-                   "Europe/London", "list", "pbbravo-locates", "PB-BRAVO Locates", "Clients",
-                   "London PB locate desk. Polite, sends lists by SEDOL or ISIN as pasted tables."),
+                   "Europe/London", "list", "pbbravo-desk", "PB-BRAVO ⇄ LoanDesk", "Clients",
+                   "London PB stock-loan desk. Polite, sends borrow wants as pasted lists by SEDOL or ISIN."),
         PersonaDef("harbor-lending", "mdiaz.harbor", "Marisol Diaz", "HARBORAL", "Harbor Lane Agency Lending",
                    "America/New_York", "chatty", "harbor-avails", "Harbor Lane ⇄ LoanDesk Avails", "Lenders",
-                   "Chatty agent lender sharing availability and indicative fees. Friendly, uses emoji sparingly."),
+                   "Chatty agent lender sharing availability, indicative fees and recalls. Friendly, uses emoji "
+                   "sparingly."),
         PersonaDef("kestrel-hf", "rpatel.kestrel", "Ravi Patel", "KESTRELHF", "Kestrel Point Capital",
                    "America/New_York", "rfq", "kestrel-desk", "Kestrel Point / LoanDesk", "Clients",
                    "Hedge-fund trader asking for quotes on hard-to-borrow names. Direct, price-sensitive."),
@@ -200,7 +206,7 @@ def locate_blast(
     return drafts
 
 
-def _locate_message(r: random.Random, p: PersonaDef, insts: list[Instrument]) -> Draft:
+def _locate_message(r: random.Random, p: PersonaDef, insts: list[Instrument], qty: int | None = None) -> Draft:
     lines: list[dict[str, Any]] = []
     if p.style == "list":
         id_style = r.choice(("sedol", "isin"))
@@ -218,7 +224,7 @@ def _locate_message(r: random.Random, p: PersonaDef, insts: list[Instrument]) ->
         return Draft(text, _label("LOCATE", p, lines))
     if p.style == "internal":
         inst = insts[0]
-        q = draw_qty(r, 1_000_000, 0.6)
+        q = qty or draw_qty(r, 1_000_000, 0.6)
         written, t = ident(r, inst, "composite")
         text = r.choice((
             f"hey, need an internal borrow {fmt_qty(r, q)} {written} for the swap hedge, settles T+1",
@@ -276,20 +282,149 @@ def rfq(
     """Request for quote on a (usually hot) name. Returns the draft and the persona's hidden limit."""
     inst = inst or pick_instruments(r, 1, {"HOT": 0.7, "WARM": 0.3})[0]
     qty = qty or draw_qty(r, 400_000, 0.5)
-    written, t = ident(r, inst, "composite" if r.random() < 0.7 else "bbg")
     term = r.choice(("open", "open", "term to 15-Dec"))
-    text = r.choice((
-        f"where can you show {written}? looking for {fmt_qty(r, qty)}, {term}",
-        f"bid/offer on {fmt_qty(r, qty)} {written}? need it T+1",
-        f"can u quote {fmt_qty(r, qty)} {written}, {term}. what's the fee",
-        f"hi - need {fmt_qty(r, qty)} {written} borrow, {term}. levels?",
-    ))
     fair = market.fee_bps(inst, at) if at else inst.base_fee_bps
     limit = max_fee_bps or round(fair * r.uniform(1.05, 1.4))
-    label = _label("RFQ", p, [_line(inst, written, t, qty)], side="BORROW",
-                   term="OPEN" if term == "open" else "TERM", settle="T+1")
+    bid = None
+    if p.style == "terse":  # a PB stock-loan trader borrowing for a client, often with a bid
+        written, t = ident(r, inst, "ticker")
+        bid = int(round(fair * r.uniform(0.8, 0.95) / 5) * 5) or 5
+        text = r.choice((
+            f"bid {fmt_qty(r, qty)} {written} {bid} {term}",
+            f"need {fmt_qty(r, qty)} {written} borrow, {term}. where are you?",
+            f"{written} {fmt_qty(r, qty)} borrow pls, {term}. lvl?",
+        ))
+    else:
+        written, t = ident(r, inst, "composite" if r.random() < 0.7 else "bbg")
+        text = r.choice((
+            f"where can you show {written}? looking for {fmt_qty(r, qty)}, {term}",
+            f"bid/offer on {fmt_qty(r, qty)} {written}? need it T+1",
+            f"can u quote {fmt_qty(r, qty)} {written}, {term}. what's the fee",
+            f"hi - need {fmt_qty(r, qty)} {written} borrow, {term}. levels?",
+        ))
+    line = _line(inst, written, t, qty, **({"feeBps": bid} if bid else {}))
+    label = _label("RFQ", p, [line], side="BORROW", term="OPEN" if term == "open" else "TERM", settle="T+1")
     hidden = {"instrumentId": inst.id, "composite": inst.composite, "qty": qty, "maxFeeBps": limit, "counters": 0}
     return Draft(text, label, [_chip(text, written, inst, qty)]), hidden
+
+
+def borrow_list(r: random.Random, p: PersonaDef, n: int = 5) -> Draft:
+    """A PB asks to borrow a list of names: one RFQ, several lines, as a pasted table."""
+    insts = pick_instruments(r, n, {"GC": 0.4, "WARM": 0.4, "HOT": 0.2})
+    id_style = r.choice(("sedol", "isin"))
+    header = "SEDOL\tQty" if id_style == "sedol" else "ISIN | Quantity"
+    sep = "\t" if id_style == "sedol" else " | "
+    rows, lines = [], []
+    for inst in insts:
+        q = draw_qty(r, 250_000)
+        written, t = ident(r, inst, id_style)
+        rows.append(f"{written}{sep}{fmt_qty(r, q, 'full' if r.random() < 0.6 else 'raw')}")
+        lines.append(_line(inst, written, t, q))
+    intro = r.choice(("Could you lend us the below please, open, indicative levels appreciated:",
+                      "Morning, looking to borrow the following:", "Borrow wants for today, thanks:",
+                      "Hi team, can you show levels on these borrows pls"))
+    return Draft(f"{intro}\n{header}\n" + "\n".join(rows), _label("RFQ", p, lines, side="BORROW", term="OPEN"))
+
+
+def recall(r: random.Random, p: PersonaDef, inst: Instrument | None = None, qty: int | None = None) -> Draft:
+    """A lender recalls shares it has lent us: we must return them (or re-borrow elsewhere)."""
+    inst = inst or pick_instruments(r, 1, {"GC": 0.5, "WARM": 0.4, "HOT": 0.1})[0]
+    qty = qty or draw_qty(r, 400_000, 0.6)
+    written, t = ident(r, inst, "composite")
+    ref = f"{p.cp_code[:3]}-{r.randint(10000, 99999)}"
+    settle = r.choice(("T+1", "T+2"))
+    text = r.choice((
+        f"Hi! We need to recall {fmt_qty(r, qty)} {written} from you, loan ref {ref}. Sale settles {settle} 🙏",
+        f"Recall notice: {written} {fmt_qty(r, qty)}, ref {ref}, please return by {settle}. Thanks!",
+        f"Sorry - beneficial owner is selling, recalling {fmt_qty(r, qty)} {written} ({ref}), {settle}",
+    ))
+    return Draft(text, _label("RECALL", p, [_line(inst, written, t, qty)], side="LEND", ref=ref, settle=settle),
+                 [_chip(text, written, inst, qty)])
+
+
+def return_shares(r: random.Random, p: PersonaDef, inst: Instrument | None = None, qty: int | None = None) -> Draft:
+    """A borrower gives back shares it borrowed from us."""
+    inst = inst or pick_instruments(r, 1)[0]
+    qty = qty or draw_qty(r, 200_000, 0.6)
+    written, t = ident(r, inst, "ticker" if p.style == "terse" else "composite")
+    ref = f"{p.cp_code[:3]}-{r.randint(10000, 99999)}"
+    text = r.choice((f"returning {fmt_qty(r, qty)} {written} today, ref {ref}",
+                     f"ret {written} {fmt_qty(r, qty)} T+1 pls, {ref}",
+                     f"sending back {fmt_qty(r, qty)} {written}, our ref {ref}"))
+    return Draft(text, _label("RETURN", p, [_line(inst, written, t, qty)], side="BORROW", ref=ref))
+
+
+def any_of_these(r: random.Random, p: PersonaDef, insts: list[Instrument] | None = None,
+                 qtys: list[int] | None = None, at: datetime | None = None) -> tuple[Draft, dict[str, Any]]:
+    """The desk's usual borrow ask: "Any of these?" and a list in bare numbers. Returns the draft and the
+    persona's hidden limits, so it can answer our quote line by line."""
+    insts = insts or pick_instruments(r, r.choice((2, 3, 4)), {"GC": 0.3, "WARM": 0.45, "HOT": 0.25},
+                                      countries=("US",))
+    qtys = qtys or [max(int(draw_qty(r, 60_000, 1.0) * r.uniform(0.9, 1.1)) // 1000 * 1000, 1000) for _ in insts]
+    rows, lines, hidden = [], [], []
+    for inst, q in zip(insts, qtys, strict=True):
+        written, t = ident(r, inst, "ticker")
+        rows.append(f"{written} {q}")
+        lines.append(_line(inst, written, t, q))
+        fair = market.fee_bps(inst, at) if at else inst.base_fee_bps
+        hidden.append({"instrumentId": inst.id, "identifier": written, "idType": t, "qty": q,
+                       "maxFeeBps": round(fair * r.uniform(1.0, 1.5))})
+    intro = r.choice(("Any of these?", "any of these", "Can you do any of these?", "Need these, any?", "these?"))
+    text = intro + "\n" + "\n".join(rows)
+    return Draft(text, _label("RFQ", p, lines, side="BORROW")), {"lines": hidden}
+
+
+def offer(r: random.Random, p: PersonaDef, inst: Instrument | None = None, qty: int | None = None,
+          at: datetime | None = None, gc: bool | None = None) -> Draft:
+    """A lender offering shares to us: "Can you take some ASML? Got 1.5k over here at GC"."""
+    inst = inst or pick_instruments(r, 1, {"GC": 0.6, "WARM": 0.3, "HOT": 0.1})[0]
+    qty = qty or draw_qty(r, 400_000, 0.9)
+    written, t = ident(r, inst, "ticker" if r.random() < 0.6 else "composite")  # bare only for US names
+    gc = (inst.tier == "GC") if gc is None else gc
+    fee = None if gc else round((market.fee_bps(inst, at) if at else inst.base_fee_bps) / 100, 2)
+    level = "GC" if gc else f"{fee}%"
+    text = r.choice((
+        f"Can you take some {written}? Got {fmt_qty(r, qty)} over here at {level}",
+        f"anyone need {written}? {fmt_qty(r, qty)} here, {level}",
+        f"Got {fmt_qty(r, qty)} {written} to lend at {level} if you want it",
+        f"{written} - can offer {fmt_qty(r, qty)} at {level}, interested?",
+    ))
+    line = {"instrumentId": inst.id, "identifier": written, "idType": t, "quantity": qty,
+            **({"rate": "GC"} if gc else {"feeBps": round(fee * 100)})}
+    chips = [_chip(text, written, inst, qty)] if written == inst.composite else []  # chips span a composite
+    return Draft(text, _label("OFFER", p, [line], side="LEND"), chips)
+
+
+_QUOTE_LINE = re.compile(r"^\s*([A-Z0-9][A-Z0-9./]*(?: [A-Z]{2})?)\s+(?:@\s*)?(\d+(?:\.\d+)?)\s*(%|bps?|bp)?\s*$", re.I)
+
+
+def parse_quote(text: str) -> dict[str, float]:
+    """Our quote, line by line ("META 0.15%", "SPCX 30bps"): identifier (upper) to fee in bps."""
+    out = {}
+    for ln in text.splitlines():
+        m = _QUOTE_LINE.match(ln)
+        if m:
+            v = float(m.group(2))
+            out[m.group(1).upper()] = v * 100 if m.group(3) == "%" or (m.group(3) is None and v < 5) else v
+    return out
+
+
+def answer_quote(r: random.Random, p: PersonaDef, text: str, state: dict[str, Any]) -> tuple[Draft, None] | None:
+    """A borrower's answer to our quote on its list: "Send", "Send META" or "pass", by its hidden limits."""
+    fees = parse_quote(text)
+    quoted = [(ln, fees[ln["identifier"].upper()]) for ln in state["lines"] if ln["identifier"].upper() in fees]
+    if not quoted:
+        return None
+    ok = [(ln, f) for ln, f in quoted if f <= ln["maxFeeBps"]]
+    lines = [{"instrumentId": ln["instrumentId"], "identifier": ln["identifier"], "idType": ln["idType"],
+              "quantity": ln["qty"], "feeBps": f} for ln, f in ok]
+    if not ok:
+        return Draft(r.choice(("pass thx", "too rich, pass", "nah")), _label("DECLINE", p, [], side="BORROW")), None
+    if len(ok) == len(quoted):
+        text_ = r.choice(("Send", "send", "Send pls", "send all", "yes pls send"))
+    else:
+        text_ = "Send " + " ".join(ln["identifier"] for ln, _ in ok) + r.choice(("", " only", ", pass the rest"))
+    return Draft(text_, _label("ACCEPT", p, lines, side="BORROW")), None
 
 
 def injection(r: random.Random, p: PersonaDef, inst: Instrument | None = None, qty: int = 5_000_000) -> Draft:
@@ -339,7 +474,10 @@ def react(
     r: random.Random, p: PersonaDef, text: str, state: dict[str, Any] | None
 ) -> tuple[float, Draft, dict | None] | None:
     """How a persona answers one of our messages: (delay seconds, reply, new state or None to clear)."""
-    if p.style in ("rfq", "redteam") and state:
+    if state and "lines" in state:  # our quote on an "Any of these?" list
+        out = answer_quote(r, p, text, state)
+        return (r.uniform(4, 20), out[0], None) if out else None
+    if p.style in ("rfq", "redteam", "terse") and state:
         composite = state["composite"]
         qty = state["qty"]
         if _NEGATIVE.search(text):
@@ -354,7 +492,7 @@ def react(
             ref = f"{p.cp_code[:3]}-{r.randint(10000, 99999)}"
             reply = r.choice((f"done. {fmt_qty(r, qty)} {composite} @ {fee:g}bps open, our ref {ref}",
                               f"ok we'll take it - {fmt_qty(r, qty)} {composite} at {fee:g}. ref {ref} pls confirm"))
-            label = _label("TRADE_CONFIRM", p, [{**inst_line, "feeBps": fee}], ref=ref, side="BORROW")
+            label = _label("ACCEPT", p, [{**inst_line, "feeBps": fee}], ref=ref, side="BORROW")
             return r.uniform(8, 30), Draft(reply, label), None
         if state["counters"] < 1 and fee <= limit * 1.3:
             bid = int(round(limit / 5) * 5)
@@ -362,9 +500,12 @@ def react(
             label = _label("COUNTER", p, [{**inst_line, "feeBps": bid}], side="BORROW")
             return r.uniform(10, 40), Draft(reply, label), {**state, "counters": state["counters"] + 1}
         return r.uniform(10, 40), Draft("too wide for us, will pass. thx", _label("CHATTER", p, [])), None
-    if p.style == "terse" and re.search(r"\b(approved|conf|done|ok|filled)\b", text, re.I):
+    if p.style in ("terse", "list") and re.search(r"\b(approved|conf|done|ok|filled|booked)\b", text, re.I):
         if r.random() < 0.4:
             return r.uniform(3, 15), Draft(r.choice(("ty", "thx", "👍")), _label("CHATTER", p, [])), state
+    if p.style == "chatty" and re.search(r"\b(send|sure|yes|take it)\b", text, re.I):
+        return r.uniform(5, 20), Draft(r.choice(("👍 on its way", "great, booking now", "done 🙂")),
+                                       _label("CHATTER", p, [])), state
     if p.style == "chatty" and re.search(r"\b(borrow|take|interest|want)\b", text, re.I):
         reply = Draft("Great - I'll check with the book and come back 🙂", _label("CHATTER", p, []))
         return r.uniform(20, 60), reply, state

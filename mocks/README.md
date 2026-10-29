@@ -172,9 +172,11 @@ curl -XPOST localhost:8020/_admin/keys -H 'content-type: application/json' \
 
 **mock-ib / Desk Chat.** Human API under `/api` and `/ws?as=<handle>`. Bot API: `GET /streams`,
 `GET /streams/{id}/messages?after=`, WebSocket `/streams/subscribe`, `POST /chats/{room}/messages`, and
-`POST /compose` (pushes a draft into a human's composer). Personas are fictional: PB-ALPHA (terse), PB-BRAVO
-(lists), Harbor Lane (IOIs), Kestrel (RFQs, negotiates against a hidden limit), Delta One (internal) and
-Juniper (RFQs plus prompt injection). Every persona message stores a gold label (`GET /_admin/labels`).
+`POST /compose` (pushes a draft into a human's composer). Chat is where stock-loan traders work borrows and
+loans; locates come through the gateway API. Personas are fictional: PB-ALPHA (terse borrow bids and returns,
+negotiates quotes), PB-BRAVO (borrow lists), Harbor Lane (IOIs and recalls), Kestrel (RFQs, negotiates against a
+hidden limit), Delta One (internal borrows) and Juniper (RFQs plus prompt injection); `locate_blast` remains
+only for the odd stray locate. Every persona message stores a gold label (`GET /_admin/labels`).
 `cd ib && uv run mock-ib-corpus` writes the 300-conversation labelled eval set.
 
 The Desk Chat React app (`ib/desk-chat`) defaults to an amber-on-black **terminal theme** modelled on

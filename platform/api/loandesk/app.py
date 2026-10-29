@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import agent, db, secmaster
 from .adapters import systems
-from .routes import desk, reference, trading
+from .routes import chat, desk, reference, trading
 from .settings import get_settings
 from .sync import Syncer
 
@@ -49,7 +49,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="LoanDesk AI", version="0.1.0", lifespan=lifespan,
                   description="Securities-lending desk platform. Synthetic data only.")
     app.add_middleware(CORSMiddleware, allow_origins=cfg.cors_origins, allow_methods=["*"], allow_headers=["*"])
-    for r in (reference.router, trading.router, desk.router):
+    for r in (reference.router, trading.router, chat.router, desk.router):
         app.include_router(r)
 
     @app.get("/health", tags=["audit"])

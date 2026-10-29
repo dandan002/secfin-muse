@@ -88,13 +88,28 @@ def resolve_id(tok: str) -> tuple[Instrument | None, float, str | None]:
     return (inst, 0.9 if " " in t else 0.75, None) if inst else (None, 0.0, None)
 
 
+def _delimited(line: str) -> bool:
+    return "\t" in line or "|" in line
+
+
+def strip_preamble(text: str) -> str:
+    """Drop a sentence or two ("Morning, locates for today please:") above a pasted table."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    first = next((i for i, ln in enumerate(lines) if _delimited(ln)), None)
+    if first and first <= 2 and all(_delimited(ln) for ln in lines[first:]):
+        return "\n".join(lines[first:])
+    return text
+
+
 def detect_kind(text: str) -> str:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return "EMPTY"
-    if "#N/A" in text or re.search(r"\b[A-Z0-9./]+ [A-Z]{2} Equity\b", text, re.I) or "PX_LAST" in text.upper():
+    sheet = len(lines) >= 2 or _delimited(lines[0]) or lines[0].count(",") >= 2
+    if "#N/A" in text or "PX_LAST" in text.upper() or (
+            sheet and re.search(r"\b[A-Z0-9./]+ [A-Z]{2} Equity\b", text, re.I)):
         return "BLOOMBERG"
-    tabbed = sum(1 for ln in lines if "\t" in ln)
+    tabbed = sum(1 for ln in lines if _delimited(ln))
     if tabbed >= max(1, len(lines) // 2):
         return "TABLE"
     if len(lines) >= 2 and sum(1 for ln in lines if ln.count(",") >= 2) >= len(lines) - 1:
@@ -103,6 +118,7 @@ def detect_kind(text: str) -> str:
 
 
 def parse(text: str) -> Parsed:
+    text = strip_preamble(text)
     kind = detect_kind(text)
     if kind == "EMPTY":
         return Parsed(kind, [])
@@ -113,7 +129,8 @@ def parse(text: str) -> Parsed:
 
 # -- tables --------------------------------------------------------------------------------------
 def _split(line: str) -> list[str]:
-    return [c.strip().strip('"') for c in (line.split("\t") if "\t" in line else line.split(","))]
+    sep = "\t" if "\t" in line else "|" if "|" in line else ","
+    return [c.strip().strip('"') for c in line.split(sep)]
 
 
 def _parse_table(text: str, kind: str) -> Parsed:
@@ -217,23 +234,30 @@ def _parse_chat(text: str) -> Parsed:
 def _chat_line(line: str, offset: int) -> list[Row]:
     fee_m = FEE_TOKEN.search(line)
     fee = float(fee_m.group(1)) if fee_m else None
-    clean = FEE_TOKEN.sub(" ", line)
-    toks = [t for t in re.split(r"[\s,;/]+", clean.upper().replace("X ", " ")) if t]
+    clean = re.sub(r"(?<=\d),(?=\d{3}\b)", "", FEE_TOKEN.sub(" ", line))  # "500,000" is one number
+    # "/" joins names ("TTWO 65k / 45k REGN", "bid/offer") but is part of a ticker before an exchange ("BP/ LN")
+    # or a share class ("BRK/B", "BT/A LN").
+    toks = [t.strip("?!.:()~") for t in re.split(r"[\s,;]+|(?<=\s)/|/(?=[^\s/]{2,})",
+                                                 re.sub(r"\bX\b", " ", clean.upper()))]
+    toks = [t for t in toks if t]  # "250k x ABC", "PWR LN?"
     out: list[Row] = []
     i, pending_qty = 0, None
     while i < len(toks):
         t = toks[i]
         q = parse_qty(t)
-        if q is not None and not ids.detect(t):
+        q = q if q is None or q >= 100 else None  # "basket goes out at 3" is a time, not 3 shares
+        numeric_ticker = q is not None and i + 1 < len(toks) and EXCH.match(toks[i + 1]) and bool(
+            resolve_id(f"{t} {toks[i + 1]}")[0])  # "3479 JT"
+        if q is not None and not ids.detect(t) and not numeric_ticker:
             pending_qty = q
             i += 1
             continue
-        if t in NOISE:
-            i += 1
-            continue
-        # Try "TICK XX" first, then the bare token.
+        # Try "TICK XX" first (even for a word like CAN: "CAN LN" is a stock), then the bare token.
         pair = f"{t} {toks[i + 1]}" if i + 1 < len(toks) and EXCH.match(toks[i + 1]) else None
         inst, conf, err = resolve_id(pair) if pair else (None, 0.0, None)
+        if inst is None and t in NOISE:
+            i += 1
+            continue
         step = 2 if inst else 1
         if inst is None:
             inst, conf, err = resolve_id(t)
@@ -251,4 +275,10 @@ def _chat_line(line: str, offset: int) -> list[Row]:
                                    **({"feeBps": 0.9} if fee is not None else {})}))
         pending_qty = None
         i += step
+    if pending_qty is not None and out and out[-1].quantity is None:  # "show PWR LN? looking for 550k"
+        out[-1].quantity, out[-1].confidence["quantity"] = pending_qty, 0.8
+    if any(r.quantity for r in out):  # words that happen to be tickers ("can SL cover 1m NANO LN")
+        out = [r for r in out if r.quantity]
+        for n, r in enumerate(out):
+            r.row_no = offset + n + 1
     return out

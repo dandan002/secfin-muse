@@ -254,6 +254,34 @@ class Event(Base):
     actor: Mapped[str] = mapped_column(String(48))
 
 
+class ChatMessage(Base):
+    """One message read from Desk Chat, what the parser made of it, and what the desk did with it."""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (Index("ix_chat_messages_status", "status"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # the chat server's message id
+    stream_id: Mapped[str] = mapped_column(String(64), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    sender: Mapped[str] = mapped_column(String(64))  # handle
+    sender_name: Mapped[str | None] = mapped_column(String(128))
+    counterparty: Mapped[str | None] = mapped_column(String(16), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    side: Mapped[str] = mapped_column(String(4), default="THEM")  # THEM (the counterparty) | US (our desk)
+    # RFQ | OFFER | IOI | QUOTE | COUNTER | ACCEPT | DECLINE | RECALL | RETURN | INTERNAL_BORROW | INJECTION | LOCATE
+    # | CHATTER | UNKNOWN
+    intent: Mapped[str] = mapped_column(String(16))
+    confidence: Mapped[float] = mapped_column(Float)
+    parser: Mapped[str] = mapped_column(String(32))  # rules | model:<name> | trader:<user>
+    lines: Mapped[list[Any]] = mapped_column(default=list)  # [{identifier, instrumentId, quantity, feeBps, rate}]
+    refers_to: Mapped[int | None] = mapped_column(Integer)  # seq of the message this one answers, in the same room
+    our_side: Mapped[str | None] = mapped_column(String(6))  # LEND | BORROW, if it goes ahead
+    # OPEN | AGREED (a trade agreed in chat) | OURS | FLAGGED | UNSURE | IGNORED (locates, chatter) | DISMISSED
+    status: Mapped[str] = mapped_column(String(12))
+    note: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class SyncCursor(Base):
     """Where each poller left off (gateway inbox seq, venue trade time...)."""
 

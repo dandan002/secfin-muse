@@ -4,9 +4,10 @@
 #       POST /scenarios/demo/run {"mode": "live", "speed": 10}
 name: demo
 description: >
-  09:00 open; PB-ALPHA blasts 40 locates in chat (34 GC/ETB + 6 Warm); Kestrel's API posts 25 more;
-  a hot-name RFQ from Kestrel; IOIs, a PB-BRAVO list and an internal borrow; a prompt-injection
-  attempt from Juniper; the processor breaks the first booking; background API flow with a 09:00-09:45 burst.
+  09:00 open; PB-ALPHA's API sends 40 locates (34 GC/ETB + 6 Warm); Kestrel's API posts 25 more. In chat,
+  traders work borrows and loans: a hot-name RFQ from Kestrel, a PB-ALPHA borrow with a bid, PB-BRAVO's
+  borrow list, an internal borrow, a lender's IOIs and a recall; a prompt-injection attempt from Juniper; the
+  processor breaks the first booking; background API flow with a 09:00-09:45 burst.
 start: "2026-10-27T08:55:00-04:00"
 speed: 10
 seed: 20261027
@@ -28,9 +29,9 @@ steps:
     args: {on: true, base_per_min: 1.5, burst_mult: 6}
 
   - at: "09:00:05"
-    do: ib.persona
-    label: PB-ALPHA blasts 40 locates (34 ETB + 6 Warm)
-    args: {persona: pb-alpha, action: locate_blast, tierCounts: {GC: 34, WARM: 6}, spacingS: 3}
+    do: gateway.burst
+    label: PB-ALPHA's API sends 40 locates (34 ETB + 6 Warm)
+    args: {counterparty: PBALPHA, lines: 40, tierCounts: {GC: 34, WARM: 6}, requestId: PBALPHA-DEMO-0001}
 
   - at: "09:00:30"
     do: gateway.burst
@@ -42,10 +43,31 @@ steps:
     label: Hot-name RFQ (fair ~450 bps on the venue; client will pay up to 720 bps)
     args: {persona: kestrel-hf, action: rfq, instrument: "@hot:2:US", qty: 500000, maxFeeBps: 720}
 
+  - at: "09:02:30"
+    do: ib.persona
+    label: PB-ALPHA asks "Any of these?" (META, CRWV, SPCX); it will pay up to 40 bps on each
+    args: {persona: pb-alpha, action: any_of_these, instruments: ["META US", "CRWV US", "SPCX US"],
+           qtys: [24000, 300000, 24000], maxFeeBps: 40}
+
+  - at: "09:04:30"
+    do: ib.say
+    label: Our trader quotes two of them ("Maybe these"); PB-ALPHA answers "Send"
+    args: {as: srivera, room: pbalpha-desk, text: "Maybe these\nMETA 0.15%\nSPCX 0.3%"}
+
+  - at: "09:05:30"
+    do: ib.persona
+    label: Harbor offers ASML ("Can you take some ASML? Got 1.5k over here at GC")
+    args: {persona: harbor-lending, action: offer, instrument: "ASML NA", qty: 1500, gc: true}
+
+  - at: "09:07:00"
+    do: ib.say
+    label: Our trader takes part of it
+    args: {as: srivera, room: harbor-avails, text: "Sure, send 500"}
+
   - at: "09:03:00"
     do: ib.persona
-    label: PB-BRAVO sends a SEDOL/ISIN list
-    args: {persona: pb-bravo, action: locate_blast, n: 8, perMessage: 8}
+    label: PB-BRAVO asks to borrow a SEDOL/ISIN list
+    args: {persona: pb-bravo, action: borrow_list, n: 6}
 
   - at: "09:04:00"
     do: ib.persona
@@ -56,6 +78,11 @@ steps:
     do: ib.persona
     label: Second RFQ (London)
     args: {persona: juniper-hf, action: rfq, instrument: "@warm:0:GB", qty: 300000}
+
+  - at: "09:06:00"
+    do: ib.persona
+    label: Agent lender recalls a loan
+    args: {persona: harbor-lending, action: recall}
 
   - at: "09:06:30"
     do: ib.persona

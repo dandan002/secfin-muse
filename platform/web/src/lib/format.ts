@@ -9,7 +9,8 @@ export function qty(n: number | null | undefined): string {
 }
 
 function trim(x: number): string {
-  return x.toFixed(x >= 100 ? 0 : x >= 10 ? 1 : 2).replace(/\.?0+$/, "");
+  const s = x.toFixed(x >= 100 ? 0 : x >= 10 ? 1 : 2);
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s; // 1.50 -> 1.5, but 500 stays 500
 }
 
 export const full = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n.toLocaleString("en-US"));
