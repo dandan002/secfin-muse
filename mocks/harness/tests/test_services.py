@@ -40,7 +40,7 @@ def test_each_mock_has_its_own_database_and_gets_the_clock_pushed(mocks):
         finally:
             await conn.close()
 
-    services = ("control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian")
+    services = ("control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian", "analytics")
     for svc in services:  # schema names match the service names; nobody else's tables, no shared clock row
         assert asyncio.run(schemas(TEST_DB.format(service=svc))) == {svc}, svc
 
@@ -324,3 +324,19 @@ def test_gateway_rate_limit_and_loadgen(mocks):
     ph = {"authorization": f"Bearer {cred['platformToken']}"}
     n = len(mocks.get("gateway", "/v1/inbox?limit=5000", headers=ph).json())
     assert 150 < n < 500, n
+
+
+# -- mock-analytics -----------------------------------------------------------------------------------
+def test_analytics_auth_limits_and_exchange_cycle(mocks):
+    h = {"x-api-key": mocks.creds("analytics")["apiKey"]}
+    assert mocks.get("analytics", "/v1/securities/@hot:0").status_code == 401
+    assert mocks.get("analytics", "/v1/securities/NOPE", headers=h).status_code == 404
+    r = mocks.get("analytics", "/v1/securities/@hot:0/history?from=2025-01-01&to=2026-10-26", headers=h)
+    assert r.status_code == 422
+    jobs = [{"idType": "ID_ISIN", "idValue": "US0000000000"}] * 11
+    assert mocks.post("analytics", "/v1/mapping", json=jobs).status_code == 413  # 10 without a key
+    assert mocks.post("analytics", "/v1/mapping", json=jobs, headers={"x-openfigi-apikey": h["x-api-key"]}).json()[
+        0] == {"warning": "No identifier found."}
+    assert mocks.get("analytics", "/v1/exchange-short-interest?settlementDate=2026-10-30", headers=h).status_code == 404
+    assert mocks.get("analytics", "/v1/exchange-short-interest?settlementDate=2026-10-20", headers=h).status_code == 422
+    assert mocks.get("analytics", "/v1/exchange-short-interest?instrument=@hot:0:GB", headers=h).status_code == 422

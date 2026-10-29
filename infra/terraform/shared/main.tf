@@ -16,7 +16,7 @@ terraform {
 locals {
   env      = terraform.workspace
   prefix   = "loandesk-${local.env}"
-  services = ["control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian"]
+  services = ["control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian", "analytics"]
 }
 
 provider "aws" {

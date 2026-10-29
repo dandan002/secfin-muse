@@ -1,6 +1,6 @@
 """Smoke test: play the LoanDesk platform against the mocks through the five-minute demo.
 
-    uv run python scripts/smoke.py                      # against a running stack on 8000-8060
+    uv run python scripts/smoke.py                      # against a running stack on 8000-8070
     uv run python scripts/smoke.py --base-port 18000 --fix-port 19878
 
 Stands in for the (not yet built) platform with the simplest possible logic, so it doubles as
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import io
 import os
 import sys
 from datetime import date
@@ -151,6 +153,17 @@ class Smoke:
         self.check("venue B: 15-line list matched into loans", opt["matchesProposed"] >= 15 and len(loans) > 0,
                    f"{opt['matchesProposed']} proposals, {len(loans)} agreed loans")
 
+        # 8. Overnight load: the analytics vendor's daily file populates short interest for the whole universe.
+        an_h = {"x-api-key": self.get("analytics", "/_admin/credentials")["apiKey"]}
+        latest = self.get("analytics", "/v1/files", headers=an_h)[0]
+        r = self.h.get(self.u["analytics"] + latest["path"], headers=an_h)
+        r.raise_for_status()
+        rows = list(csv.DictReader(io.StringIO(r.text)))
+        crowded = self.get("analytics", "/v1/short-interest?country=US&limit=5", headers=an_h)["items"]
+        self.check("analytics: daily short-interest file loads; crowded shorts are Hot names",
+                   len(rows) == latest["rows"] and all(c["borrow"]["tier"] == "HOT" for c in crowded),
+                   f"{len(rows)} rows as of {latest['asOf']}; top: {crowded[0]['composite']}")
+
         ok = all(r[1] for r in self.results)
         print(f"\n{sum(r[1] for r in self.results)}/{len(self.results)} checks passed")
         return ok
@@ -201,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--url-template", help="e.g. https://{name}.mocks.example.com (hosted stack; overrides ports)")
     a = ap.parse_args(argv)
-    names = ("control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian")
+    names = ("control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian", "analytics")
     if a.url_template:
         urls = {n: a.url_template.format(name=n) for n in names}
     else:

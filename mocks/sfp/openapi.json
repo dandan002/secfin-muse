@@ -254,7 +254,7 @@
     }
   },
   "info": {
-    "description": "Simulated securities-finance processor: booking, positions, lifecycle, compare, marks, EOD file.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
+    "description": "Simulated securities-finance processor: booking, positions, lifecycle, compare, marks, EOD file.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
     "title": "Processor (FIS-style) \u2014 mock-sfp",
     "version": "0.1.0"
   },

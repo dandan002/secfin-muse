@@ -26,6 +26,7 @@ class CoreSettings(BaseSettings):
     wematch_url: str = "http://localhost:8040"
     sfp_url: str = "http://localhost:8050"
     custodian_url: str = "http://localhost:8060"
+    analytics_url: str = "http://localhost:8070"
     # Shared admin token for /_admin routes. Empty disables the check (local dev).
     admin_token: str = ""
 

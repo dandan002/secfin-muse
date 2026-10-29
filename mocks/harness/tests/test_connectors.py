@@ -10,6 +10,8 @@ import asyncio
 from datetime import date
 
 import pytest
+from analytics_connector import AnalyticsClient, FigiJob, FigiResolver
+from analytics_connector import ApiError as AnalyticsError
 from control_connector import SimControl
 from custodian_connector import CustodianClient, CustodianRejected, SettlementInstruction
 from gateway_connector import CounterpartyClient, Decision, GatewayPlatformClient
@@ -319,5 +321,62 @@ def test_sim_control(mocks):
             await sim.clear_faults()
             assert mocks.get("ngt", "/v1/participants").status_code == 200
             assert {s["name"] for s in await sim.scenarios()} >= {"demo", "chaos"}
+
+    run(go())
+
+
+# -- Market analytics: snapshots, screen, exchange SI, daily file, alerts, OpenFIGI-shaped mapping ---------
+def test_analytics_feed_alerts_and_mapping(mocks):
+    key = mocks.creds("analytics")["apiKey"]
+    hot, gc = _isin(mocks, "@hot:0:US"), _isin(mocks, "@gc:0:US")
+
+    async def go():
+        async with AnalyticsClient(mocks.urls["analytics"], api_key=key) as data:
+            snap = await data.security(hot)
+            assert snap.identifiers["isin"] == hot and snap.borrow.tier == "HOT"
+            assert snap.crowdingScore > (await data.security(gc)).crowdingScore
+            assert len(await data.history(hot)) == 31
+
+            top = await data.screen(country="US", sort="squeezeRisk", limit=10)
+            assert top.total == 900 and len(top.items) == 10
+            assert top.items[0].squeezeRisk >= top.items[-1].squeezeRisk
+
+            reported = await data.exchange_short_interest(instrument=hot)
+            assert reported[0].settlementDate.isoformat() == "2026-10-15"
+
+            rows = await data.daily_file()
+            assert len(rows) == 2000 and {"si_pct_float", "days_to_cover", "indicative_fee_bps"} <= set(rows[0])
+            mocks.verb("analytics", "flags", late_file=True)
+            with pytest.raises(AnalyticsError) as late:
+                await data.daily_file(date.fromisoformat(rows[0]["as_of"]))
+            assert late.value.status == 404
+            mocks.verb("analytics", "flags", late_file=False, stale_feed=True)
+            assert (await data.security(hot)).asOf.isoformat().startswith("2026-10-25T21:00")
+            mocks.verb("analytics", "flags", stale_feed=False)
+
+            await data.set_watchlist([hot, gc])
+            events: list[dict] = []
+
+            async def listen() -> None:
+                async for e in data.stream():
+                    events.append(e)
+                    return
+
+            listener = asyncio.create_task(listen())
+            await asyncio.sleep(0.3)
+            mocks.verb("analytics", "alert", instrument=hot, kind="SQUEEZE")
+            await asyncio.wait_for(listener, 10)
+            assert events[0]["data"]["isin"] == hot and events[0]["data"]["kind"] == "SQUEEZE"
+            await asyncio.to_thread(mocks.advance, 3_600)  # four scans; Hot watchlist names run >90% utilized
+            kinds = {(a.isin, a.kind) for a in await data.alerts()}
+            assert (hot, "SQUEEZE") in kinds
+
+        async with FigiResolver(mocks.urls["analytics"] + "/v1") as figi:  # no key: 10 jobs per request
+            jobs = [FigiJob("ID_ISIN", hot), FigiJob("ID_ISIN", "US0000000000"), FigiJob("TICKER", "NOPE", "US")]
+            out = await figi.map(jobs)
+            assert out[0][0]["figi"] == snap.identifiers["figi"] and out[1] == [] == out[2]
+            assert (await figi.map(jobs)) == out and figi.requests == 1  # second look-up served from cache
+            ticker, exch = snap.composite.split()
+            assert await figi.figi("TICKER", ticker, exch_code=exch) == snap.identifiers["figi"]
 
     run(go())

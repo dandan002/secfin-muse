@@ -30,6 +30,7 @@ The desk today spans five systems that do not share a brain: a chat terminal, a 
 | [Wematch.live](https://www.islaemea.org/isla-events/isla-33rd-annual-securities-finance-collateral-management-conference/sponsors/wematch) | Regulated matching venue for SBL, TRS and equity repo: "one list, one API". 1,300+ dealers, 85 institutions. Interest-list upload, SM@RT Matching optimiser, GC and specials. Ongoing notional hit US$1.72tn by May 2026 ([SFT](https://www.securitiesfinancetimes.com/securitieslendingnews/article.php?article_id=228685)). | Marketing pages, release notes. | `mock-wematch`: interest-list upload, match engine, negotiation modal, lifecycle events. |
 | [FIS Securities Finance Processor](https://fisglobal.com/products/fis-securities-finance-processor) (formerly Global One) | Books and records for principal, agency and fully paid lending; lifecycle, marks, returns, recalls. FIS also runs Loanet (US accounting/comparison utility) and a Securities Finance Matching Platform (ATOM lineage). | Product page; Loanet historically bound to \~7 fields per message ([Finadium](https://finadium.com/?p=143806)). | `mock-sfp`: trade booking API, position ledger, contract compare, mark-to-market. |
 | [Instant Bloomberg (IB)](https://professional.bloomberg.com/products/bloomberg-terminal/collaboration-tools/instant-bloomberg/) | Where locates, IOIs and RFQs actually arrive. Persistent chat rooms, tabs/folders, Blast, structured data links, @mentions. IB Connect adds chatbots and chat-initiation APIs; Bloomberg's own NLP pulls security and intent out of chats. | Feature page; chatbot posts arrive as JSON and bots post back through an API ([WatersTechnology via Bloomberg](https://www.bloomberg.com/company/?p=33873)). | `mock-ib`: a look-alike-in-behaviour chat client plus an IB-Connect-shaped bot API. |
+| Short-interest and lending data vendors ([S3 Partners](https://s3partners.com/), FIS Astec Analytics, S&P Global Securities Finance) | The market's view of each name: estimated short interest, days to cover, utilization, borrow cost, lendable supply, crowding and squeeze signals. Desks load a daily file and watch intraday alerts. | Marketing pages and sample metrics; FINRA's bi-monthly short interest is public. | `mock-analytics`: snapshots, history, screens, exchange-reported short interest, daily file, watchlist alerts. |
 | Pirum / EquiLend Post-Trade | Contract compare, marks, returns, billing between counterparties. Wematch already pairs with Pirum for post-trade ([Global Custodian](https://globalcustodian.com/?p=61170)). | Partial. | Out of scope for v1; recon stub only. |
 
 **Data standards to honour in mocks:**
@@ -202,12 +203,12 @@ Every external dependency is a separate mock service with its own ledger, so the
 
 ### Naming real platforms
 
-Naming NGT, Wematch, FIS or Bloomberg to describe what you integrate with or replace is generally acceptable: it is descriptive (nominative) use. Implying that the mocks are the real services, or that the vendors are involved, is not. Not legal advice; check the hackathon's own IP rules too.
+Naming NGT, Wematch, FIS, S3 Partners or Bloomberg to describe what you integrate with or replace is generally acceptable: it is descriptive (nominative) use. Implying that the mocks are the real services, or that the vendors are involved, is not. Not legal advice; check the hackathon's own IP rules too.
 
 - **In the pitch, README and this spec:** use the real names to explain the problem and the integration targets ("a simulator of an NGT-style venue").
-- **In the product and the demo UI:** call the mocks something generic, e.g. *Venue A (NGT-style)*, *Venue B (Wematch-style)*, *Processor (FIS-style)*, *Desk Chat*. Service names in code can stay `mock-ngt` etc.
+- **In the product and the demo UI:** call the mocks something generic, e.g. *Venue A (NGT-style)*, *Venue B (Wematch-style)*, *Processor (FIS-style)*, *Market Analytics (S3-style)*, *Desk Chat*. Service names in code can stay `mock-ngt` etc.
 - **Never use** their logos, colour schemes, screen layouts, or their exact message specifications (NGT's protocol and Bloomberg's IB Connect API are licensed to clients). Our FIX-shaped and REST mocks are our own designs.
-- **Add a disclaimer** to the README, the demo and the hosted site: not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg; all names are trademarks of their owners; all data is synthetic.
+- **Add a disclaimer** to the README, the demo and the hosted site: not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their owners; all data is synthetic.
 - **Comparisons are fine** if they're accurate ("replaces the cockpit role of Trading Apps"); avoid claims about a competitor that you can't source.
 
 ### mock-ib: chat client and bot API
@@ -244,6 +245,13 @@ The "smart API" counterparties use to send us locates and orders.
 - `POST /trades` (CDM trade), `GET /positions`, `POST /lifecycle/{contractId}` (return, recall, re-rate, mark).
 - Contract compare endpoint returning matched/unmatched with field-level diffs; random 3% of bookings return a deliberate break for the demo.
 - Daily mark job that recalculates collateral at 102%/105% margins.
+
+### mock-analytics (S3 Partners / FIS Astec-style data vendor)
+
+- Per-name snapshot: short interest (shares, % of shares outstanding and of float, days to cover, 1/7/30-day change), indicative fee, utilization, lendable/on-loan/available supply, a 1–10 cost-to-borrow score, crowding and squeeze-risk scores. Built on the same fee and utilization processes as the venues, so its squeezes are the venues' squeezes.
+- Daily history, a universe screen (crowded shorts, squeeze risk), FINRA-style exchange-reported short interest on the mid-month and month-end cycle with a publication lag.
+- A daily CSV file the platform bulk-loads overnight to fill `instruments.si_pct`, `util_pct`, `tier` and `threshold_flag`; a watchlist with squeeze, fee-spike, utilization and short-interest alerts over REST and WebSocket.
+- An OpenFIGI-shaped `/v1/mapping` for the synthetic identifiers. Chaos flags: a stale feed and a late daily file.
 
 ### Synthetic data
 
@@ -384,6 +392,7 @@ Model everything internally in the FINOS Common Domain Model and use ISO identif
 - **New mock, mock-custodian** (market account): accepts `sese.023`, returns `sese.024`/`sese.025`, and fails a small share of settlements so the agent has fails and recalls to handle.
 - **One trade, many standards:** a trade detail view with tabs for CDM JSON, the FIX message, `sese.023` and `auth.052`, each with a plain-English explainer from the agent. This is the 20-second standards beat in the demo video.
 - **Reference data seeds:** real ISO code lists (MIC, ISO 4217, ISO 3166, CFI) loaded as-is; LEIs for fictional counterparties use a clearly fake prefix so they never collide with GLEIF records.
+- **Open sources first, cached:** keep the security master current from free sources wherever possible: [OpenFIGI](https://www.openfigi.com/api) for identifier mapping (ISIN, CUSIP, SEDOL, ticker + exchange to FIGI), GLEIF for LEIs, FINRA short interest, SEC fails-to-deliver and exchange Reg SHO threshold lists as cross-checks on the data vendor. Call OpenFIGI whenever a new identifier appears and on each refresh, but cache the answers (FIGIs never change: hits for about 30 days, misses for a day), send only uncached look-ups in batches of up to 100 (with a free API key) and honour rate limits. The analytics mock answers the same OpenFIGI request shape for the synthetic identifiers, which the public service will not know.
 
 ## Controls, risk and compliance
 

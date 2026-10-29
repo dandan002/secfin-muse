@@ -7,7 +7,7 @@ calls and reconciliation can genuinely disagree. `mock-control` pushes one simul
 and every mock derives its data from one seed, so a demo replays event for event.
 
 > **Disclaimer.** Simulators for demonstration only. Not affiliated with or endorsed by EquiLend,
-> Wematch, FIS or Bloomberg; all names are trademarks of their respective owners. All data is
+> Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. All data is
 > synthetic: instruments, identifiers, counterparties and LEIs are fictional. API shapes, the FIX
 > dialect, and the CDM/ISO 20022 payloads are our own simplified designs, not the vendors' specs.
 
@@ -20,6 +20,7 @@ and every mock derives its data from one seed, so a demo replays event for event
 | `wematch` | Wematch.live | Venue B (Wematch-style) | 8040 | Interest lists (≤10k lines), optimiser, negotiation, re-rate/return lifecycle |
 | `sfp` | FIS Securities Finance Processor | Processor (FIS-style) | 8050 | Booking (CDM-shaped), positions, compare with field diffs, amend, marks/margin calls, EOD file, ~3% seeded breaks |
 | `custodian` | Custodian | Custodian | 8060 | ISO 20022 `sese.023` in (XSD-validated); `sese.024` status and `sese.025` confirmations out; seeded fails |
+| `analytics` | S3 Partners / FIS Astec-style data vendor | Market Analytics (S3-style) | 8070 | Short interest, days to cover, utilization, fee, lendable supply, crowding and squeeze scores; history, screens, exchange-reported SI, daily file, watchlist alerts, OpenFIGI-shaped mapping |
 
 Every service serves OpenAPI docs at `/docs`.
 
@@ -31,7 +32,7 @@ another. They build on two small versioned libraries, the way vendors build on i
 
 ```
 mocks/
-  control/  ib/  gateway/  ngt/  wematch/  sfp/  custodian/
+  control/  ib/  gateway/  ngt/  wematch/  sfp/  custodian/  analytics/
                      one external system each: loandesk-mock-<name>, with its own pyproject, uv.lock,
                      Dockerfile, tests, API.md, openapi.json, and connector/ (its client package,
                      loandesk-connector-<name>)
@@ -62,7 +63,7 @@ open http://localhost:8000/docs   # sim control
 cd mocks/harness
 # {service} becomes each mock's own database (created if missing); this is the default:
 export MOCK_DATABASE_URL='postgresql+asyncpg://postgres@localhost:5432/loandesk_{service}'
-uv run python run_all.py      # syncs each system's own environment, starts all seven; logs in harness/out/logs/
+uv run python run_all.py      # syncs each system's own environment, starts all eight; logs in harness/out/logs/
 cd ../ib/desk-chat && npm ci && npm run dev   # Desk Chat on http://localhost:5173
 ```
 
@@ -132,6 +133,7 @@ publishes its OpenAPI contract as a committed `openapi.json`, which a test keeps
 | Venue A (`ngt`) | **FIX 4.4** (NewOrderSingle, Cancel/Replace, Cancel, OrderStatusRequest, ExecutionReport, TradeCaptureReport with UTI, MarketData V/W/X/Y; resend and gap-fill); REST + WebSocket | [ngt/API.md](ngt/API.md) | `ngt_connector`: `FixSession`, `VenueAClient` |
 | Venue B (`wematch`) | REST interest lists (JSON, CSV, multipart), negotiation, loan lifecycle; WebSocket | [wematch/API.md](wematch/API.md) | `wematch_connector`: `VenueBClient` |
 | Processor (`sfp`) | **CDM**-shaped trade booking, compare with field diffs, amend; **ISO 20022 colr.003** margin calls; EOD CSV file; WebSocket | [sfp/API.md](sfp/API.md) | `sfp_connector`: `ProcessorClient`, `securities_lending_trade()` |
+| Market Analytics (`analytics`) | REST snapshots, screens and history; daily CSV file; WebSocket alerts; **OpenFIGI v3**-shaped `/v1/mapping` | [analytics/API.md](analytics/API.md) | `analytics_connector`: `AnalyticsClient`, `FigiResolver` (cached OpenFIGI client) |
 | Custodian | **ISO 20022** sese.023 and sese.020 in; sese.024, sese.025, sese.027 out (head.001 headers, XSD-validated) | [custodian/API.md](custodian/API.md) | `custodian_connector`: `CustodianClient`, ISO builders and parser |
 | Counterparty Gateway | **CDM** Borrower Locate, flat JSON or CSV; idempotency keys, rate limits; HMAC-signed webhooks | [gateway/API.md](gateway/API.md) | `gateway_connector`: `GatewayPlatformClient`, `CounterpartyClient`, `webhooks.verify` |
 | Desk Chat (`ib`) | Chat bot API (REST + WebSocket) with instrument chips | [ib/API.md](ib/API.md) | `ib_connector`: `DeskChatBot` |
@@ -163,29 +165,39 @@ prices are pure functions of (seed, instrument, sim time): an OU process on log 
 squeezes, and GBM prices. Tier bands follow the spec: GC under 50 bps and under 30% utilization; Hot above
 300 bps or above 85%.
 
+**Keep real reference data fresh from open sources, and cache it.** The platform's security master should
+be filled and refreshed from free sources wherever possible: [OpenFIGI](https://www.openfigi.com/api) for
+identifier mapping (ISIN, CUSIP, SEDOL, ticker + exchange to FIGI, name and security type), GLEIF for LEIs,
+and the published ISO MIC, currency and country lists. Call OpenFIGI whenever a new identifier shows up and
+on each security-master refresh, but cache every answer (FIGIs are permanent: keep hits for about 30 days
+and misses for a day), send only uncached look-ups, batch them (100 per request with a free key) and honour
+`429 Retry-After`. `analytics_connector.FigiResolver` does exactly this. The synthetic identifiers above are
+deliberately unknown to OpenFIGI, so point the same resolver at the analytics mock's OpenFIGI-shaped
+`/v1/mapping` for them. See [analytics/API.md](analytics/API.md#reference-data-use-open-sources-and-cache-them).
+
 ## Tests
 
 Each project tests itself, in its own environment:
 
 ```bash
 cd mocks
-for p in libs/* control ib gateway ngt wematch sfp custodian */connector; do (cd $p && uv run pytest -q); done
+for p in libs/* control ib gateway ngt wematch sfp custodian analytics */connector; do (cd $p && uv run pytest -q); done
 cd harness && uv run ruff check .. && uv run pytest               # cross-system tests; need Postgres
 cd ../ib/desk-chat && npm run build
 ```
 
-* **Systems** (20 tests): each checks its app builds with only its own dependencies and that its committed
+* **Systems** (28 tests): each checks its app builds with only its own dependencies and that its committed
   `openapi.json` matches the code (`uv run python -m mockcore.openapi mock_<name>.app` regenerates it);
-  ib also tests its personas and LLM restyling, ngt its FIX codec.
-* **Connectors** (14 tests): offline, against in-memory transports or a tiny in-process FIX acceptor: FIX
+  ib also tests its personas and LLM restyling, ngt its FIX codec, analytics its metrics.
+* **Connectors** (17 tests): offline, against in-memory transports or a tiny in-process FIX acceptor: FIX
   session handling (logon, TestRequest, gaps, gap-fill, sequence persistence) and parsing, ISO 20022
-  structure, CDM building, webhook signatures, CSV and idempotency handling.
+  structure, CDM building, webhook signatures, CSV and idempotency handling, OpenFIGI caching and batching.
 * **Libraries** (14 tests): clock, scheduler, faults, admin-token guard, reference data.
-* **Harness** (31 tests): starts every system from its own project environment on ports 18000–18060, each
+* **Harness** (33 tests): starts every system from its own project environment on ports 18000–18070, each
   against its own throwaway database (`loandesk_test_<service>`), and drives them only as a client,
   mostly through their connectors (`tests/test_connectors.py`, `tests/test_fix_session.py`). It covers
   every API end to end, FIX order flow, market data and offline recovery, ISO 20022 settlement and
-  cancellation, CDM booking with break and amend, margin calls as colr.003, signed webhooks, the full
+  cancellation, CDM booking with break and amend, margin calls as colr.003, signed webhooks, the short-interest feed and alerts, the full
   demo (`harness/smoke.py`), stepped-run determinism, and database isolation. With
   `MOCK_TEST_DATABASE_ADMIN_URL` set (a plain `postgresql://` URL), an unreachable Postgres fails the run
   instead of skipping it.

@@ -271,7 +271,7 @@
     }
   },
   "info": {
-    "description": "Simulated list-matching venue: interest lists, optimiser matching, negotiation and loan lifecycle.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
+    "description": "Simulated list-matching venue: interest lists, optimiser matching, negotiation and loan lifecycle.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
     "title": "Venue B (Wematch-style) \u2014 mock-wematch",
     "version": "0.1.0"
   },

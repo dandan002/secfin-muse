@@ -417,7 +417,7 @@
     }
   },
   "info": {
-    "description": "Simulated electronic sec-lending venue: lender availability feed, last prints, BID/OFFER/COUNTER/ACCEPT/CANCEL/FIRM_BID orders, execution ledger with UTIs, and a FIX 4.4 session (default port 9878).\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
+    "description": "Simulated electronic sec-lending venue: lender availability feed, last prints, BID/OFFER/COUNTER/ACCEPT/CANCEL/FIRM_BID orders, execution ledger with UTIs, and a FIX 4.4 session (default port 9878).\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
     "title": "Venue A (NGT-style) \u2014 mock-ngt",
     "version": "0.1.0"
   },

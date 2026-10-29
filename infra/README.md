@@ -17,7 +17,7 @@ FIX), with IP allowlists, the way a desk connects to its vendors.
 │  task · RDS (clock)  │   resets, faults,      │ ib.<domain> + chat.<domain> (Desk Chat)      │
 └──────────────────────┘   scenario verbs       │   own VPC · ALB · 2 ECS tasks · RDS          │
                                                 ├─────────────────────────────────────────────┤
-                                                │ gateway · wematch · sfp · custodian          │
+                                                │ gateway · wematch · sfp · custodian · analytics│
                                                 │   each: own VPC · ALB · ECS task · RDS       │
                                                 └─────────────────────────────────────────────┘
 ```
@@ -83,12 +83,12 @@ cd infra/terraform
 cp backend.hcl.example backend.hcl     # bucket, region
 cp example.tfvars demo.tfvars          # zone, domain, allowed_cidrs
 cd ../..
-TF_APPLY_ARGS=-auto-approve PARALLEL=1 infra/deploy.sh demo     # shared, then all 7 systems
+TF_APPLY_ARGS=-auto-approve PARALLEL=1 infra/deploy.sh demo     # shared, then all 8 systems
 infra/deploy.sh demo ngt sfp                                    # later: roll just these
 ```
 
 For each system, `deploy.sh` creates its ECR repos, builds and pushes its project's image, then
-applies its stack. A first deploy creates seven RDS instances. `PARALLEL=1` applies the systems at once (about 15
+applies its stack. A first deploy creates eight RDS instances. `PARALLEL=1` applies the systems at once (about 15
 minutes) instead of one after another (about an hour). Then drive it like the local stack:
 
 ```bash
@@ -111,14 +111,14 @@ The smoke script calls the systems directly, so run it from an address in `allow
 
 | System | Pieces | $/month |
 | --- | --- | --- |
-| gateway, wematch, sfp, custodian | each: ALB ~22, RDS micro + storage ~14, Fargate ~9, 3 public IPv4 ~11, secrets/logs ~1 | 4 × ~57 = ~228 |
+| gateway, wematch, sfp, custodian, analytics | each: ALB ~22, RDS micro + storage ~14, Fargate ~9, 3 public IPv4 ~11, secrets/logs ~1 | 5 × ~57 = ~285 |
 | ib | the above + Desk Chat task and IP | ~70 |
 | ngt | the above + NLB and its 2 IPs | ~82 |
 | control | the above + NAT gateway and Elastic IP, minus the task IP | ~90 |
 | shared | admin token; per-system ECR is ~$0.10 each | ~2 |
-| **Total** | | **~470** (≈ $15/day) |
+| **Total** | | **~530** (≈ $17/day) |
 
-That's about 2.3× the single-stack layout, mostly from seven ALBs, seven databases and the NAT.
+That's about 2.6× the single-stack layout, mostly from eight ALBs, eight databases and the NAT.
 That's the price of real separation. Destroying between demo days takes it to ~$0. Parking with
 `running = false` saves about $100/month.
 

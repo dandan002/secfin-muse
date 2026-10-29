@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.27", "asyncpg>=0.29", "loandesk-mockcore", "loandesk-refdata",
     "loandesk-connector-control", "loandesk-connector-ib", "loandesk-connector-gateway", "loandesk-connector-ngt",
     "loandesk-connector-wematch", "loandesk-connector-sfp", "loandesk-connector-custodian",
+    "loandesk-connector-analytics",
 ]
 
 [tool.uv]
@@ -19,6 +20,7 @@ loandesk-mockcore = { path = "../libs/mockcore", editable = true }
 loandesk-refdata = { path = "../libs/refdata", editable = true }
 loandesk-connector-ngt = { path = "../ngt/connector", editable = true }
 loandesk-connector-custodian = { path = "../custodian/connector", editable = true }
+loandesk-connector-analytics = { path = "../analytics/connector", editable = true }
 loandesk-connector-sfp = { path = "../sfp/connector", editable = true }
 loandesk-connector-wematch = { path = "../wematch/connector", editable = true }
 loandesk-connector-gateway = { path = "../gateway/connector", editable = true }

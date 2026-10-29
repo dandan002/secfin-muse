@@ -1,7 +1,7 @@
 """Run every mock system as its own process, from its own project environment, with its own database.
 
     cd mocks/harness
-    uv run python run_all.py                  # ports 8000-8060, FIX 9878, dbs loandesk_<service>
+    uv run python run_all.py                  # ports 8000-8070, FIX 9878, dbs loandesk_<service>
     uv run python run_all.py --base-port 18000 --db 'postgresql+asyncpg://postgres@localhost/test_{service}'
 
 Each system is a separate project (``mocks/<name>``); its environment is synced with
@@ -37,6 +37,7 @@ SERVICES = (  # name, module, port offset
     ("wematch", "mock_wematch.app:app", 40),
     ("sfp", "mock_sfp.app:app", 50),
     ("custodian", "mock_custodian.app:app", 60),
+    ("analytics", "mock_analytics.app:app", 70),
 )
 
 

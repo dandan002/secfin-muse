@@ -56,7 +56,7 @@ app = create_app(ctx)
 
 SCENARIO_DIR = Path(__file__).resolve().parents[1] / "scenarios"  # mocks/control/scenarios
 # Order matters for stepped ticks and resets; keep it fixed for determinism.
-SERVICE_ORDER = ("ib", "gateway", "ngt", "wematch", "sfp", "custodian")
+SERVICE_ORDER = ("ib", "gateway", "ngt", "wematch", "sfp", "custodian", "analytics")
 
 
 def service_urls() -> dict[str, str]:
@@ -68,6 +68,7 @@ def service_urls() -> dict[str, str]:
         "wematch": c.wematch_url,
         "sfp": c.sfp_url,
         "custodian": c.custodian_url,
+        "analytics": c.analytics_url,
     }
 
 

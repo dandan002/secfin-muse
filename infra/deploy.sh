@@ -15,7 +15,7 @@ env="${1:?usage: deploy.sh <env> [system ...]}"
 shift
 systems=("$@")
 # mock-control last, so its first clock push finds the others up.
-[[ ${#systems[@]} -gt 0 ]] || systems=(ib gateway ngt wematch sfp custodian control)
+[[ ${#systems[@]} -gt 0 ]] || systems=(ib gateway ngt wematch sfp custodian analytics control)
 
 here="$(cd "$(dirname "$0")" && pwd)"
 tf="$here/terraform"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SERVICES = ("ib", "gateway", "ngt", "wematch", "sfp", "custodian")
+SERVICES = ("ib", "gateway", "ngt", "wematch", "sfp", "custodian", "analytics")
 
 
 def _run(mocks) -> dict:

@@ -345,7 +345,7 @@
     }
   },
   "info": {
-    "description": "Persistent chat rooms, Blast, @mentions, search, typing and unread counts, plus a bot API (streams, subscribe, post as bot, push to composer). Behaviour modelled on institutional chat; the API shape and look are our own.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
+    "description": "Persistent chat rooms, Blast, @mentions, search, typing and unread counts, plus a bot API (streams, subscribe, post as bot, push to composer). Behaviour modelled on institutional chat; the API shape and look are our own.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. All data is synthetic.**",
     "title": "Desk Chat \u2014 mock-ib",
     "version": "0.1.0"
   },

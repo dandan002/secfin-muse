@@ -10,7 +10,7 @@ env="${1:?usage: destroy.sh <env> [system ...]}"
 shift
 systems=("$@")
 all=false
-[[ ${#systems[@]} -gt 0 ]] || { systems=(control ib gateway ngt wematch sfp custodian); all=true; }
+[[ ${#systems[@]} -gt 0 ]] || { systems=(control ib gateway ngt wematch sfp custodian analytics); all=true; }
 
 tf="$(cd "$(dirname "$0")" && pwd)/terraform"
 vars="-var-file=$tf/$env.tfvars"
