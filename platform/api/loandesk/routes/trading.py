@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import clock, events
 from ..db import get_session
 from ..models import Locate, Order, Trade
-from ..services import booking, locates, orders
+from ..services import booking, lifecycle, locates, orders
 from .deps import trader
 
 router = APIRouter()
@@ -165,20 +165,59 @@ async def list_trades(s: AsyncSession = Depends(get_session)) -> list[dict]:
     return await booking.listing(s)
 
 
+class TradeCommandIn(BaseModel):
+    quantity: int | None = Field(None, gt=0, description="return / recall: shares (all open if omitted)")
+    feeBps: float | None = Field(None, ge=0, description="rerate: the new fee")
+
+
 @router.post("/trades/{trade_id}/{cmd}", tags=["booking"])
-async def trade_command(trade_id: str, cmd: Literal["book", "compare", "amend"], who: str = Depends(trader),
+async def trade_command(trade_id: str, cmd: Literal["book", "compare", "amend", "settle", "return", "recall",
+                                                   "rerate", "mark"],
+                        body: TradeCommandIn | None = None, who: str = Depends(trader),
                         s: AsyncSession = Depends(get_session)) -> dict:
+    """Booking (book, compare, amend to the fill, settle) and the loan's lifecycle (return what we borrowed,
+    recall what we lent, re-rate, mark)."""
     t = await s.get(Trade, trade_id)
     if t is None:
         raise HTTPException(404, "no such trade")
-    if cmd == "book":
-        await booking.book(s, t, by=who)
-    elif cmd == "compare":
-        await booking.compare(s, t, by=who)
-    else:
-        await booking.amend_to_fill(s, t, by=who)
+    body = body or TradeCommandIn()
+    try:
+        if cmd == "book":
+            await booking.book(s, t, by=who)
+        elif cmd == "compare":
+            await booking.compare(s, t, by=who)
+        elif cmd == "amend":
+            await booking.amend_to_fill(s, t, by=who)
+        elif cmd == "settle":
+            await booking.settle(s, t, by=who)
+        elif cmd in ("return", "recall"):
+            if (cmd == "return") != (t.side == "BORROW"):
+                raise HTTPException(409, f"we {t.side.lower()}ed this: {'return' if t.side == 'BORROW' else 'recall'} "
+                                         "it instead")
+            await lifecycle.close(s, t, body.quantity, by=who)
+        elif cmd == "rerate":
+            if body.feeBps is None:
+                raise HTTPException(422, "rerate needs feeBps")
+            await lifecycle.rerate(s, t, body.feeBps, by=who)
+        else:
+            mark = await lifecycle.mark(s, t, by=who)
+            await s.commit()
+            return {**booking.trade_json(t), "mark": mark}
+    except lifecycle.LifecycleError as e:
+        raise HTTPException(409, str(e)) from e
     await s.commit()
     return booking.trade_json(t)
+
+
+@router.post("/marks/run", tags=["booking"])
+async def run_marks(who: str = Depends(trader), s: AsyncSession = Depends(get_session)) -> dict:
+    """The processor's mark across every open contract; margin calls on our trades are logged on them."""
+    try:
+        out = await lifecycle.run_marks(s, by=who)
+    except lifecycle.LifecycleError as e:
+        raise HTTPException(502, str(e)) from e
+    await s.commit()
+    return out
 
 
 @router.get("/blotter", tags=["orders"])
@@ -190,4 +229,7 @@ async def blotter(s: AsyncSession = Depends(get_session)) -> dict:
             "counts": {"openOrders": sum(1 for x in o if x["status"] in orders.OPEN), "fills": len(t),
                        "breaks": sum(1 for x in t if x["compareStatus"] == "UNMATCHED"),
                        "unbooked": sum(1 for x in t if x["compareStatus"] in ("UNBOOKED", "FAILED")),
+                       "unsettled": sum(1 for x in t if x["settleStatus"] in ("UNMATCHED", "FAILING", "FAILED",
+                                                                                "REJECTED")),
+                       "openLoans": sum(1 for x in t if x["loanStatus"] == "OPEN"),
                        "openLocates": len(open_loc)}}

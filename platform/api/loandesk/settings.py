@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     ngt_key: str | None = None
     wematch_key: str | None = None
     sfp_key: str | None = None
+    custodian_key: str | None = None
 
     # -- background sync with the venues, gateway and processor ----------------------------------
     sync_enabled: bool = True
@@ -78,6 +79,14 @@ class Settings(BaseSettings):
     cp_locate_limit_pct: float = 50.0  # outstanding approved locates, as a % of the credit limit
     blocked_counterparties: list[str] = []
     booking_entity: str = "LOANDESK-US"
+    # Post-trade standing policies: book every fill to the processor (policy:AUTO-BOOK) and instruct the
+    # custodian once the processor's contract matches. Off, the trader books and settles from the blotter.
+    auto_book: bool = True
+    auto_settle: bool = True
+    settlement_account: str = "LOANDESK-SAFE-01"
+    # Venue A down (unreachable or 5xx): an AUTO-routed order with no named counterparty goes to Venue B as
+    # an interest list instead, and the order says so.
+    failover_to_venue_b: bool = True
     fat_finger_band: float = 0.5  # block fees outside last fee x (1 - band, 1 + 1/band)
     max_pct_shares_out: float = 5.0
     max_pct_adv: float = 100.0

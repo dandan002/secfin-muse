@@ -95,6 +95,7 @@ class Systems:
 
     def __init__(self, cfg: Settings | None = None) -> None:
         from .chat import DeskChat
+        from .custodian import Custodian
         from .gateway import Gateway
         from .processor import Processor
         from .venue_a import VenueA
@@ -107,9 +108,11 @@ class Systems:
         self.venue_a = VenueA(cfg.ngt_url, cfg.ngt_key, cfg)
         self.venue_b = VenueB(cfg.wematch_url, cfg.wematch_key, cfg)
         self.processor = Processor(cfg.sfp_url, cfg.sfp_key, cfg)
+        self.custodian = Custodian(cfg.custodian_url, cfg.custodian_key, cfg)
 
     def all(self) -> list[Client]:
-        return [self.control, self.chat, self.gateway, self.venue_a, self.venue_b, self.processor]
+        return [self.control, self.chat, self.gateway, self.venue_a, self.venue_b, self.processor,
+                self.custodian]
 
     async def status(self) -> list[dict[str, Any]]:
         return [{"system": c.system, "label": c.label, "url": c.base_url, "up": await c.health()} for c in self.all()]
