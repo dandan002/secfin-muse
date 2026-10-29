@@ -18,14 +18,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only needed once the agent talks to the Meta Model API (LOANDESK_AGENT_MODE=record|live).
-agent = ["openai>=1.50"]
+# The agent: LangGraph task graphs with Postgres/SQLite checkpoints, and the OpenAI SDK for the Meta Model API.
+agent = [
+    "langgraph>=1.2",
+    "langgraph-checkpoint-postgres>=3.2",
+    "langgraph-checkpoint-sqlite>=3.1",
+    "openai>=1.50",
+    "psycopg[binary]>=3.2",
+]
 
 [tool.uv.sources]
 loandesk-refdata = { path = "../../mocks/libs/refdata" }
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+dev = [
+    "langgraph>=1.2",
+    "langgraph-checkpoint-sqlite>=3.1",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]

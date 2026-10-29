@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -51,8 +52,18 @@ class Meter:
 meter = Meter()
 
 
+# Timestamps and generated ids change on every run; the recording key ignores them so a replay of the same
+# conversation shape (seeded mocks, same inputs) finds its recording.
+_VOLATILE = [(re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?"), "<ts>"),
+             (re.compile(r"\b[a-z]{2,6}_\d{8}_[0-9a-f]{8}\b"), "<id>"),
+             (re.compile(r"\bcall_[A-Za-z0-9]+\b"), "<call>")]
+
+
 def _key(req: dict[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(req, sort_keys=True, default=str).encode()).hexdigest()
+    text = json.dumps(req, sort_keys=True, default=str)
+    for pattern, repl in _VOLATILE:
+        text = pattern.sub(repl, text)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 class ModelGateway:

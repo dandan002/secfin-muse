@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import db, secmaster
+from . import agent, db, secmaster
 from .adapters import systems
 from .routes import desk, reference, trading
 from .settings import get_settings
@@ -36,7 +36,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     syncer = Syncer()
     if cfg.sync_enabled:
         syncer.start()
+    await agent.start()
     yield
+    await agent.stop()
     await syncer.stop()
     await systems().close()
     await db.dispose()

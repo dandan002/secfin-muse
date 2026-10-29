@@ -170,7 +170,7 @@ function LocateDetail({ l, onDecide }: {
   const askAgent = async () => {
     try {
       await api.post(`/agent/locates/${l.id}/review`);
-      toast("ok", "agent proposal queued for approval");
+      toast("ok", "agent is reviewing: its card will appear in the Agent queue");
     } catch (e) {
       toast("warn", (e as Error).message);
     }
