@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -74,6 +75,20 @@ def live(inst_id: str) -> dict[str, Any]:
     tier = classify(snap["feeBps"], snap["utilPct"])
     return {"lastPx": snap["lastPx"], "feeBps": snap["feeBps"], "utilPct": snap["utilPct"], "tier": tier,
             "daysToCover": ref.days_to_cover}
+
+
+def history(inst_id: str, days: int = 20) -> list[dict[str, Any]]:
+    """Daily close (16:00 New York) fee, utilization and tier for the last ``days`` business days, oldest first."""
+    ref = instrument_by_id(inst_id)
+    d, out = clock.local_date(), []
+    while len(out) < days:
+        d -= timedelta(days=1)
+        if d.weekday() >= 5:
+            continue
+        snap = market.snapshot(ref, datetime(d.year, d.month, d.day, 16, tzinfo=clock.NEW_YORK))
+        out.append({"date": d.isoformat(), "feeBps": snap["feeBps"], "utilPct": snap["utilPct"],
+                    "tier": classify(snap["feeBps"], snap["utilPct"])})
+    return out[::-1]
 
 
 def is_etb(inst: Instrument | RefInstrument, tier: str) -> bool:

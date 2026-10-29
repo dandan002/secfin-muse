@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import gate
+from .. import clock, gate, secmaster
 from ..models import Counterparty, Event, Locate
 from ..secmaster import resolve
 from ..services import locates, market, orders
@@ -92,6 +92,15 @@ async def _market(s: AsyncSession, a: dict[str, Any], ctx: Ctx) -> Any:
     return await market.market_for(s, res.instrument)
 
 
+@tool("get_fee_history", "Daily close fee, utilization and tier for one name over the last N business days "
+      "(default 20, max 60), oldest first.", identifier=STR, days={"type": "integer", "optional": True})
+async def _fee_history(s: AsyncSession, a: dict[str, Any], ctx: Ctx) -> Any:
+    res = await resolve(s, a["identifier"])
+    if res.instrument is None:
+        return {"error": res.error, "suggestions": res.suggestions}
+    return secmaster.history(res.instrument.id, min(max(int(a.get("days") or 20), 1), 60))
+
+
 @tool("get_counterparty", "Counterparty reference data: codes, LEI, credit limit, agreement, collateral schedule.",
       code=STR)
 async def _cp(s: AsyncSession, a: dict[str, Any], ctx: Ctx) -> Any:
@@ -132,7 +141,7 @@ async def _history(s: AsyncSession, a: dict[str, Any], ctx: Ctx) -> Any:
         return [locates.locate_json(x) for x in rows]
     rows = (await s.execute(select(Event).where(Event.entity == a["entity"], Event.entity_id == a["id"])
                             .order_by(Event.id.desc()).limit(n))).scalars()
-    return [{"ts": e.ts, "type": e.type, "actor": e.actor, "after": e.after} for e in rows]
+    return [{"ts": clock.iso(e.ts), "type": e.type, "actor": e.actor, "after": e.after} for e in rows]
 
 
 @tool("create_action", "Propose an action for the trader's approval queue. Nothing executes until a human approves.",

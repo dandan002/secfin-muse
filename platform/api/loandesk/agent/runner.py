@@ -48,7 +48,8 @@ def run_json(r: AgentRun, state: dict[str, Any] | None = None) -> dict[str, Any]
            "updatedAt": clock.iso(r.updated_at)}
     if state is not None:
         out.update(escalated=state.get("escalated", False), decision=state.get("decision"),
-                   checks=state.get("checks"), concerns=state.get("concerns"), outcome=state.get("outcome"),
+                   checks=state.get("checks"), concerns=state.get("concerns"), advisories=state.get("advisories"),
+                   signals=(state.get("facts") or {}).get("signals"), outcome=state.get("outcome"),
                    transcript=state.get("transcript", []))
     return out
 

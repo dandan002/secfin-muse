@@ -62,21 +62,80 @@ def fee_band(last_fee_bps: float) -> tuple[float, float]:
     return max(lo - 10, 0), hi + 10  # a 10 bp floor so GC names near zero don't trip on noise
 
 
+def supply_signals(*, qty_requested: int, available: int, supply: int, held: int, lenders: int | None,
+                   util_pct: float, history: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Plain facts about how gettable the supply really is, for the reviewer to weigh (it decides, not this).
+
+    Listed availability is indicative: lenders recall into high utilization, thin lender bases vanish, and a
+    rising fee means the street is already short. ``level`` is ``issue`` (argues for partial or no fill) or
+    ``watch`` (worth a sentence).
+    """
+    cfg = get_settings()
+    out: list[dict[str, str]] = []
+
+    def sig(level: str, name: str, detail: str) -> None:
+        out.append({"level": level, "signal": name, "detail": detail})
+
+    cover = available / qty_requested if qty_requested else 0.0
+    if cover < 1:
+        sig("issue", "short supply", f"{available:,} available for {qty_requested:,} requested ({cover:.2f}x)")
+    elif cover < 2:
+        sig("issue", "thin cover", f"availability covers {cover:.1f}x the request (under 2x)")
+    if supply and held / supply >= 0.5:
+        sig("watch", "desk already long the supply", f"approved locates hold {held / supply:.0%} of listed supply")
+    if lenders is not None and lenders <= 2:
+        sig("issue", "thin lender base", f"{lenders} lender{'s' if lenders != 1 else ''} showing supply")
+    if util_pct >= cfg.hot_min_util_pct:
+        sig("issue", "utilization at recall levels", f"{util_pct:.1f}% utilized")
+    elif util_pct >= 60:
+        sig("watch", "utilization elevated", f"{util_pct:.1f}% utilized")
+    if len(history) >= 2:
+        first, last = history[0], history[-1]
+        if last["utilPct"] - first["utilPct"] >= 10:
+            sig("issue", "utilization rising",
+                f"{first['utilPct']:.1f}% to {last['utilPct']:.1f}% over {len(history)} days")
+        if first["feeBps"] > 0:
+            change = (last["feeBps"] - first["feeBps"]) / first["feeBps"]
+            if change >= 0.25:
+                sig("issue", "fee rising", f"{first['feeBps']:g} to {last['feeBps']:g} bps over {len(history)} days "
+                                           f"(+{change:.0%})")
+        fees = [h["feeBps"] for h in history]
+        if min(fees) > 0 and max(fees) / min(fees) >= 1.5:
+            sig("watch", "fee volatile", f"{min(fees):g}-{max(fees):g} bps range over {len(history)} days")
+        tiers = {h["tier"] for h in history}
+        if "HOT" in tiers and history[-1]["tier"] != "HOT":
+            sig("watch", "recently hot", f"traded hot within the last {len(history)} days")
+    return out
+
+
 def locate_decision_checks(*, decision: str, quantity: int, qty_requested: int, available: int,
-                           fee_bps: float | None, last_fee_bps: float | None) -> list[Check]:
-    """Is a proposed locate decision (from the agent, before it reaches the gate) consistent with the book?"""
+                           fee_bps: float | None, last_fee_bps: float | None, tier: str, shs_out: int,
+                           issues: list[str]) -> list[Check]:
+    """Is a proposed locate decision (from the agent, before it reaches the gate) consistent with the book?
+
+    Blocking checks are hard limits. Advisory ones (``blocking=False``) never stop a proposal: they ride on
+    the card as risk flags, because the reviewer may have good reasons the trader should read.
+    """
+    cfg = get_settings()
     out = [Check("decision", decision in ("APPROVED", "PARTIAL", "REJECTED"), decision)]
     if decision == "REJECTED":
         return out
     shape = quantity == qty_requested if decision == "APPROVED" else 0 < quantity < qty_requested
     out.append(Check("quantity", shape, f"{quantity:,} {decision.lower()} of {qty_requested:,} requested"))
     out.append(Check("availability", quantity <= available, f"{quantity:,} vs {available:,} available"))
+    pct_so = quantity / max(shs_out, 1) * 100
+    out.append(Check("concentration (shares out)", pct_so <= cfg.max_pct_shares_out,
+                     f"{pct_so:.2f}% of shares outstanding (max {cfg.max_pct_shares_out}%)"))
     if fee_bps is None or fee_bps < 0:
         out.append(Check("fee", False, "no indicative fee"))
     elif last_fee_bps and last_fee_bps > 0:
         lo, hi = fee_band(last_fee_bps)
         out.append(Check("fat finger (fee)", lo <= fee_bps <= hi,
                          f"{fee_bps:g} bps vs last {last_fee_bps:g} (band {lo:.0f}-{hi:.0f})"))
+    if decision == "APPROVED":
+        out.append(Check("hot name", tier != "HOT", "full fill on a hot name (desk practice: suggest a partial)",
+                         blocking=False))
+        out.append(Check("supply issues", not issues, "full fill despite: " + "; ".join(issues), blocking=False))
     return out
 
 

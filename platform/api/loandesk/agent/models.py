@@ -53,23 +53,40 @@ meter = Meter()
 
 
 # Timestamps and generated ids change on every run; the recording key ignores them so a replay of the same
-# conversation shape (seeded mocks, same inputs) finds its recording.
+# conversation shape (seeded mocks, same inputs) finds its recording. The ids also appear in the recorded answer
+# (a tool call on the locate under review), so a replay maps them to this run's ids, in order of appearance.
+_ID = re.compile(r"\b[a-z]{2,6}_\d{8}_[0-9a-f]{8}\b")
 _VOLATILE = [(re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?"), "<ts>"),
-             (re.compile(r"\b[a-z]{2,6}_\d{8}_[0-9a-f]{8}\b"), "<id>"),
-             (re.compile(r"\bcall_[A-Za-z0-9]+\b"), "<call>")]
+             (_ID, "<id>"), (re.compile(r"\bcall_[A-Za-z0-9]+\b"), "<call>")]
+
+
+def _text(req: dict[str, Any]) -> str:
+    return json.dumps(req, sort_keys=True, default=str)
 
 
 def _key(req: dict[str, Any]) -> str:
-    text = json.dumps(req, sort_keys=True, default=str)
+    text = _text(req)
     for pattern, repl in _VOLATILE:
         text = pattern.sub(repl, text)
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def _ids(req: dict[str, Any]) -> list[str]:
+    return list(dict.fromkeys(_ID.findall(_text(req))))
+
+
+def _remap(rec: dict[str, Any], req: dict[str, Any]) -> dict[str, Any]:
+    """The recorded answer, with the recorded run's ids replaced by this run's."""
+    mapping = {old: new for old, new in zip(rec.get("ids", []), _ids(req), strict=False) if old != new}
+    if not mapping:
+        return rec["response"]
+    return json.loads(_ID.sub(lambda m: mapping.get(m[0], m[0]), json.dumps(rec["response"])))
+
+
 class ModelGateway:
     def __init__(self) -> None:
         self.cfg = get_settings()
-        self._cassette: dict[str, dict[str, Any]] | None = None
+        self._cassette: dict[str, dict[str, Any]] | None = None  # key -> record
         self._client: Any = None
 
     @property
@@ -91,7 +108,7 @@ class ModelGateway:
                 for line in path.read_text().splitlines():
                     if line.strip():
                         rec = json.loads(line)
-                        self._cassette[rec["key"]] = rec["response"]
+                        self._cassette[rec["key"]] = rec
         return self._cassette
 
     def _sdk(self) -> Any:
@@ -117,7 +134,7 @@ class ModelGateway:
             hit = self._load().get(key)
             if hit is None:
                 raise ModelUnavailable(f"no recording for this request ({key[:12]}) in {self.cfg.cassette_path}")
-            return hit
+            return _remap(hit, req)
         if meter.total >= self.cfg.budget_usd:
             raise ModelUnavailable(f"budget of ${self.cfg.budget_usd:.2f} spent")
         resp = (await self._sdk().chat.completions.create(**req)).model_dump()
@@ -126,8 +143,9 @@ class ModelGateway:
             path = self.cfg.cassette_path
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a") as f:
-                f.write(json.dumps({"key": key, "ts": clock.iso(clock.now()), "model": model, "response": resp}) + "\n")
-            self._load()[key] = resp
+                rec = {"key": key, "ts": clock.iso(clock.now()), "model": model, "ids": _ids(req), "response": resp}
+                f.write(json.dumps(rec) + "\n")
+            self._load()[key] = rec
         return resp
 
 
