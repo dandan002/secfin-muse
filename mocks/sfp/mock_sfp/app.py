@@ -29,7 +29,7 @@ from refdata import calendar, market
 from refdata.counterparties import OUR_FIRM, counterparty_by_code
 from refdata.universe import instrument_by_id, resolve
 
-from .models import Base, Break, Contract, Mark
+from .models import Base, Break, Contract, Mark, RecallNotice
 
 SCOPES = {
     "trades:write": "Book trades",
@@ -411,6 +411,8 @@ async def lifecycle(ref: str, body: LifecycleIn, who: str = Depends(client("cont
             if c.open_qty == 0:
                 c.status = "CLOSED"
             _hist(c, body.event, quantity=q, remaining=c.open_qty, effectiveDate=_iso(body.effectiveDate))
+            if body.event == "RETURN":
+                extra["recallsAnswered"] = await _answer_recalls(s, c, q)
         elif body.event == "RERATE":
             if body.feeBps is None:
                 raise HTTPException(422, "feeBps required for RERATE")
@@ -422,6 +424,87 @@ async def lifecycle(ref: str, body: LifecycleIn, who: str = Depends(client("cont
                               topic="contracts")
         await s.commit()
         return {"contract": contract_json(c), **extra}
+
+
+# -- recalls from lenders ---------------------------------------------------------------------------
+# Venue A fills and bilateral trades have no venue lifecycle: the processor contract is the loan, so a lender's
+# recall on one arrives here. (Venue B loans are recalled on the venue.)
+def recall_json(n: RecallNotice) -> dict[str, Any]:
+    inst = instrument_by_id(n.instrument_id)
+    return {"recallId": n.recall_id, "contractId": n.contract_id, "counterparty": n.counterparty,
+            "instrumentId": n.instrument_id, "composite": inst.composite if inst else None, "quantity": n.qty,
+            "outstanding": n.outstanding, "noticeDate": n.notice_date.isoformat(), "dueDate": n.due_date.isoformat(),
+            "status": n.status, "overdue": n.status == "OPEN" and n.due_date < calendar.trade_date(clock.now()),
+            "ts": clock.iso(n.ts)}
+
+
+async def _answer_recalls(s, c: Contract, q: int) -> list[str]:
+    """A return answers the contract's open recalls, oldest first."""
+    done = []
+    notices = (await s.execute(select(RecallNotice).where(RecallNotice.contract_id == c.contract_id,
+                                                          RecallNotice.status == "OPEN")
+                               .order_by(RecallNotice.id))).scalars().all()
+    for n in notices:
+        if q <= 0:
+            break
+        take = min(q, n.outstanding)
+        n.outstanding -= take
+        q -= take
+        if n.outstanding == 0:
+            n.status = "RETURNED"
+            done.append(n.recall_id)
+            await ctx.events.emit(s, "recall_returned", "recall", n.recall_id, recall_json(n), topic="contracts")
+    return done
+
+
+@app.get("/recalls", tags=["lifecycle"])
+async def recalls(status: str | None = None, contractId: str | None = None, after: int = 0,
+                  who: str = Depends(client("contracts:read"))) -> list[dict]:
+    """Lenders' recalls on contracts where we borrow (``after``: the last ``seq`` you've seen)."""
+    async with ctx.session() as s:
+        q = select(RecallNotice).where(RecallNotice.id > after).order_by(RecallNotice.id)
+        if status:
+            q = q.where(RecallNotice.status == status.upper())
+        if contractId:
+            q = q.where(RecallNotice.contract_id == contractId)
+        return [{**recall_json(n), "seq": n.id} for n in (await s.execute(q)).scalars()]
+
+
+@ctx.verb("recall")
+async def verb_recall(args: dict[str, Any]) -> dict:
+    """A lender recalls shares it lent us: {contractId? | instrument?, counterparty?, quantity?, dueDays? (1)}"""
+    async with ctx.session() as s:
+        q = select(Contract).where(Contract.status == "OPEN", Contract.side == "BORROW",
+                                   Contract.venue != "VENUE_B").order_by(Contract.id)
+        if args.get("contractId"):
+            q = q.where(Contract.contract_id == args["contractId"])
+        if args.get("instrument"):
+            inst = resolve(str(args["instrument"]))
+            q = q.where(Contract.instrument_id == (inst.id if inst else "?"))
+        if args.get("counterparty"):
+            q = q.where(Contract.counterparty == str(args["counterparty"]).upper())
+        rows = (await s.execute(q)).scalars().all()
+        if not rows:
+            raise HTTPException(404, "no open borrow at the processor matches "
+                                     "(Venue B loans are recalled on the venue)")
+        c = rows[0] if (args.get("contractId") or args.get("instrument")) else rng.stream("sfp", "recalls").choice(rows)
+        owed = sum((await s.execute(select(RecallNotice.outstanding).where(
+            RecallNotice.contract_id == c.contract_id, RecallNotice.status == "OPEN"))).scalars())
+        qty = min(int(args.get("quantity") or c.open_qty), c.open_qty - owed)
+        if qty <= 0:
+            raise HTTPException(409, f"{c.contract_id} is recalled in full already")
+        today = calendar.trade_date(clock.now())
+        n = RecallNotice(recall_id="pending", contract_id=c.contract_id, counterparty=c.counterparty,
+                         instrument_id=c.instrument_id, qty=qty, outstanding=qty, notice_date=today,
+                         due_date=calendar.add_business_days(today, int(args.get("dueDays", 1))), status="OPEN",
+                         ts=clock.now())
+        s.add(n)
+        await s.flush()
+        n.recall_id = f"SFP-R-{n.id:06d}"
+        _hist(c, "RECALL_NOTICE", recallId=n.recall_id, quantity=qty, dueDate=n.due_date.isoformat())
+        await ctx.events.emit(s, "recall_notice", "recall", n.recall_id, recall_json(n), topic="contracts")
+        await s.commit()
+        return recall_json(n)
 
 
 def _iso(d: date | None) -> str | None:

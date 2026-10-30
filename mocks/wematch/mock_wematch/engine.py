@@ -105,7 +105,10 @@ def loan_json(ln: Loan) -> dict[str, Any]:
             "notional": round(ln.qty_open * px, 2), "notionalUsd": round(ln.qty_open * px * FX_USD[ln.ccy], 2),
             "term": ln.term, "collateralType": ln.collateral_type, "collateralCcy": ln.collateral_ccy,
             "tradeDate": ln.trade_date.isoformat(), "settlementDate": ln.settle_date.isoformat(),
-            "status": ln.status, "history": ln.history}
+            "status": ln.status, "history": ln.history,
+            "recall": {"quantity": ln.recall_qty, "dueDate": ln.recall_due.isoformat(),
+                       "overdue": ln.recall_due < calendar.trade_date(clock.now())}
+            if ln.recall_qty and ln.recall_due else None}
 
 
 def _hist(obj: Match | Loan, event: str, **data: Any) -> None:
@@ -456,9 +459,28 @@ async def return_qty(ctx: ServiceContext, s: AsyncSession, loan_id: str, qty: in
     ln.qty_open -= qty
     event = "RECALLED" if ln.side == "LEND" else "RETURNED"
     _hist(ln, event, quantity=qty, remaining=ln.qty_open)
+    if event == "RETURNED" and ln.recall_qty:  # a return answers the lender's recall first
+        ln.recall_qty = max(ln.recall_qty - qty, 0) or None
+        ln.recall_due = ln.recall_due if ln.recall_qty else None
     if ln.qty_open == 0:
         ln.status = "RETURNED"
     await ctx.events.emit(s, f"loan_{event.lower()}", "loan", ln.loan_id, loan_json(ln), topic="loans")
+    return ln
+
+
+async def recall_notice(ctx: ServiceContext, s: AsyncSession, ln: Loan, qty: int | None, due_days: int) -> Loan:
+    """The lender on a loan we borrowed recalls shares: we owe them back by the due date."""
+    if ln.status != "OPEN" or ln.side != "BORROW":
+        raise EngineError("BAD_STATE", "only an open loan we borrowed can be recalled by its lender", 409)
+    free = ln.qty_open - (ln.recall_qty or 0)
+    qty = min(qty or free, free)
+    if qty <= 0:
+        raise EngineError("BAD_STATE", "recalled in full already", 409)
+    today = calendar.trade_date(clock.now())
+    ln.recall_qty = (ln.recall_qty or 0) + qty
+    ln.recall_due = calendar.add_business_days(today, due_days)
+    _hist(ln, "RECALL_NOTICE", quantity=qty, dueDate=ln.recall_due.isoformat(), by=ln.counterparty)
+    await ctx.events.emit(s, "loan_recall_notice", "loan", ln.loan_id, loan_json(ln), topic="loans")
     return ln
 
 

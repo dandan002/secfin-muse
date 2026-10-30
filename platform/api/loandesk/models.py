@@ -196,6 +196,11 @@ class Trade(Base):
     open_qty: Mapped[int | None] = mapped_column(BigInteger)
     loan_status: Mapped[str | None] = mapped_column(String(8), default="OPEN")
     pending_rerate_bps: Mapped[float | None] = mapped_column(Float)  # asked of the venue, not yet agreed
+    # A lender's recall on a borrow: shares we owe back by recall_due (cleared as we return them).
+    recalled_qty: Mapped[int | None] = mapped_column(BigInteger)
+    recall_due: Mapped[date | None] = mapped_column(Date)
+    recall_ref: Mapped[str | None] = mapped_column(String(32))
+    returns_settling: Mapped[int | None] = mapped_column(Integer)  # return/recall legs not settled yet
     lifecycle: Mapped[list[Any] | None] = mapped_column(default=list)  # [{ts, event, quantity, feeBps, by}]
     reg_10c1a: Mapped[dict[str, Any] | None] = mapped_column()  # SEC Rule 10c-1a fields, captured at booking
     # Settlement of the loan leg at the custodian: PENDING | MATCHED | UNMATCHED | FAILING | SETTLED | REJECTED

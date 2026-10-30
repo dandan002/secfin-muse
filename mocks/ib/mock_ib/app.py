@@ -320,7 +320,7 @@ def _generate(r, p: P.PersonaDef, action: str, args: dict[str, Any], at=None) ->
     if action == "offer":
         return [P.offer(r, p, inst, args.get("qty"), at=at or clock.now(), gc=args.get("gc"))]
     if action == "recall":
-        return [P.recall(r, p, inst, args.get("qty"))]
+        return [P.recall(r, p, inst, args.get("qty"), args.get("ref"))]
     if action == "return":
         return [P.return_shares(r, p, inst, args.get("qty"))]
     if action == "rfq":

@@ -109,9 +109,22 @@ diff resolves the break (`resolvedBreaks` in the response).
 | Event | Body | Effect |
 | --- | --- | --- |
 | `RETURN` | `quantity?` (default all), `effectiveDate?` | Borrower returns shares; closes at zero |
-| `RECALL` | `quantity?`, `effectiveDate?` | Lender recalls shares |
+| `RECALL` | `quantity?`, `effectiveDate?` | We recall shares we lent |
 | `RERATE` | `feeBps`, `effectiveDate?` | New fee |
 | `MARK` | | Mark to market now; may produce a margin call |
+
+### Recalls from lenders
+
+A Venue A fill or a bilateral trade has no venue lifecycle: its contract here is the loan, so when the
+lender wants shares back, the recall notice lands here. (A Venue B loan is recalled on the venue.)
+
+| Method | Path | |
+| --- | --- | --- |
+| GET | `/recalls?status=&contractId=&after=` | `recallId` (`SFP-R-…`), `seq`, `contractId`, `counterparty`, `instrumentId`, `quantity`, `outstanding` (not returned yet), `noticeDate`, `dueDate`, `status` (OPEN/RETURNED), `overdue` |
+
+A `RETURN` on the contract answers its open recalls, oldest first (`recallsAnswered` in the response).
+Shares not back by the due date leave the notice `overdue`: under the lending agreement the lender may
+then buy them in at our cost.
 
 ## Marks and margin calls
 
@@ -146,7 +159,7 @@ simulator's `eod_break` flag makes one row disagree with the online books.
 
 | Topic | Types |
 | --- | --- |
-| `contracts` | `contract_booked`, `contract_amended`, `contract_return`, `contract_recall`, `contract_rerate`, `contract_mark` |
+| `contracts` | `contract_booked`, `contract_amended`, `contract_return`, `contract_recall`, `contract_rerate`, `contract_mark`, `recall_notice`, `recall_returned` |
 | `breaks` | `break_opened`, `break_resolved` |
 | `marks` | `margin_call` |
 
@@ -159,4 +172,5 @@ non-amendable field, or a return larger than the open quantity.
 ## Simulator controls (`/_admin`, needs `X-Admin-Token`)
 
 `GET /_admin/credentials`; `GET|PUT /_admin/flags` (`break_rate`, `force_break_next`, `eod_break`);
-`GET /_admin/injected-breaks` (the answer key); scenario verbs `sfp.flags` and `sfp.marks`.
+`GET /_admin/injected-breaks` (the answer key); scenario verbs `sfp.flags`, `sfp.marks` and
+`sfp.recall {contractId? | instrument?, counterparty?, quantity?, dueDays? (1)}` (a lender recalls one of our borrows).

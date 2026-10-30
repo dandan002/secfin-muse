@@ -47,6 +47,23 @@ class Contract(Base):
     history: Mapped[list[Any]] = mapped_column(default=list)
 
 
+class RecallNotice(Base):
+    """A lender recalling shares from a contract where we borrow: we owe ``outstanding`` back by ``due_date``."""
+
+    __tablename__ = "recall_notices"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    recall_id: Mapped[str] = mapped_column(String(32), unique=True)
+    contract_id: Mapped[str] = mapped_column(String(32), index=True)
+    counterparty: Mapped[str] = mapped_column(String(32))
+    instrument_id: Mapped[str] = mapped_column(String(16))
+    qty: Mapped[int] = mapped_column(BigInteger)
+    outstanding: Mapped[int] = mapped_column(BigInteger)  # not returned yet
+    notice_date: Mapped[date] = mapped_column(Date)
+    due_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(16))  # OPEN | RETURNED
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Mark(Base):
     __tablename__ = "marks"
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)

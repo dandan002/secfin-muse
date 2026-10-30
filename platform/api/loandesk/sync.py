@@ -21,7 +21,7 @@ from . import clock, db, events
 from .adapters import AdapterError, systems
 from .ingest import chat
 from .models import Order, SyncCursor, Trade
-from .services import booking, inventory, lifecycle, locates, market, orders, shortlist
+from .services import booking, inventory, lifecycle, locates, market, orders, recalls, shortlist
 from .settings import get_settings
 
 log = logging.getLogger("loandesk.sync")
@@ -176,13 +176,34 @@ async def sync_venue_b() -> None:
                 await orders.add_trade_b(s, loan, list_of.get(loan["matchId"]))
             else:
                 await lifecycle.apply_loan(s, t, loan)
+                rc = loan.get("recall") or {}
+                if t.side == "BORROW" and (rc.get("quantity") or 0) > (t.recalled_qty or 0):  # a new recall on it
+                    await recalls.on_notice(s, t, rc["quantity"] - (t.recalled_qty or 0),
+                                            date.fromisoformat(rc["dueDate"]), ref=loan["loanId"], origin="venue_b")
+        await s.commit()
+
+
+async def sync_recalls() -> None:
+    """Lenders' recalls at the processor (Venue A fills and bilateral trades, whose contract there is the loan)."""
+    async with db.session() as s:
+        cur = await s.get(SyncCursor, "processor_recalls")
+        after = int(cur.value) if cur else 0
+        for n in await systems().processor.recalls(after):
+            after = max(after, int(n["seq"]))
+            t = (await s.execute(select(Trade).where(Trade.sfp_contract_id == n["contractId"]))).scalar()
+            if t is None or n["status"] != "OPEN":
+                continue
+            await recalls.on_notice(s, t, int(n["outstanding"]), date.fromisoformat(n["dueDate"]),
+                                    ref=n["recallId"], origin="processor")
+        await _set_cursor(s, "processor_recalls", str(after))
         await s.commit()
 
 
 async def sync_settlement() -> None:
     async with db.session() as s:
-        pending = (await s.execute(select(Trade.id).where(Trade.settle_ref.is_not(None),
-                                                          Trade.settle_status.not_in(booking.SETTLED)))).first()
+        pending = (await s.execute(select(Trade.id).where(
+            (Trade.settle_ref.is_not(None) & Trade.settle_status.not_in(booking.SETTLED))
+            | (Trade.returns_settling > 0)).limit(1))).first()
         if pending is None:
             return
         await booking.apply_settlement(s, await systems().custodian.instructions())
@@ -220,7 +241,7 @@ class Syncer:
                 **({"chat": (cfg.poll_s, sync_chat)} if cfg.chat_ingest else {}),
                 "market": (cfg.availability_every_s, sync_market), "orders": (cfg.poll_s, sync_orders),
                 "venue_b": (cfg.poll_s, sync_venue_b), "settlement": (cfg.poll_s * 2.5, sync_settlement),
-                "inventory": (cfg.inventory_every_s, sync_inventory),
+                "inventory": (cfg.inventory_every_s, sync_inventory), "recalls": (cfg.poll_s * 2, sync_recalls),
                 "stock_record": (cfg.poll_s * 5, sync_stock_record),
                 "housekeeping": (30.0, housekeeping)}
         self.tasks = [asyncio.create_task(_every(n, sec, fn), name=f"sync-{n}") for n, (sec, fn) in jobs.items()]

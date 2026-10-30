@@ -305,6 +305,26 @@ async def verb_optimise(args: dict[str, Any]) -> dict:
     return out
 
 
+@ctx.verb("recall")
+async def verb_recall(args: dict[str, Any]) -> dict:
+    """The lender on one of our borrows recalls it: {loanId? | instrument?, quantity?, dueDays? (1)}"""
+    from refdata.universe import resolve
+
+    async with ctx.session() as s:
+        q = select(Loan).where(Loan.status == "OPEN", Loan.side == "BORROW").order_by(Loan.id)
+        if args.get("loanId"):
+            q = q.where(Loan.loan_id == args["loanId"])
+        if args.get("instrument"):
+            inst = resolve(str(args["instrument"]))
+            q = q.where(Loan.instrument_id == (inst.id if inst else "?"))
+        ln = (await s.execute(q.limit(1).with_for_update())).scalar()
+        if ln is None:
+            raise HTTPException(404, "no open loan we borrowed matches")
+        ln = await engine.recall_notice(ctx, s, ln, args.get("quantity"), int(args.get("dueDays", 1)))
+        await s.commit()
+        return engine.loan_json(ln)
+
+
 @ctx.verb("config")
 async def verb_config(args: dict[str, Any]) -> dict:
     """Patch engine config, e.g. {dealer_accept_p: 1.0}"""

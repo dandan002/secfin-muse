@@ -79,6 +79,9 @@ expire after 30 minutes (`EXPIRED`).
 | POST | `/v1/loans/{loanId}/return` · `/recall` | `{quantity?}` (default all) |
 | GET | `/v1/stats` | Open loans, ongoing notional (USD), match counts by status |
 
+When the lender on a loan we borrowed recalls shares, the loan carries `recall` (`quantity`, `dueDate`,
+`overdue`) and its history a `RECALL_NOTICE`; returning the shares clears it.
+
 ## Streaming
 
 `WS /v1/stream?key=<key>&topics=lists,matches,loans,optimiser`. Events have `topic`, `type`,
@@ -88,7 +91,7 @@ expire after 30 minutes (`EXPIRED`).
 | --- | --- |
 | `lists` | `list_uploaded`, `list_withdrawn` |
 | `matches` | `match_proposed`, `match_countered`, `match_updated`, `match_agreed`, `match_rejected`, `match_expired` |
-| `loans` | `loan_booked`, `loan_rerate_requested`, and return/recall/re-rate updates |
+| `loans` | `loan_booked`, `loan_rerate_requested`, `loan_recall_notice`, and return/recall/re-rate updates |
 | `optimiser` | `optimiser_run` (when it proposed something) |
 
 ## Errors
@@ -107,4 +110,5 @@ expire after 30 minutes (`EXPIRED`).
 
 `GET /_admin/credentials`; `GET /_admin/dealer-lines?side=&limit=` (the other members' lists);
 `GET|PUT /_admin/config` (`dealer_latency_s`, `dealer_accept_p`, `max_rounds`, `proposal_ttl_s`,
-`optimiser_every_s`); scenario verbs under `wematch.*`.
+`optimiser_every_s`); scenario verbs under `wematch.*`, including
+`wematch.recall {loanId? | instrument?, quantity?, dueDays? (1)}` (the lender recalls one of our borrows).
