@@ -146,6 +146,7 @@ export interface Trade {
   recalledQty: number;
   recallDue: string | null;
   recallRef: string | null;
+  recallStatus: "RECALLED" | "RETURNING" | "RETURN_FAILING" | "RETURN_NOT_SENT" | null;
   lifecycle: { ts: string; event: string; by: string; quantity?: number; fromBps?: number; toBps?: number; feeBps?: number; callAmount?: number; error?: string }[];
   settleStatus: string | null;
   settleRef: string | null;

@@ -201,8 +201,9 @@ async def sync_recalls() -> None:
 
 async def sync_settlement() -> None:
     async with db.session() as s:
-        pending = (await s.execute(select(Trade.id).where(Trade.settle_ref.is_not(None),
-                                                          Trade.settle_status.not_in(booking.SETTLED)))).first()
+        pending = (await s.execute(select(Trade.id).where(
+            (Trade.settle_ref.is_not(None) & Trade.settle_status.not_in(booking.SETTLED))
+            | (Trade.returns_settling > 0)).limit(1))).first()
         if pending is None:
             return
         await booking.apply_settlement(s, await systems().custodian.instructions())

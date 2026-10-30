@@ -49,6 +49,16 @@ async def _line(client: httpx.AsyncClient, trade_date: str, instrument_id: str) 
     return next(x for x in sl["lines"] if x["instrumentId"] == instrument_id)
 
 
+async def _lendable(instrument_id: str) -> int:
+    """Our own box's lendable supply in a name (the INTERNAL availability row)."""
+    from loandesk.models import Availability
+
+    async with db.session() as s:
+        a = (await s.execute(select(Availability).where(Availability.source == "INTERNAL",
+                                                        Availability.instrument_id == instrument_id))).scalar()
+    return a.qty if a else 0
+
+
 async def _api_locate(ref: str, inst: Instrument, qty: int, cp: str = "KESTRELHF") -> Locate:
     await _supply(inst.id, 5_000_000)
     async with db.session() as s:
@@ -376,6 +386,7 @@ async def test_a_lenders_recall_comes_off_the_cover_gets_a_return_and_the_short_
     ln = await _line(client, "2026-10-30", z.id)
     assert (ln["excess"], len(ln["returning"])) == (30_000, 2)
     excess_cards = [r["actionId"] for r in ln["returning"]]
+    assert await _lendable(z.id) == 80_000
 
     async with db.session() as s:
         m = await chat.ingest(s, {"messageId": "m-recall-1", "streamId": "room-harbor-avails", "seq": 30_001,
@@ -385,6 +396,12 @@ async def test_a_lenders_recall_comes_off_the_cover_gets_a_return_and_the_short_
                                           f"Thanks!"})
         await s.commit()
     assert (m.intent, m.status) == ("RECALL", "ACTIONED"), m.note
+    assert await _lendable(z.id) == 40_000  # owed back: off the lendable box the moment the recall lands
+    async with db.session() as s:  # and it stays off when the box is read again, until the shares go back
+        await inventory.apply(s, [{"instrumentId": z.id, "side": "BORROW", "openQuantity": 80_000,
+                                   "bookingEntity": "LOANDESK-US", "avgFeeBps": 21.0}])
+        await s.commit()
+    assert await _lendable(z.id) == 40_000
     async with db.session() as s:
         t = await s.get(Trade, "trd_rcl_harbor")
         assert (t.recalled_qty, t.recall_due, t.recall_ref) == (40_000, date(2026, 10, 29), "HAR-777")
@@ -406,8 +423,23 @@ async def test_a_lenders_recall_comes_off_the_cover_gets_a_return_and_the_short_
     try:
         assert (await client.post(f"/actions/{card.id}/approve")).json()["status"] == "EXECUTED"
         [tr] = [x for x in (await client.get("/trades")).json() if x["id"] == "trd_rcl_harbor"]
-        assert (tr["openQty"], tr["recalledQty"], tr["recallDue"]) == (20_000, 0, None)
+        # Returned on the books, but the recall stands until the shares settle back with the lender.
+        assert (tr["openQty"], tr["recalledQty"], tr["recallDue"], tr["recallStatus"]) == (
+            20_000, 0, "2026-10-29", "RETURNING")
         assert tr["lifecycle"][-1]["againstRecall"] == 40_000
+        assert await _lendable(z.id) == 40_000  # not handed back to the box on the way out
+        async with db.session() as s:
+            from loandesk.services import booking
+
+            await booking.apply_settlement(s, [{"instructionId": "CUST-RCL-1", "status": "FAILING"}])
+            await s.commit()
+        [tr] = [x for x in (await client.get("/trades")).json() if x["id"] == "trd_rcl_harbor"]
+        assert (tr["recallStatus"], tr["recallDue"]) == ("RETURN_FAILING", "2026-10-29")
+        async with db.session() as s:
+            await booking.apply_settlement(s, [{"instructionId": "CUST-RCL-1", "status": "SETTLED"}])
+            await s.commit()
+        [tr] = [x for x in (await client.get("/trades")).json() if x["id"] == "trd_rcl_harbor"]
+        assert (tr["recallStatus"], tr["recallDue"], tr["lifecycle"][-1]["settleStatus"]) == (None, None, "SETTLED")
         ln = await _line(client, "2026-10-30", z.id)  # returned, not yet off the box: the same 40k of cover
         assert (ln["recalled"], ln["returnedSinceBox"], ln["cover"], ln["shortfall"]) == (0, 40_000, 40_000, 10_000)
     finally:

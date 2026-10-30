@@ -2,7 +2,8 @@
 
 Every open contract is a position on one of our books (the processor's booking entity): a BORROW puts
 shares in the box, a LEND takes them out. Netting borrowed less lent across all books gives what the
-firm holds and can lend again without going to the street. That net long becomes the ``INTERNAL``
+firm holds and can lend again without going to the street. Less what lenders have recalled: those shares are
+owed back, so they come off the moment the recall lands (``take``). That net long becomes the ``INTERNAL``
 availability row, which locates cross against first (``market.cross``): it is firm, where venue
 supply is only indicative. A book that is net short elsewhere still nets against it; a name that is
 net short overall has no internal supply.
@@ -18,7 +19,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import clock, events
-from ..models import Availability, InternalPosition, SyncCursor
+from ..models import Availability, InternalPosition, SyncCursor, Trade
 from .market import INTERNAL
 
 AS_OF = "inventory_as_of"
@@ -60,6 +61,11 @@ async def apply(s: AsyncSession, positions: list[dict[str, Any]], as_of: datetim
                                    avg_borrow_fee_bps=n["costBps"], as_of=as_of))
     have = {a.instrument_id: a for a in
             (await s.execute(select(Availability).where(Availability.source == INTERNAL))).scalars()}
+    for iid, q in (await s.execute(select(Trade.instrument_id, Trade.recalled_qty).where(
+            Trade.side == "BORROW", Trade.loan_status == "OPEN", Trade.recalled_qty > 0,
+            Trade.sfp_contract_id.is_not(None)))).all():
+        if iid in flat:
+            flat[iid]["net"] -= q  # owed back on a recall: not ours to lend
     long = {iid: n for iid, n in flat.items() if n["net"] > 0}
     for iid, a in have.items():  # names we no longer hold go to zero, so the ledger never lends what's gone
         if iid not in long:
@@ -74,6 +80,15 @@ async def apply(s: AsyncSession, positions: list[dict[str, Any]], as_of: datetim
             1 for b in n["books"].values() if b["borrowed"] > b["lent"]), n["costBps"], as_of
     events.publish_later(s, "market", {"type": "inventory", "instruments": len(long)})
     return len(long)
+
+
+async def take(s: AsyncSession, instrument_id: str, qty: int) -> None:
+    """Shares leave the box before the next read of the processor shows it (a recall, a return)."""
+    a = (await s.execute(select(Availability).where(Availability.source == INTERNAL,
+                                                    Availability.instrument_id == instrument_id))).scalar()
+    if a is not None and qty > 0:
+        a.qty = max(a.qty - qty, 0)
+        events.publish_later(s, "market", {"type": "inventory", "instrumentId": instrument_id})
 
 
 async def for_instrument(s: AsyncSession, instrument_id: str) -> list[dict[str, Any]]:

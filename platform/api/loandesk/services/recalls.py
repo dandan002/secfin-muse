@@ -23,6 +23,7 @@ from refdata import calendar
 from .. import clock, events
 from ..models import Action, ChatMessage, Instrument, Order, Trade
 from ..settings import get_settings
+from . import inventory
 from .booking import open_qty, trade_json
 
 DUE = re.compile(r"\bT\s*\+\s*(\d)\b", re.I)
@@ -106,7 +107,9 @@ async def _recall(s: AsyncSession, t: Trade, qty: int, due: Any, ref: str | None
     t.lifecycle = [*(t.lifecycle or []), {"ts": clock.iso(clock.now()), "event": "RECALLED", "by": by,
                                           "quantity": qty, "due": due.isoformat(), "ref": ref, "source": key}]
     events.record(s, "trade", t.id, "recalled", trade_json(t), before=before, actor=by)
-    if not t.sfp_contract_id:
+    if t.sfp_contract_id:  # in the box: no longer ours to lend or locate against
+        await inventory.take(s, t.instrument_id, qty)
+    else:
         notes.append(f"{name}: {t.id} is recalled but isn't booked yet: book it, then return it")
         return None
     a = await gate.propose(

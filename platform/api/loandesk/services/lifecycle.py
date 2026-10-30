@@ -16,7 +16,8 @@ from .. import clock, events
 from ..adapters import AdapterError, systems
 from ..models import Trade
 from ..settings import get_settings
-from .booking import instruct, open_qty, trade_json
+from . import inventory
+from .booking import STATUS_FROM_CUSTODIAN, instruct, open_qty, trade_json
 
 
 class LifecycleError(ValueError):
@@ -53,20 +54,25 @@ async def close(s: AsyncSession, t: Trade, quantity: int | None, *, by: str) -> 
     if t.open_qty == 0:
         t.loan_status = "CLOSED"
     entry: dict[str, Any] = {"quantity": qty, "remaining": t.open_qty}
-    if event == "RETURN" and t.recalled_qty:  # a return answers the lender's recall first
-        entry["againstRecall"] = min(qty, t.recalled_qty)
+    if event == "RETURN" and t.recalled_qty:  # a return answers the lender's recall first; it stays due until the
+        entry["againstRecall"] = min(qty, t.recalled_qty)  # shares settle back with the lender
         t.recalled_qty -= entry["againstRecall"]
-        if not t.recalled_qty:
-            t.recall_due = None
+    if event == "RETURN" and qty > entry.get("againstRecall", 0):  # recalled shares left the lendable box already
+        await inventory.take(s, t.instrument_id, qty - entry.get("againstRecall", 0))
     try:
         await systems().processor.lifecycle(contract, event, quantity=qty)
     except AdapterError as e:  # the venue leg stands; the books need a retry
         entry["booked"], entry["error"] = False, str(e)
     if get_settings().auto_settle:
         try:
-            entry["settleRef"] = (await instruct(s, t, leg="RETURN", quantity=qty, by=by))["instructionId"]
+            i = await instruct(s, t, leg="RETURN", quantity=qty, by=by)
+            entry["settleRef"], entry["settleStatus"] = i["instructionId"], STATUS_FROM_CUSTODIAN.get(i["status"],
+                                                                                                      "PENDING")
+            t.returns_settling = (t.returns_settling or 0) + 1
         except AdapterError as e:
             entry["settleError"] = str(e)
+    elif not t.recalled_qty:
+        t.recall_due = None  # nothing instructed to follow: the recall is answered on the books
     _log(t, event, by, **entry)
     events.record(s, "trade", t.id, event.lower(), trade_json(t), before=before, actor=by)
     return t

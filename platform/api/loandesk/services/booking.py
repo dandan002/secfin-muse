@@ -28,12 +28,28 @@ def open_qty(t: Trade) -> int:
     return t.qty if t.open_qty is None else t.open_qty
 
 
+def recall_status(t: Trade) -> str | None:
+    """Where a lender's recall on this borrow stands: RECALLED (shares still to return), RETURNING (the return
+    is instructed, not settled), RETURN_FAILING, RETURN_NOT_SENT (the custodian never took it), or None."""
+    if t.recalled_qty:
+        return "RECALLED"
+    if not t.recall_due:
+        return None
+    legs = [e for e in t.lifecycle or [] if e.get("againstRecall")]
+    if any(e.get("settleError") for e in legs):
+        return "RETURN_NOT_SENT"
+    if any(e.get("settleStatus") in ("FAILING", "UNMATCHED", "REJECTED", "CANCELLED") for e in legs):
+        return "RETURN_FAILING"
+    return "RETURNING"
+
+
 def trade_json(t: Trade, inst: Instrument | None = None) -> dict[str, Any]:
     return {"id": t.id, "orderId": t.order_id, "venue": t.venue, "venueTradeId": t.venue_trade_id, "uti": t.uti,
             "side": t.side, "instrumentId": t.instrument_id, "composite": inst.composite if inst else None,
             "counterparty": t.cp_code, "quantity": t.qty, "openQty": open_qty(t), "feeBps": t.fee_bps,
             "pendingRerateBps": t.pending_rerate_bps, "recalledQty": t.recalled_qty or 0,
             "recallDue": t.recall_due.isoformat() if t.recall_due else None, "recallRef": t.recall_ref,
+            "recallStatus": recall_status(t),
             "price": t.price, "ccy": t.ccy,
             "notional": round(t.qty * t.price, 2), "settlementDate": t.settle_date.isoformat(),
             "contractId": t.sfp_contract_id, "compareStatus": t.compare_status, "diffs": t.compare_diffs,
@@ -214,7 +230,8 @@ async def settle(s: AsyncSession, t: Trade, *, by: str) -> Trade:
 
 
 async def apply_settlement(s: AsyncSession, instructions: list[dict[str, Any]]) -> int:
-    """Fold the custodian's instruction states into our trades' loan legs."""
+    """Fold the custodian's instruction states into our trades' loan legs, and their return legs: a recall is
+    answered only when the shares are back with the lender, not when we instruct the return."""
     by_ref = {i["instructionId"]: i for i in instructions}
     rows = (await s.execute(select(Trade).where(Trade.settle_ref.is_not(None),
                                                 Trade.settle_status.not_in(SETTLED)))).scalars().all()
@@ -228,6 +245,25 @@ async def apply_settlement(s: AsyncSession, instructions: list[dict[str, Any]]) 
             events.record(s, "trade", t.id, f"settlement_{new.lower()}", trade_json(t), before=before,
                           actor="custodian")
             changed += 1
+    for t in (await s.execute(select(Trade).where(Trade.returns_settling > 0))).scalars().all():
+        before, log, moved = trade_json(t), [], []
+        for e in t.lifecycle or []:
+            i = by_ref.get(e.get("settleRef") or "")
+            new = STATUS_FROM_CUSTODIAN.get(i["status"]) if i else None
+            if new and new != e.get("settleStatus") and e.get("settleStatus") not in SETTLED:
+                e = {**e, "settleStatus": new}
+                moved.append(new)
+            log.append(e)
+        if not moved:
+            continue
+        t.lifecycle = log
+        t.returns_settling = sum(1 for e in log if e.get("settleRef") and e.get("settleStatus") not in SETTLED)
+        if not t.recalled_qty and t.recall_due and not any(
+                e.get("againstRecall") and e.get("settleStatus") != "SETTLED" for e in log):
+            t.recall_due = None  # every return against the recall has settled: answered
+        events.record(s, "trade", t.id, f"return_settlement_{moved[-1].lower()}", trade_json(t), before=before,
+                      actor="custodian")
+        changed += 1
     return changed
 
 
