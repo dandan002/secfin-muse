@@ -50,6 +50,7 @@ def trade_json(t: Trade, inst: Instrument | None = None) -> dict[str, Any]:
             "pendingRerateBps": t.pending_rerate_bps, "recalledQty": t.recalled_qty or 0,
             "recallDue": t.recall_due.isoformat() if t.recall_due else None, "recallRef": t.recall_ref,
             "recallStatus": recall_status(t),
+            "boughtIn": sum(int(e["quantity"]) for e in t.lifecycle or [] if e.get("event") == "BOUGHT_IN"),
             "price": t.price, "ccy": t.ccy,
             "notional": round(t.qty * t.price, 2), "settlementDate": t.settle_date.isoformat(),
             "contractId": t.sfp_contract_id, "compareStatus": t.compare_status, "diffs": t.compare_diffs,

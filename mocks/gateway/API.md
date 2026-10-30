@@ -95,6 +95,7 @@ when one digit is off, and the rest proceed. Response (202):
 | GET | `/v1/deliveries?locateId=` | Webhook attempts: `url`, `attempt`, `statusCode`, `ok`, `error` |
 | GET | `/v1/stock-record?date=` | The stock record at a close (default the latest; 404 before the first) |
 | GET | `/v1/fails?status=&after=&limit=` | Client shorts that failed to deliver at CNS, oldest first, each with `seq` |
+| GET | `/v1/buy-ins?after=&limit=` | CNS buy-ins on fails we didn't deliver, oldest first, each with `seq` |
 | POST | `/v1/fails/{failId}/deliver` | `{quantity, ref?}`: deliver against a fail (scope `decisions:write`); 409 over what's outstanding |
 
 `Decision`: `lineNo`, `decision` (APPROVED / PARTIAL / REJECTED), `approvedQuantity` (0 with
@@ -121,16 +122,25 @@ order if the gateway was down), every approved locate expiring by then is settle
   it. Verb `fail {counterparty?, instrument?, quantity?, date?}` makes one on a client's short (default
   the largest in the latest record). The desk has until regular trading opens the next business day to
   close it out (Reg SHO Rule 204).
+* **CNS buy-ins.** A fail still open three business days after it failed (in market hours; verb
+  `cns_buy_in_after {days}`, `null` never) is bought in by the buyer at the market plus 0.5-3%: the fail
+  is `BOUGHT_IN` for those shares, we owe the difference over the sale price (the settlement-day close
+  here), charged on to the client, and the bought-in shares cover the client's short at the next close.
+  Verb `cns_buy_in {failId?, quantity?, price?}` buys one in now.
 
 `GET /v1/stock-record` (platform token; scope `inbox:read`):
 `{tradeDate, settlementDate, closedAt, positions: [{counterparty, instrumentId, isin, shortQuantity,
 soldQuantity, coveredQuantity}], shortSales: [{counterparty, instrumentId, quantity, locateId, lineNo,
 executedAt}], locateUsage: [{locateId, lineNo, approvedQuantity, usedQuantity, feeBps, maxFeeBps}]}`.
 A `stock_record` event goes out on the `inbox` topic when a close is written; `fail_to_deliver` and
-`fail_delivered` when a fail is recorded or delivered against.
+`fail_delivered` when a fail is recorded or delivered against, `fail_bought_in` when one is bought in.
+
+`GET /v1/buy-ins`: `[{seq, buyInId (CNS-B-…), failId, counterparty, instrumentId, quantity, price,
+salePrice, amountDue, boughtInAt}]`.
 
 `GET /v1/fails` (scope `inbox:read`): `[{seq, failId, settlementDate, counterparty, instrumentId, isin,
-quantity, outstanding, status (OPEN | CLOSED), failedAt, closedAt, deliveries: [{ts, quantity, ref}]}]`.
+quantity, outstanding, status (OPEN | CLOSED | BOUGHT_IN), failedAt, closedAt, deliveries: [{ts, quantity,
+ref}], boughtIn}]`.
 In CNS the night cycle takes the shares from the participant's account; here the platform says when it
 has them by posting the delivery. A real prime broker
 reads this from its own books and records; here the gateway, which already plays the clients, writes it.

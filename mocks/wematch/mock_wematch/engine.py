@@ -35,6 +35,7 @@ class EngineConfig(BaseModel):
     max_rounds: int = 3
     proposal_ttl_s: int = 1800
     optimiser_every_s: float = 300.0
+    buy_in_after_days: int | None = 1  # business days past a recall's due date before the lender buys in
 
 
 config = EngineConfig()
@@ -108,7 +109,8 @@ def loan_json(ln: Loan) -> dict[str, Any]:
             "status": ln.status, "history": ln.history,
             "recall": {"quantity": ln.recall_qty, "dueDate": ln.recall_due.isoformat(),
                        "overdue": ln.recall_due < calendar.trade_date(clock.now())}
-            if ln.recall_qty and ln.recall_due else None}
+            if ln.recall_qty and ln.recall_due else None,
+            "buyIns": [{k: v for k, v in h.items() if k != "event"} for h in ln.history if h["event"] == "BOUGHT_IN"]}
 
 
 def _hist(obj: Match | Loan, event: str, **data: Any) -> None:
@@ -482,6 +484,47 @@ async def recall_notice(ctx: ServiceContext, s: AsyncSession, ln: Loan, qty: int
     _hist(ln, "RECALL_NOTICE", quantity=qty, dueDate=ln.recall_due.isoformat(), by=ln.counterparty)
     await ctx.events.emit(s, "loan_recall_notice", "loan", ln.loan_id, loan_json(ln), topic="loans")
     return ln
+
+
+async def buy_in(ctx: ServiceContext, s: AsyncSession, ln: Loan, qty: int | None = None,
+                 price: float | None = None) -> Loan:
+    """The lender buys in recalled shares we didn't return: the loan closes for them at our cost. The lender keeps
+    that share of our collateral (102% of the loan value at trade) against it."""
+    if ln.status != "OPEN" or not ln.recall_qty:
+        raise EngineError("BAD_STATE", "only an open recall can be bought in", 409)
+    qty = min(qty or ln.recall_qty, ln.recall_qty, ln.qty_open)
+    inst = instrument_by_id(ln.instrument_id)
+    n = sum(1 for h in ln.history if h["event"] == "BOUGHT_IN") + 1
+    r = rng.stream("wematch", f"buy-in:{ln.loan_id}:{n}")
+    px = round(price or market.price(inst, clock.now()) * (1 + r.uniform(0.005, 0.03)), 4)
+    kept = round(qty * ln.price * 1.02, 2)
+    ln.qty_open -= qty
+    ln.recall_qty = (ln.recall_qty - qty) or None
+    ln.recall_due = ln.recall_due if ln.recall_qty else None
+    if ln.qty_open == 0:
+        ln.status = "RETURNED"
+    _hist(ln, "BOUGHT_IN", buyInId=f"{ln.loan_id}-B{n}", quantity=qty, price=px, ccy=ln.ccy,
+          cost=round(qty * px, 2), collateralKept=kept, amountDue=round(qty * px - kept, 2), remaining=ln.qty_open)
+    await ctx.events.emit(s, "loan_bought_in", "loan", ln.loan_id, loan_json(ln), topic="loans")
+    return ln
+
+
+async def auto_buy_ins(ctx: ServiceContext, s: AsyncSession) -> int:
+    """Recalls still open ``buy_in_after_days`` business days past due are bought in, in market hours."""
+    from datetime import time
+
+    now = clock.now()
+    today = calendar.trade_date(now)
+    if config.buy_in_after_days is None or not calendar.is_business_day(today) or not (
+            time(9, 30) <= now.astimezone(clock.NEW_YORK).time() < calendar.MARKET_CLOSE):
+        return 0
+    n = 0
+    for ln in (await s.execute(select(Loan).where(Loan.status == "OPEN", Loan.recall_qty > 0)
+                               .order_by(Loan.id).with_for_update())).scalars().all():
+        if ln.recall_due and calendar.add_business_days(ln.recall_due, config.buy_in_after_days) <= today:
+            await buy_in(ctx, s, ln)
+            n += 1
+    return n
 
 
 async def stats(s: AsyncSession) -> dict[str, Any]:

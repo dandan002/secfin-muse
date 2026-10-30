@@ -148,6 +148,7 @@ export interface Trade {
   recallDue: string | null;
   recallRef: string | null;
   recallStatus: "RECALLED" | "RETURNING" | "RETURN_FAILING" | "RETURN_NOT_SENT" | null;
+  boughtIn: number; // shares the lender bought in on a recall we didn't return
   lifecycle: { ts: string; event: string; by: string; quantity?: number; fromBps?: number; toBps?: number; feeBps?: number; callAmount?: number; error?: string }[];
   settleStatus: string | null;
   settleRef: string | null;
@@ -306,6 +307,24 @@ export interface ShortListLine {
   status: "SHORT" | "WORKING" | "COVERED" | "EXCESS";
 }
 
+/** Shares bought in against us: a lender's on an overdue recall, or the buyer's at CNS on a client fail. */
+export interface BuyIn {
+  id: string;
+  kind: "RECALL" | "CNS";
+  origin: "processor" | "venue_b" | "cns";
+  tradeId: string | null;
+  failId: string | null;
+  counterparty: string; // the lender, or (CNS) the client it's charged to
+  instrumentId: string;
+  composite: string | null;
+  quantity: number;
+  price: number;
+  ccy: string;
+  amountDue: number; // what we owe (negative: owed to us)
+  amountDueUsd: number;
+  boughtInAt: string;
+}
+
 /** A client's short that failed to deliver at CNS, and where its Rule 204 close-out stands. */
 export interface DeliveryFail {
   id: string;
@@ -315,7 +334,7 @@ export interface DeliveryFail {
   settlementDate: string;
   quantity: number;
   openQty: number;
-  status: "OPEN" | "CLOSED_OUT" | "DELIVERED";
+  status: "OPEN" | "CLOSED_OUT" | "DELIVERED" | "BOUGHT_IN";
   missed: boolean;
   preBorrow: boolean;
   deadline: string;

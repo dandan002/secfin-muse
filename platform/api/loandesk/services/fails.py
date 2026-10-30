@@ -44,7 +44,7 @@ def fail_json(f: DeliveryFail, inst: Instrument | None = None) -> dict[str, Any]
     return {"id": f.id, "counterparty": f.counterparty, "instrumentId": f.instrument_id,
             "composite": inst.composite if inst else None, "settlementDate": f.settle_date.isoformat(),
             "quantity": f.qty, "openQty": f.open_qty, "status": f.status, "missed": f.missed,
-            "preBorrow": f.missed and f.status != "DELIVERED", "deadline": clock.iso(f.deadline),
+            "preBorrow": f.missed and f.status in ACTIVE, "deadline": clock.iso(f.deadline),
             "receivedAt": clock.iso(f.received_at), "closedOutAt": clock.iso(f.closed_out_at),
             "deliveredAt": clock.iso(f.delivered_at), "deliveries": f.deliveries or []}
 
@@ -66,20 +66,25 @@ async def ingest(s: AsyncSession, rows: list[dict[str, Any]]) -> list[DeliveryFa
     if made:
         await s.flush()
         await inventory.refresh(s)
-        await _redraft(s, {f.instrument_id for f in made}, ", ".join(f.id for f in made))
+        await _redraft(s, made)
         events.publish_later(s, "short_list", {"type": "fails", "fails": [f.id for f in made]})
     return made
 
 
-async def _redraft(s: AsyncSession, names: set[str], cause: str) -> None:
+async def _redraft(s: AsyncSession, made: list[DeliveryFail]) -> None:
     """A cover drafted before the fail doesn't carry its deadline: supersede it and draft again."""
     from .. import gate
     from . import shortlist
 
     if not get_settings().draft_covers:
         return
-    for a in (await s.execute(select(Action).where(
-            Action.status == "PENDING", Action.source_ref.in_([f"{shortlist.SOURCE}:{i}" for i in names])))).scalars():
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for f in made:
+        by_name[f.instrument_id].append(f.id)
+    refs = [f"{shortlist.SOURCE}:{i}" for i in by_name]
+    for a in (await s.execute(select(Action).where(Action.status == "PENDING",
+                                                   Action.source_ref.in_(refs)))).scalars():
+        cause = ", ".join(by_name[a.source_ref.split(":", 1)[1]])
         await gate.reject(s, a, "rules:rule-204", f"superseded by the CNS fail {cause}: redrafted with its close-out",
                           status="SUPERSEDED")
     await shortlist.draft(s, by="rules:rule-204")

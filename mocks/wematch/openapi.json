@@ -22,6 +22,18 @@
       },
       "EngineConfig": {
         "properties": {
+          "buy_in_after_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 1,
+            "title": "Buy In After Days"
+          },
           "dealer_accept_p": {
             "default": 0.8,
             "title": "Dealer Accept P",

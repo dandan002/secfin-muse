@@ -138,7 +138,26 @@ class CnsFail(Base):
     instrument_id: Mapped[str] = mapped_column(String(16))
     qty: Mapped[int] = mapped_column(BigInteger)
     outstanding: Mapped[int] = mapped_column(BigInteger)
-    status: Mapped[str] = mapped_column(String(8))  # OPEN | CLOSED
+    status: Mapped[str] = mapped_column(String(12))  # OPEN | CLOSED | BOUGHT_IN
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deliveries: Mapped[list[Any]] = mapped_column(default=list)
+    bought_in_qty: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class CnsBuyIn(Base):
+    """The buyer bought in shares a fail never delivered: we pay the difference over the sale price, charged on to
+    the client (Rule 204(d)), and the bought-in shares cover the client's short at the next close."""
+
+    __tablename__ = "cns_buy_ins"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    buy_in_id: Mapped[str] = mapped_column(String(32), unique=True)
+    fail_id: Mapped[str] = mapped_column(String(32), index=True)
+    cp_code: Mapped[str] = mapped_column(String(32))
+    instrument_id: Mapped[str] = mapped_column(String(16))
+    qty: Mapped[int] = mapped_column(BigInteger)
+    price: Mapped[float] = mapped_column(Float)  # paid a share
+    sale_price: Mapped[float] = mapped_column(Float)  # what the short sold at (the settlement-day close here)
+    amount_due: Mapped[float] = mapped_column(Float)  # qty x (price - sale price)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    applied_on: Mapped[date | None] = mapped_column(Date)  # the close it covered the client's short at

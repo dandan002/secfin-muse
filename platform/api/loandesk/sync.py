@@ -21,7 +21,7 @@ from . import clock, db, events
 from .adapters import AdapterError, systems
 from .ingest import chat
 from .models import Order, SyncCursor, Trade
-from .services import booking, fails, inventory, lifecycle, locates, market, orders, recalls, shortlist
+from .services import booking, buyins, fails, inventory, lifecycle, locates, market, orders, recalls, shortlist
 from .settings import get_settings
 
 log = logging.getLogger("loandesk.sync")
@@ -191,6 +191,8 @@ async def sync_venue_b() -> None:
             else:
                 await lifecycle.apply_loan(s, t, loan)
                 rc = loan.get("recall") or {}
+                for b in loan.get("buyIns") or []:  # the lender bought in a recall we didn't return
+                    await buyins.on_recall(s, t, b, origin="venue_b")
                 if t.side == "BORROW" and (rc.get("quantity") or 0) > (t.recalled_qty or 0):  # a new recall on it
                     await recalls.on_notice(s, t, rc["quantity"] - (t.recalled_qty or 0),
                                             date.fromisoformat(rc["dueDate"]), ref=loan["loanId"], origin="venue_b")
@@ -210,6 +212,25 @@ async def sync_recalls() -> None:
             await recalls.on_notice(s, t, int(n["outstanding"]), date.fromisoformat(n["dueDate"]),
                                     ref=n["recallId"], origin="processor")
         await _set_cursor(s, "processor_recalls", str(after))
+        await s.commit()
+
+
+async def sync_buy_ins() -> None:
+    """Shares bought in against us: lenders' on overdue recalls at the processor, and the buyers' at CNS on client
+    fails. (Venue B's arrive on its loans, in ``sync_venue_b``.)"""
+    async with db.session() as s:
+        after = int(await _cursor(s, "processor_buy_ins"))
+        for r in await systems().processor.buy_ins(after):
+            after = max(after, int(r["seq"]))
+            t = (await s.execute(select(Trade).where(Trade.sfp_contract_id == r["contractId"]))).scalar()
+            if t is not None:
+                await buyins.on_recall(s, t, r, origin="processor")
+        await _set_cursor(s, "processor_buy_ins", str(after))
+        after = int(await _cursor(s, "gateway_buy_ins"))
+        for r in await systems().gateway.buy_ins(after):
+            after = max(after, int(r["seq"]))
+            await buyins.on_cns(s, r)
+        await _set_cursor(s, "gateway_buy_ins", str(after))
         await s.commit()
 
 
@@ -257,6 +278,7 @@ class Syncer:
                 "venue_b": (cfg.poll_s, sync_venue_b), "settlement": (cfg.poll_s * 2.5, sync_settlement),
                 "inventory": (cfg.inventory_every_s, sync_inventory), "recalls": (cfg.poll_s * 2, sync_recalls),
                 "stock_record": (cfg.poll_s * 5, sync_stock_record), "fails": (cfg.poll_s * 2, sync_fails),
+                "buy_ins": (cfg.poll_s * 3, sync_buy_ins),
                 "housekeeping": (30.0, housekeeping)}
         self.tasks = [asyncio.create_task(_every(n, sec, fn), name=f"sync-{n}") for n, (sec, fn) in jobs.items()]
 

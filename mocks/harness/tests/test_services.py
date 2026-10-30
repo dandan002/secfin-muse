@@ -264,6 +264,54 @@ def test_sfp_cdm_lifecycle_marks_eod(mocks):
     assert csv_text.splitlines()[1].split(",")[7] == "59000"  # the seeded EOD disagreement
 
 
+def test_sfp_lender_buys_in_a_recall_not_returned_a_day_after_due(mocks):
+    """The lender's recall is due back tomorrow; a business day after that, still open, it buys the shares in:
+    the contract closes for them and the lender keeps that share of our collateral against the cost."""
+    h = _sfp(mocks)
+    mocks.verb("sfp", "flags", break_rate=0.0)
+    trade = {"clientRef": "BK-BI", "uti": "UTI-BI-1", "venue": "VENUE_A", "venueRef": "NGT-T-BI", "side": "BORROW",
+             "counterparty": "HARBORAL", "instrument": "@gc:1:US", "quantity": 100_000, "feeBps": 20, **TRADE_TERMS}
+    c = mocks.post("sfp", "/trades", headers=h, json=trade).json()["contract"]
+    n = mocks.verb("sfp", "recall", contractId=c["contractId"], quantity=40_000)
+    assert n["dueDate"] == "2026-10-28"
+    mocks.post("control", "/clock/advance", json={"to": "2026-10-28T15:00:00-04:00"}).raise_for_status()
+    assert mocks.get("sfp", "/buy-ins", headers=h).json() == []  # due today: not yet
+    mocks.post("control", "/clock/advance", json={"to": "2026-10-29T10:01:00-04:00"}).raise_for_status()
+    [b] = mocks.get("sfp", "/buy-ins", headers=h).json()
+    assert (b["recallId"], b["contractId"], b["quantity"]) == (n["recallId"], c["contractId"], 40_000)
+    assert b["amountDue"] == round(b["cost"] - b["collateralKept"], 2) and b["price"] > 0
+    [r] = mocks.get("sfp", f"/recalls?contractId={c['contractId']}", headers=h).json()
+    assert (r["status"], r["outstanding"], r["boughtIn"]) == ("BOUGHT_IN", 0, 40_000)
+    got = mocks.get("sfp", f"/contracts/{c['contractId']}", headers=h).json()
+    assert got["openQuantity"] == 60_000
+    assert mocks.get("sfp", f"/buy-ins?after={b['seq']}", headers=h).json() == []
+    out = mocks.post("sfp", f"/lifecycle/{c['contractId']}", headers=h,
+                     json={"event": "BUY_IN", "quantity": 10_000, "price": 51.0}).json()  # a venue's buy-in, booked
+    assert out["contract"]["openQuantity"] == 50_000
+
+
+def test_wematch_lender_buys_in_a_recall_on_our_borrow(mocks):
+    h = {"x-api-key": mocks.creds("wematch")["apiKey"]}
+    mocks.verb("wematch", "config", dealer_accept_p=1.0)
+    d = mocks.get("wematch", "/_admin/dealer-lines?side=LEND&limit=1").json()[0]
+    up = mocks.post("wematch", "/v1/interest-lists", headers=h, json={"name": "bi", "lines": [
+        {"instrument": _isin_of(mocks, d["instrumentId"]), "side": "BORROW", "quantity": d["quantity"],
+         "feeBps": d["feeMax"]}]}).json()
+    mid = mocks.post("wematch", "/v1/optimiser/run", headers=h, json={"listId": up["listId"]}).json()["matches"][0]
+    mocks.post("wematch", f"/v1/matches/{mid}/accept", headers=h)
+    mocks.advance(30)
+    if mocks.get("wematch", f"/v1/matches/{mid}", headers=h).json()["status"] == "PROPOSED":  # countered: take it
+        mocks.post("wematch", f"/v1/matches/{mid}/accept", headers=h)
+    loan = next(x for x in mocks.get("wematch", "/v1/loans", headers=h).json() if x["matchId"] == mid)
+    assert loan["side"] == "BORROW"
+    mocks.verb("wematch", "recall", loanId=loan["loanId"], quantity=loan["quantityOpen"] // 2)
+    got = mocks.verb("wematch", "buy_in", loanId=loan["loanId"])
+    [b] = got["buyIns"]
+    assert b["quantity"] == loan["quantityOpen"] // 2 and got["recall"] is None
+    assert got["quantityOpen"] == loan["quantityOpen"] - b["quantity"]
+    assert b["amountDue"] == round(b["cost"] - b["collateralKept"], 2)
+
+
 # -- mock-custodian ----------------------------------------------------------------------------------
 def test_custodian_fail_then_settle(mocks):
     h = {"x-api-key": mocks.creds("custodian")["apiKey"]}
@@ -400,6 +448,27 @@ def test_gateway_shorts_that_fail_at_cns_stay_open_until_delivered(mocks):
     assert mocks.get("gateway", f"/v1/fails?after={fails[-1]['seq']}", headers=ph).json() == []
     made = mocks.verb("gateway", "fail", counterparty="BASALTHF", quantity=1_000)
     assert made["status"] == "OPEN" and made["quantity"] == 1_000
+
+    # Still open three business days after failing (Tue 28 Oct to Mon 2 Nov), the buyer buys in: we owe the
+    # difference over the sale price, and the bought-in shares cover the client's short at the next close.
+    b = mocks.verb("gateway", "cns_buy_in", failId=made["failId"])
+    assert (b["failId"], b["quantity"]) == (made["failId"], 1_000)
+    assert b["amountDue"] == round(1_000 * (b["price"] - b["salePrice"]), 2)
+    open_ = [x for x in fails[1:]]
+    mocks.post("control", "/clock/advance", json={"to": "2026-10-30T15:00:00-04:00"}).raise_for_status()
+    assert len(mocks.get("gateway", "/v1/buy-ins", headers=ph).json()) == 1  # not yet
+    mocks.post("control", "/clock/advance", json={"to": "2026-11-02T10:01:00-05:00"}).raise_for_status()
+    bought = mocks.get("gateway", "/v1/buy-ins", headers=ph).json()
+    assert {x["failId"] for x in bought[1:]} == {x["failId"] for x in open_}
+    assert all(x["status"] == "BOUGHT_IN" for x in mocks.get("gateway", "/v1/fails?status=BOUGHT_IN",
+                                                             headers=ph).json())
+    before = {p["instrumentId"]: p["shortQuantity"] for p in mocks.get("gateway", "/v1/stock-record",
+                                                                         headers=ph).json()["positions"]}
+    mocks.post("control", "/clock/advance", json={"to": "2026-11-02T16:02:00-05:00"}).raise_for_status()
+    after = {p["instrumentId"]: p for p in mocks.get("gateway", "/v1/stock-record", headers=ph).json()["positions"]}
+    for x in bought[1:]:
+        p = after.get(x["instrumentId"])
+        assert (p["shortQuantity"] if p else 0) <= max(before[x["instrumentId"]] - x["quantity"], 0)
 
 
 # -- mock-analytics -----------------------------------------------------------------------------------

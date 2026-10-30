@@ -2,7 +2,7 @@ import { api } from "../lib/api";
 import { actor, bps, full, money, qty, when } from "../lib/format";
 import { useKeys, useQuery, useSelection } from "../lib/hooks";
 import { useDesk } from "../lib/store";
-import type { DeliveryFail, ShortList, ShortListLine } from "../lib/types";
+import type { BuyIn, DeliveryFail, ShortList, ShortListLine } from "../lib/types";
 import { Empty, Kbd, Panel, PreBorrowTag, Stat, State, TierBadge } from "../components/ui";
 
 const TOPICS = ["short_list", "order", "trade", "action", "market"];
@@ -12,6 +12,7 @@ const TOPICS = ["short_list", "order", "trade", "action", "market"];
 export function ShortListView() {
   const { data, error, reload } = useQuery<ShortList>("/short-list", TOPICS);
   const { data: fails, reload: reloadFails } = useQuery<DeliveryFail[]>("/fails", TOPICS);
+  const { data: buyIns } = useQuery<BuyIn[]>("/buy-ins", TOPICS);
   const toast = useDesk((s) => s.toast);
   const openTicket = useDesk((s) => s.openTicket);
   const rows = data?.lines ?? [];
@@ -62,6 +63,7 @@ export function ShortListView() {
           tone={sum.preBorrow ? "text-down" : sum.closeOut ? "text-hot" : ""} />
       </div>
       {!!fails?.length && <FailsPanel fails={fails} onDone={() => { reload(); reloadFails(); }} />}
+      {!!buyIns?.length && <BuyInsPanel rows={buyIns} />}
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-3">
         <Panel
           title={<>short list <span className="text-dim normal-case tracking-normal">{rows.length}</span></>}
@@ -244,6 +246,35 @@ function FailsPanel({ fails, onDone }: { fails: DeliveryFail[]; onDone: () => vo
               </tr>
             );
           })}
+        </tbody>
+      </table>
+    </Panel>
+  );
+}
+
+/** Shares bought in against us, newest first: what each cost, and who bears it. */
+function BuyInsPanel({ rows }: { rows: BuyIn[] }) {
+  const total = rows.reduce((a, b) => a + b.amountDueUsd, 0);
+  return (
+    <Panel title={<>bought in <span className="text-dim normal-case tracking-normal">{rows.length} · {money(total)} due</span></>}
+      right={<span className="text-2xs text-faint">a lender's on a recall not returned in time; the buyer's at CNS on a client fail, charged to the client</span>}
+      bodyClass="overflow-auto max-h-32">
+      <table className="w-full text-xs">
+        <thead><tr>{["id", "kind", "from", "name", "qty", "price", "due", "when"].map((h) =>
+          <th key={h} className={`th ${["qty", "price", "due"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((b) => (
+            <tr key={b.id} className="row">
+              <td className="td text-faint">{b.id}</td>
+              <td className="td text-dim">{b.kind === "CNS" ? "CNS fail" : `recall · ${b.origin === "venue_b" ? "Venue B" : "processor"}`}</td>
+              <td className="td text-dim" title={b.kind === "CNS" ? "the client it's charged to (Rule 204(d))" : "the lender"}>{b.counterparty}</td>
+              <td className="td">{b.composite ?? b.instrumentId}</td>
+              <td className="td text-right">{full(b.quantity)}</td>
+              <td className="td text-right text-dim">{b.price.toFixed(2)}</td>
+              <td className={`td text-right ${b.amountDue > 0 ? "text-down" : "text-up"}`}>{money(b.amountDueUsd)}</td>
+              <td className="td text-dim">{when(b.boughtInAt)}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </Panel>

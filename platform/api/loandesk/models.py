@@ -312,6 +312,29 @@ class ClientShort(Base):
     settle_date: Mapped[date] = mapped_column(Date)
 
 
+class BuyIn(Base):
+    """Shares bought in against us. A lender's, on a recall we didn't return in time: the borrow closes for them and
+    we pay what the lender's purchase cost over the collateral it kept. Or the buyer's at CNS, on a client fail we
+    didn't deliver: the fail closes, we pay the purchase price over the sale price, charged on to the client (Rule
+    204(d)), and the client's short is covered by it."""
+
+    __tablename__ = "buy_ins"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # the processor's, the venue's or the gateway's id
+    kind: Mapped[str] = mapped_column(String(8))  # RECALL | CNS
+    origin: Mapped[str] = mapped_column(String(12))  # processor | venue_b | cns
+    trade_id: Mapped[str | None] = mapped_column(String(24), index=True)
+    fail_id: Mapped[str | None] = mapped_column(String(32))
+    counterparty: Mapped[str] = mapped_column(String(16))  # the lender, or (CNS) the client it's charged to
+    instrument_id: Mapped[str] = mapped_column(String(16), index=True)
+    qty: Mapped[int] = mapped_column(BigInteger)
+    price: Mapped[float] = mapped_column(Float)
+    ccy: Mapped[str] = mapped_column(String(3))
+    amount_due: Mapped[float] = mapped_column(Float)  # what we owe for it (negative: owed to us)
+    detail: Mapped[dict[str, Any]] = mapped_column(default=dict)  # the source's record as received
+    bought_in_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class DeliveryFail(Base):
     """A client's short that failed to deliver at CNS (from the gateway's books). Reg SHO Rule 204: we close it out,
     by borrowing or buying the shares, before regular trading opens the business day after it failed. Missed, the
@@ -325,7 +348,7 @@ class DeliveryFail(Base):
     qty: Mapped[int] = mapped_column(BigInteger)
     open_qty: Mapped[int] = mapped_column(BigInteger)  # not delivered yet
     deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # the close-out, by the open
-    # OPEN | CLOSED_OUT (borrowed in time, the shares not delivered yet) | DELIVERED
+    # OPEN | CLOSED_OUT (borrowed in time, the shares not delivered yet) | DELIVERED | BOUGHT_IN (at CNS)
     status: Mapped[str] = mapped_column(String(12), default="OPEN")
     missed: Mapped[bool] = mapped_column(Boolean, default=False)  # not closed out by the deadline: pre-borrow
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
