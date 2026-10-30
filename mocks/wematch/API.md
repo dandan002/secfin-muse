@@ -82,6 +82,13 @@ expire after 30 minutes (`EXPIRED`).
 When the lender on a loan we borrowed recalls shares, the loan carries `recall` (`quantity`, `dueDate`,
 `overdue`) and its history a `RECALL_NOTICE`; returning the shares clears it.
 
+Not back a business day after the due date (in market hours; engine config `buy_in_after_days`, `null`
+never), the lender buys the shares in at the market price plus 0.5-3%: the loan closes for them, and the
+lender keeps our collateral for them (102% of the loan value at trade) against the cost. Each lands in
+the loan's `buyIns` (`buyInId`, `quantity`, `price`, `ccy`, `cost`, `collateralKept`, `amountDue`: what's
+left for us to pay, negative if the collateral was more), with a `BOUGHT_IN` history entry and a
+`loan_bought_in` event.
+
 ## Streaming
 
 `WS /v1/stream?key=<key>&topics=lists,matches,loans,optimiser`. Events have `topic`, `type`,
@@ -91,7 +98,7 @@ When the lender on a loan we borrowed recalls shares, the loan carries `recall` 
 | --- | --- |
 | `lists` | `list_uploaded`, `list_withdrawn` |
 | `matches` | `match_proposed`, `match_countered`, `match_updated`, `match_agreed`, `match_rejected`, `match_expired` |
-| `loans` | `loan_booked`, `loan_rerate_requested`, `loan_recall_notice`, and return/recall/re-rate updates |
+| `loans` | `loan_booked`, `loan_rerate_requested`, `loan_recall_notice`, `loan_bought_in`, and return/recall/re-rate updates |
 | `optimiser` | `optimiser_run` (when it proposed something) |
 
 ## Errors
@@ -111,4 +118,5 @@ When the lender on a loan we borrowed recalls shares, the loan carries `recall` 
 `GET /_admin/credentials`; `GET /_admin/dealer-lines?side=&limit=` (the other members' lists);
 `GET|PUT /_admin/config` (`dealer_latency_s`, `dealer_accept_p`, `max_rounds`, `proposal_ttl_s`,
 `optimiser_every_s`); scenario verbs under `wematch.*`, including
-`wematch.recall {loanId? | instrument?, quantity?, dueDays? (1)}` (the lender recalls one of our borrows).
+`wematch.recall {loanId? | instrument?, quantity?, dueDays? (1)}` (the lender recalls one of our borrows) and
+`wematch.buy_in {loanId?, quantity?, price?}` (the lender buys one in now).

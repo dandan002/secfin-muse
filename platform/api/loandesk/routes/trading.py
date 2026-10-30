@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import clock, events, sync
 from ..db import get_session
 from ..models import DeliveryFail, Locate, Order, Trade
-from ..services import booking, fails, lifecycle, locates, orders, shortlist
+from ..services import booking, buyins, fails, lifecycle, locates, orders, shortlist
 from .deps import trader
 
 router = APIRouter()
@@ -138,6 +138,13 @@ async def list_fails(all_: bool = Query(False, alias="all", description="Deliver
     """Client shorts that failed to deliver at CNS, with the Rule 204 close-out deadline and whether it was missed
     (the name is then pre-borrow until the shares deliver)."""
     return await fails.listing(s, everything=all_)
+
+
+@router.get("/buy-ins", tags=["short list"])
+async def list_buy_ins(s: AsyncSession = Depends(get_session)) -> list[dict]:
+    """Shares bought in against us, newest first: lenders' on overdue recalls, and buyers' at CNS on client fails
+    (charged on to the client)."""
+    return await buyins.listing(s)
 
 
 class DeliverIn(BaseModel):

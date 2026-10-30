@@ -43,6 +43,7 @@ from refdata.universe import resolve, universe
 
 from .models import (
     Base,
+    CnsBuyIn,
     CnsFail,
     CpOrder,
     CpReceived,
@@ -453,7 +454,8 @@ async def deliveries(locateId: str | None = None) -> list[dict]:
 USE_RATE = {"HEDGE_FUND": 0.7, "PRIME_BROKER": 0.4, "BROKER_DEALER": 0.3}
 COVER_RATE = 0.25  # chance a client buys back some of a short at a close
 FAIL_RATE = 0.03  # chance a new US short settling at a close fails to deliver at CNS (verb ``fail_rate``)
-_fails = {"rate": FAIL_RATE}
+BUY_IN_AFTER_DAYS = 3  # business days a fail stays open before the buyer buys in (verb ``cns_buy_in_after``)
+_fails = {"rate": FAIL_RATE, "buyInAfterDays": BUY_IN_AFTER_DAYS}
 
 
 def _lot(q: float) -> int:
@@ -515,9 +517,15 @@ async def close_day(s, d: date) -> dict[str, Any]:
     prev = {} if prev_date is None else {
         (p.cp_code, p.instrument_id): p.short_qty for p in (await s.execute(
             select(ShortPosition).where(ShortPosition.trade_date == prev_date))).scalars()}
+    bought: dict[tuple[str, str], int] = {}  # CNS buy-ins since the last close: they cover the client's short
+    for b in (await s.execute(select(CnsBuyIn).where(CnsBuyIn.applied_on.is_(None), CnsBuyIn.ts <= close))
+              ).scalars():
+        bought[(b.cp_code, b.instrument_id)] = bought.get((b.cp_code, b.instrument_id), 0) + b.qty
+        b.applied_on = d
     for key in sorted(set(prev) | set(sold)):
         held = prev.get(key, 0)
         covered = _lot(held * r.uniform(0.2, 1.0)) if held and r.random() < COVER_RATE else 0
+        covered = min(max(covered, bought.get(key, 0)), held)
         new = sold.get(key, 0)
         if held - covered + new or new or covered:
             s.add(ShortPosition(trade_date=d, cp_code=key[0], instrument_id=key[1], short_qty=held - covered + new,
@@ -567,7 +575,55 @@ def fail_json(f: CnsFail) -> dict[str, Any]:
     return {"failId": f.fail_id, "settlementDate": f.settle_date.isoformat(), "counterparty": f.cp_code,
             "instrumentId": f.instrument_id, "isin": inst.isin if inst else None, "quantity": f.qty,
             "outstanding": f.outstanding, "status": f.status, "failedAt": clock.iso(f.ts),
-            "closedAt": clock.iso(f.closed_at) if f.closed_at else None, "deliveries": f.deliveries or []}
+            "closedAt": clock.iso(f.closed_at) if f.closed_at else None, "deliveries": f.deliveries or [],
+            "boughtIn": f.bought_in_qty or 0}
+
+
+def buy_in_json(b: CnsBuyIn) -> dict[str, Any]:
+    return {"buyInId": b.buy_in_id, "failId": b.fail_id, "counterparty": b.cp_code, "instrumentId": b.instrument_id,
+            "quantity": b.qty, "price": b.price, "salePrice": b.sale_price, "amountDue": b.amount_due,
+            "boughtInAt": clock.iso(b.ts)}
+
+
+async def _buy_in(s, f: CnsFail, qty: int | None = None, price: float | None = None) -> CnsBuyIn:
+    """The buyer buys in what a fail still owes, at the market plus a premium; we owe the difference."""
+    qty = min(qty or f.outstanding, f.outstanding)
+    if f.status != "OPEN" or qty <= 0:
+        raise HTTPException(409, f"{f.fail_id} has nothing to buy in ({f.status})")
+    inst = next(i for i in universe() if i.id == f.instrument_id)
+    r = rng.stream("gateway", f"buy-in:{f.fail_id}:{f.bought_in_qty or 0}")
+    px = round(price or market.price(inst, clock.now()) * (1 + r.uniform(0.005, 0.03)), 4)
+    sale = round(market.price(inst, calendar.close_at(f.settle_date)), 4)
+    f.outstanding -= qty
+    f.bought_in_qty = (f.bought_in_qty or 0) + qty
+    if f.outstanding == 0:
+        f.status, f.closed_at = "BOUGHT_IN", clock.now()
+    b = CnsBuyIn(buy_in_id="pending", fail_id=f.fail_id, cp_code=f.cp_code, instrument_id=f.instrument_id, qty=qty,
+                 price=px, sale_price=sale, amount_due=round(qty * (px - sale), 2), ts=clock.now())
+    s.add(b)
+    await s.flush()
+    b.buy_in_id = f"CNS-B-{b.id:06d}"
+    await ctx.events.emit(s, "fail_bought_in", "fail", f.fail_id, {**fail_json(f), "buyIn": buy_in_json(b)},
+                          topic="inbox")
+    return b
+
+
+async def _auto_buy_ins() -> None:
+    """Fails still open ``buyInAfterDays`` business days after they failed are bought in, in market hours."""
+    now = clock.now()
+    today = calendar.trade_date(now)
+    if _fails["buyInAfterDays"] is None or not calendar.is_business_day(today) or not (
+            dtime(9, 30) <= now.astimezone(clock.NEW_YORK).time() < calendar.MARKET_CLOSE):
+        return
+    async with ctx.session() as s:
+        for f in (await s.execute(select(CnsFail).where(CnsFail.status == "OPEN").order_by(CnsFail.id))
+                  ).scalars().all():
+            if calendar.add_business_days(f.settle_date, _fails["buyInAfterDays"]) <= today:
+                await _buy_in(s, f)
+        await s.commit()
+
+
+ctx.scheduler.every(60, "cns-buy-ins", _auto_buy_ins)
 
 
 ctx.scheduler.every(60, "close", close_due)
@@ -677,11 +733,43 @@ async def verb_fail(args: dict[str, Any]) -> dict:
         return fail_json(f)
 
 
+@app.get("/v1/buy-ins", tags=["platform"], dependencies=[Depends(ctx.require("inbox:read"))])
+async def buy_ins(after: int = 0, limit: int = Query(500, le=5000)) -> list[dict]:
+    """CNS buy-ins on fails we didn't deliver, oldest first (``after``: the last ``seq`` you've seen)."""
+    async with ctx.session() as s:
+        q = select(CnsBuyIn).where(CnsBuyIn.id > after).order_by(CnsBuyIn.id).limit(limit)
+        return [{**buy_in_json(b), "seq": b.id} for b in (await s.execute(q)).scalars()]
+
+
+@ctx.verb("cns_buy_in")
+async def verb_cns_buy_in(args: dict[str, Any]) -> dict:
+    """The buyer buys in a fail now: {failId?, quantity?, price?}. Default the oldest open fail."""
+    async with ctx.session() as s:
+        q = select(CnsFail).where(CnsFail.status == "OPEN").order_by(CnsFail.id)
+        if args.get("failId"):
+            q = q.where(CnsFail.fail_id == args["failId"])
+        f = (await s.execute(q.limit(1))).scalar()
+        if f is None:
+            raise HTTPException(404, "no open fail matches")
+        b = await _buy_in(s, f, int(args["quantity"]) if args.get("quantity") else None,
+                          float(args["price"]) if args.get("price") else None)
+        await s.commit()
+        return buy_in_json(b)
+
+
+@ctx.verb("cns_buy_in_after")
+async def verb_cns_buy_in_after(args: dict[str, Any]) -> dict:
+    """How many business days a fail stays open before the buyer buys in: {days} (default 3; null never)."""
+    days = args.get("days", BUY_IN_AFTER_DAYS)
+    _fails["buyInAfterDays"] = None if days is None else max(int(days), 0)
+    return {"buyInAfterDays": _fails["buyInAfterDays"]}
+
+
 @ctx.verb("fail_rate")
 async def verb_fail_rate(args: dict[str, Any]) -> dict:
     """How often a new US short settling at a close fails at CNS: {rate} (0 to 1; default 0.03)."""
     _fails["rate"] = max(0.0, min(float(args.get("rate", FAIL_RATE)), 1.0))
-    return dict(_fails)
+    return {"rate": _fails["rate"]}
 
 
 # -- simulated counterparty receivers -----------------------------------------------------------------
@@ -839,7 +927,7 @@ async def set_limits(rate_per_s: float = Query(..., gt=0), burst: float = Query(
 
 
 async def on_reset(c: ServiceContext) -> None:
-    _fails["rate"] = FAIL_RATE
+    _fails.update(rate=FAIL_RATE, buyInAfterDays=BUY_IN_AFTER_DAYS)
     _load.clear()
     _load.update(_load_defaults())
     ctx.gate.reset_plans()

@@ -74,8 +74,15 @@ async def _optimiser_tick() -> None:
         ctx.hub.publish("optimiser", {"type": "optimiser_run", "data": result})
 
 
+async def _buy_in_tick() -> None:
+    async with ctx.session() as s:
+        await engine.auto_buy_ins(ctx, s)
+        await s.commit()
+
+
 spec.on_reset = on_reset
 ctx.scheduler.every(engine.config.optimiser_every_s, "optimiser", _optimiser_tick)
+ctx.scheduler.every(60, "buy-ins", _buy_in_tick)
 
 
 @app.get("/v1/entities", tags=["reference"], dependencies=[Depends(ctx.require("reference:read"))])
@@ -321,6 +328,22 @@ async def verb_recall(args: dict[str, Any]) -> dict:
         if ln is None:
             raise HTTPException(404, "no open loan we borrowed matches")
         ln = await engine.recall_notice(ctx, s, ln, args.get("quantity"), int(args.get("dueDays", 1)))
+        await s.commit()
+        return engine.loan_json(ln)
+
+
+@ctx.verb("buy_in")
+async def verb_buy_in(args: dict[str, Any]) -> dict:
+    """The lender buys in a recall on one of our borrows now: {loanId?, quantity?, price?}. Default the oldest."""
+    async with ctx.session() as s:
+        q = select(Loan).where(Loan.status == "OPEN", Loan.recall_qty > 0).order_by(Loan.id)
+        if args.get("loanId"):
+            q = q.where(Loan.loan_id == args["loanId"])
+        ln = (await s.execute(q.limit(1).with_for_update())).scalar()
+        if ln is None:
+            raise HTTPException(404, "no open recall on a loan we borrowed matches")
+        ln = await engine.buy_in(ctx, s, ln, int(args["quantity"]) if args.get("quantity") else None,
+                                 float(args["price"]) if args.get("price") else None)
         await s.commit()
         return engine.loan_json(ln)
 

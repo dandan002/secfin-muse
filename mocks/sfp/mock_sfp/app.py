@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 from datetime import date
+from datetime import time as dtime
 from typing import Any, Literal
 
 from fastapi import Depends, HTTPException, Query, WebSocket
@@ -29,7 +30,7 @@ from refdata import calendar, market
 from refdata.counterparties import OUR_FIRM, counterparty_by_code
 from refdata.universe import instrument_by_id, resolve
 
-from .models import Base, Break, Contract, Mark, RecallNotice
+from .models import Base, Break, BuyIn, Contract, Mark, RecallNotice
 
 SCOPES = {
     "trades:write": "Book trades",
@@ -389,9 +390,10 @@ async def amend(ref: str, body: AmendIn, who: str = Depends(client("contracts:wr
 
 # -- lifecycle ------------------------------------------------------------------------------------
 class LifecycleIn(BaseModel):
-    event: Literal["RETURN", "RECALL", "RERATE", "MARK"]
+    event: Literal["RETURN", "RECALL", "RERATE", "MARK", "BUY_IN"]
     quantity: int | None = Field(None, gt=0)
     feeBps: float | None = Field(None, ge=0)
+    price: float | None = Field(None, gt=0, description="BUY_IN: what the lender paid a share")
     effectiveDate: date | None = None
 
 
@@ -402,7 +404,7 @@ async def lifecycle(ref: str, body: LifecycleIn, who: str = Depends(client("cont
         if c.status != "OPEN":
             raise HTTPException(409, f"contract is {c.status}")
         extra: dict[str, Any] = {}
-        if body.event in ("RETURN", "RECALL"):
+        if body.event in ("RETURN", "RECALL", "BUY_IN"):
             q = body.quantity or c.open_qty
             if q > c.open_qty:
                 raise HTTPException(422, f"only {c.open_qty} open")
@@ -410,7 +412,8 @@ async def lifecycle(ref: str, body: LifecycleIn, who: str = Depends(client("cont
             c.collateral_value = c.collateral_value * (c.open_qty / (c.open_qty + q))
             if c.open_qty == 0:
                 c.status = "CLOSED"
-            _hist(c, body.event, quantity=q, remaining=c.open_qty, effectiveDate=_iso(body.effectiveDate))
+            _hist(c, body.event, quantity=q, remaining=c.open_qty, effectiveDate=_iso(body.effectiveDate),
+                  **({"price": body.price} if body.event == "BUY_IN" else {}))
             if body.event == "RETURN":
                 extra["recallsAnswered"] = await _answer_recalls(s, c, q)
         elif body.event == "RERATE":
@@ -435,7 +438,7 @@ def recall_json(n: RecallNotice) -> dict[str, Any]:
             "instrumentId": n.instrument_id, "composite": inst.composite if inst else None, "quantity": n.qty,
             "outstanding": n.outstanding, "noticeDate": n.notice_date.isoformat(), "dueDate": n.due_date.isoformat(),
             "status": n.status, "overdue": n.status == "OPEN" and n.due_date < calendar.trade_date(clock.now()),
-            "ts": clock.iso(n.ts)}
+            "boughtIn": n.bought_in_qty or 0, "ts": clock.iso(n.ts)}
 
 
 async def _answer_recalls(s, c: Contract, q: int) -> list[str]:
@@ -455,6 +458,101 @@ async def _answer_recalls(s, c: Contract, q: int) -> list[str]:
             done.append(n.recall_id)
             await ctx.events.emit(s, "recall_returned", "recall", n.recall_id, recall_json(n), topic="contracts")
     return done
+
+
+# -- buy-ins: a recall not returned in time ----------------------------------------------------------
+BUY_IN_AFTER_DAYS = 1  # business days past the due date before a lender buys in (verb ``buy_in_after``)
+_buy_ins = {"afterDays": BUY_IN_AFTER_DAYS}
+
+
+def buy_in_json(b: BuyIn) -> dict[str, Any]:
+    inst = instrument_by_id(b.instrument_id)
+    return {"buyInId": b.buy_in_id, "recallId": b.recall_id, "contractId": b.contract_id,
+            "counterparty": b.counterparty, "instrumentId": b.instrument_id,
+            "composite": inst.composite if inst else None, "quantity": b.qty, "price": b.price, "ccy": b.ccy,
+            "cost": b.cost, "collateralKept": b.collateral_kept, "amountDue": b.amount_due, "ts": clock.iso(b.ts)}
+
+
+async def _buy_in(s, n: RecallNotice, qty: int | None = None, price: float | None = None) -> BuyIn:
+    """The lender buys the recalled shares in the market at our cost: the contract closes for them."""
+    c = (await s.execute(select(Contract).where(Contract.contract_id == n.contract_id).with_for_update())).scalar()
+    qty = min(qty or n.outstanding, n.outstanding, c.open_qty)
+    if qty <= 0:
+        raise HTTPException(409, f"{n.recall_id} has nothing left to buy in")
+    inst = instrument_by_id(c.instrument_id)
+    r = rng.stream("sfp", f"buy-in:{n.recall_id}")
+    px = round(price or market.price(inst, clock.now()) * (1 + r.uniform(0.005, 0.03)), 4)  # paid up to get them
+    kept = round(c.collateral_value * qty / c.open_qty, 2)
+    c.open_qty -= qty
+    c.collateral_value = round(c.collateral_value - kept, 2)
+    if c.open_qty == 0:
+        c.status = "CLOSED"
+    n.outstanding -= qty
+    n.bought_in_qty = (n.bought_in_qty or 0) + qty
+    if n.outstanding == 0:
+        n.status = "BOUGHT_IN"
+    b = BuyIn(buy_in_id="pending", recall_id=n.recall_id, contract_id=c.contract_id, counterparty=c.counterparty,
+              instrument_id=c.instrument_id, qty=qty, price=px, ccy=c.ccy, cost=round(qty * px, 2),
+              collateral_kept=kept, amount_due=round(qty * px - kept, 2), ts=clock.now())
+    s.add(b)
+    await s.flush()
+    b.buy_in_id = f"SFP-B-{b.id:06d}"
+    _hist(c, "BUY_IN", buyInId=b.buy_in_id, recallId=n.recall_id, quantity=qty, price=px, remaining=c.open_qty)
+    await ctx.events.emit(s, "buy_in", "buy_in", b.buy_in_id, buy_in_json(b), topic="contracts")
+    return b
+
+
+async def _auto_buy_ins() -> None:
+    """Lenders buy in recalls still open ``afterDays`` business days past their due date, in market hours."""
+    now = clock.now()
+    today = calendar.trade_date(now)
+    if _buy_ins["afterDays"] is None or not calendar.is_business_day(today) or not (
+            dtime(9, 30) <= now.astimezone(clock.NEW_YORK).time() < calendar.MARKET_CLOSE):
+        return
+    async with ctx.session() as s:
+        for n in (await s.execute(select(RecallNotice).where(RecallNotice.status == "OPEN")
+                                  .order_by(RecallNotice.id))).scalars().all():
+            if calendar.add_business_days(n.due_date, _buy_ins["afterDays"]) <= today:
+                await _buy_in(s, n)
+        await s.commit()
+
+
+ctx.scheduler.every(60, "buy-ins", _auto_buy_ins)
+
+
+@app.get("/buy-ins", tags=["lifecycle"])
+async def buy_ins(after: int = 0, contractId: str | None = None,
+                  who: str = Depends(client("contracts:read"))) -> list[dict]:
+    """Lenders' buy-ins on our overdue recalls, oldest first (``after``: the last ``seq`` you've seen)."""
+    async with ctx.session() as s:
+        q = select(BuyIn).where(BuyIn.id > after).order_by(BuyIn.id)
+        if contractId:
+            q = q.where(BuyIn.contract_id == contractId)
+        return [{**buy_in_json(b), "seq": b.id} for b in (await s.execute(q)).scalars()]
+
+
+@ctx.verb("buy_in")
+async def verb_buy_in(args: dict[str, Any]) -> dict:
+    """A lender buys in a recall now: {recallId?, quantity?, price?}. Default the oldest open recall."""
+    async with ctx.session() as s:
+        q = select(RecallNotice).where(RecallNotice.status == "OPEN").order_by(RecallNotice.id)
+        if args.get("recallId"):
+            q = q.where(RecallNotice.recall_id == args["recallId"])
+        n = (await s.execute(q.limit(1))).scalar()
+        if n is None:
+            raise HTTPException(404, "no open recall matches")
+        b = await _buy_in(s, n, int(args["quantity"]) if args.get("quantity") else None,
+                          float(args["price"]) if args.get("price") else None)
+        await s.commit()
+        return buy_in_json(b)
+
+
+@ctx.verb("buy_in_after")
+async def verb_buy_in_after(args: dict[str, Any]) -> dict:
+    """How many business days past due a lender waits to buy in: {days} (default 1; null never)."""
+    days = args.get("days", BUY_IN_AFTER_DAYS)
+    _buy_ins["afterDays"] = None if days is None else max(int(days), 0)
+    return dict(_buy_ins)
 
 
 @app.get("/recalls", tags=["lifecycle"])
@@ -691,6 +789,7 @@ async def eod_file(asOf: str | None = None, who: str = Depends(client("eod:read"
 # -- admin -------------------------------------------------------------------------------------------
 async def on_reset(c: ServiceContext) -> None:
     _flags.update(break_rate=0.03, force_break_next=False, eod_break=False)
+    _buy_ins["afterDays"] = BUY_IN_AFTER_DAYS
 
 
 async def _nightly_marks() -> None:

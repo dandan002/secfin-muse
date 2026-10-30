@@ -125,6 +125,10 @@ class GatewayPlatformClient:
         """Client shorts that failed to deliver at CNS, oldest first (``after``: the last ``seq`` seen)."""
         return await self._h.json("GET", "/v1/fails", params={"after": after, **({"status": status} if status else {})})
 
+    async def buy_ins(self, after: int = 0) -> list[dict[str, Any]]:
+        """CNS buy-ins on fails we didn't deliver, oldest first (``after``: the last ``seq`` seen)."""
+        return await self._h.json("GET", "/v1/buy-ins", params={"after": after})
+
     async def deliver_fail(self, fail_id: str, quantity: int, ref: str | None = None) -> dict[str, Any]:
         """Deliver shares against a fail; it closes when nothing is outstanding."""
         return await self._h.json("POST", f"/v1/fails/{fail_id}/deliver", json={"quantity": quantity, "ref": ref})

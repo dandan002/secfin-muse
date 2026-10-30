@@ -110,6 +110,7 @@ diff resolves the break (`resolvedBreaks` in the response).
 | --- | --- | --- |
 | `RETURN` | `quantity?` (default all), `effectiveDate?` | Borrower returns shares; closes at zero |
 | `RECALL` | `quantity?`, `effectiveDate?` | We recall shares we lent |
+| `BUY_IN` | `quantity?`, `price?` | A lender bought in shares on a loan whose lifecycle lives on a venue (Venue B): the contract closes for them |
 | `RERATE` | `feeBps`, `effectiveDate?` | New fee |
 | `MARK` | | Mark to market now; may produce a margin call |
 
@@ -120,11 +121,17 @@ lender wants shares back, the recall notice lands here. (A Venue B loan is recal
 
 | Method | Path | |
 | --- | --- | --- |
-| GET | `/recalls?status=&contractId=&after=` | `recallId` (`SFP-R-…`), `seq`, `contractId`, `counterparty`, `instrumentId`, `quantity`, `outstanding` (not returned yet), `noticeDate`, `dueDate`, `status` (OPEN/RETURNED), `overdue` |
+| GET | `/recalls?status=&contractId=&after=` | `recallId` (`SFP-R-…`), `seq`, `contractId`, `counterparty`, `instrumentId`, `quantity`, `outstanding` (not returned yet), `noticeDate`, `dueDate`, `status` (OPEN/RETURNED/BOUGHT_IN), `overdue`, `boughtIn` |
+| GET | `/buy-ins?contractId=&after=` | Buy-ins on our overdue recalls: `buyInId` (`SFP-B-…`), `seq`, `recallId`, `contractId`, `counterparty`, `instrumentId`, `quantity`, `price`, `ccy`, `cost`, `collateralKept`, `amountDue` |
 
 A `RETURN` on the contract answers its open recalls, oldest first (`recallsAnswered` in the response).
 Shares not back by the due date leave the notice `overdue`: under the lending agreement the lender may
-then buy them in at our cost.
+then buy them in at our cost. Here it does, a business day after the due date, in market hours (verb
+`buy_in_after {days}`; `null` never): it buys what's still outstanding at the market price plus 0.5-3%,
+the contract closes for those shares, and the lender keeps their share of our collateral against the
+cost. `amountDue` is what's left for us to pay (negative: the collateral was more, and the lender owes
+us the difference). A `buy_in` event goes out on the `contracts` topic, and the contract's history
+gets a `BUY_IN` entry.
 
 ## Marks and margin calls
 
@@ -159,7 +166,7 @@ simulator's `eod_break` flag makes one row disagree with the online books.
 
 | Topic | Types |
 | --- | --- |
-| `contracts` | `contract_booked`, `contract_amended`, `contract_return`, `contract_recall`, `contract_rerate`, `contract_mark`, `recall_notice`, `recall_returned` |
+| `contracts` | `contract_booked`, `contract_amended`, `contract_return`, `contract_recall`, `contract_rerate`, `contract_mark`, `recall_notice`, `recall_returned`, `buy_in` |
 | `breaks` | `break_opened`, `break_resolved` |
 | `marks` | `margin_call` |
 
@@ -173,4 +180,5 @@ non-amendable field, or a return larger than the open quantity.
 
 `GET /_admin/credentials`; `GET|PUT /_admin/flags` (`break_rate`, `force_break_next`, `eod_break`);
 `GET /_admin/injected-breaks` (the answer key); scenario verbs `sfp.flags`, `sfp.marks` and
-`sfp.recall {contractId? | instrument?, counterparty?, quantity?, dueDays? (1)}` (a lender recalls one of our borrows).
+`sfp.recall {contractId? | instrument?, counterparty?, quantity?, dueDays? (1)}` (a lender recalls one of our borrows),
+`sfp.buy_in {recallId?, quantity?, price?}` (a lender buys one in now) and `sfp.buy_in_after {days}`.

@@ -43,8 +43,8 @@ from ..models import (
     Trade,
 )
 from ..settings import get_settings
+from . import buyins, inventory
 from . import fails as cns
-from . import inventory
 from .booking import open_qty
 from .orders import OPEN as OPEN_ORDERS
 from .orders import OrderError, OrderIn, preview
@@ -110,6 +110,7 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
     held |= set((await s.execute(select(Trade.instrument_id).where(Trade.side == "BORROW",
                                                                    Trade.loan_status == "OPEN"))).scalars())
     failing = await cns.active(s)  # and every name with a client short that failed at CNS
+    bought = await buyins.covered_since(s, d)
     iids = [*by_name, *sorted((held | set(failing)) - by_name.keys())]
     insts = {i.id: i for i in (await s.execute(select(Instrument).where(Instrument.id.in_(iids)))).scalars()}
     box: dict[str, int] = defaultdict(int)
@@ -139,7 +140,7 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
             if booked is None or booked > box_at:  # not in the box: its open quantity already counts
                 continue
             for e in t.lifecycle or []:
-                if e.get("event") in ("RETURN", "RECALL") and clock.parse_ts(e["ts"]) > box_at:
+                if e.get("event") in ("RETURN", "RECALL", "BOUGHT_IN") and clock.parse_ts(e["ts"]) > box_at:
                     since[t.instrument_id] += int(e["quantity"]) * (1 if t.side == "BORROW" else -1)
     working: dict[str, int] = defaultdict(int)  # open borrow orders, and chat bids not answered yet
     for o in (await s.execute(select(Order).where(Order.instrument_id.in_(iids), Order.side == "BORROW",
@@ -170,8 +171,10 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
         rows = by_name.get(iid, [])
         inst = insts.get(iid)
         lv = secmaster.live(iid)
-        # A short that failed at CNS is owed even if the stock record no longer shows it (bought back since).
-        need = max(sum(c.short_qty for c in rows), sum(f.open_qty for f in failing.get(iid, [])))
+        # A short that failed at CNS is owed even if the stock record no longer shows it (bought back since); one
+        # bought in at CNS since the close is covered, though the record still shows it.
+        need = max(sum(c.short_qty for c in rows) - bought.get(iid, 0),
+                   sum(f.open_qty for f in failing.get(iid, [])), 0)
         cover = max(box[iid] - since[iid], 0) + unbooked[iid] - fails[iid] - recalled[iid]
         shortfall = max(need - cover, 0)
         pending = working[iid] + sum(int(a.payload.get("quantity") or (a.original or {}).get("quantity") or 0)
@@ -277,6 +280,7 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
 
     cfg = get_settings()
     await _supersede_stale(s, by=by)  # their names are uncovered again: drafted afresh below, at today's fee
+    await _supersede_oversized(s, await build(s, trade_date), by=by)
     sl = await build(s, trade_date)
     bids = await chat_bids(s, [ln["instrumentId"] for ln in sl["lines"]])
     made, notes = [], []
@@ -400,6 +404,25 @@ async def _supersede_stale(s: AsyncSession, *, by: str) -> int:
             await gate.reject(s, a, by, f"bid {fee:g} bps is under the market fee now ({market_bps:g}): redrafted",
                               status="SUPERSEDED")
             n += 1
+    return n
+
+
+async def _supersede_oversized(s: AsyncSession, sl: dict[str, Any], *, by: str) -> int:
+    """A cover order bigger than what the name is still short by (the clients bought back, a buy-in covered them, a
+    borrow came in another way) would borrow shares nobody needs: supersede it; the draft sizes it again."""
+    from .. import gate
+
+    n = 0
+    for ln in sl["lines"]:
+        cards = [await s.get(Action, d["actionId"]) for d in ln["drafted"]]
+        ours = [a for a in cards if a.kind == "order" and (a.source_ref or "").startswith(f"{SOURCE}:")]
+        asked = sum(int(a.payload.get("quantity") or 0) for a in ours)
+        need = _lot(max(ln["shortfall"] - ln["working"], 0)) if ln["shortfall"] > ln["working"] else 0
+        if ours and asked > need:
+            for a in ours:
+                await gate.reject(s, a, by, f"the name is short {need:,} now, not {asked:,}: "
+                                            + ("redrafted" if need else "no cover needed"), status="SUPERSEDED")
+                n += 1
     return n
 
 

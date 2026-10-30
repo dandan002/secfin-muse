@@ -231,7 +231,8 @@
               "RETURN",
               "RECALL",
               "RERATE",
-              "MARK"
+              "MARK",
+              "BUY_IN"
             ],
             "title": "Event",
             "type": "string"
@@ -247,6 +248,19 @@
               }
             ],
             "title": "Feebps"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "BUY_IN: what the lender paid a share",
+            "title": "Price"
           },
           "quantity": {
             "anyOf": [
@@ -1275,6 +1289,71 @@
         "summary": "Breaks",
         "tags": [
           "reconciliation"
+        ]
+      }
+    },
+    "/buy-ins": {
+      "get": {
+        "description": "Lenders' buy-ins on our overdue recalls, oldest first (``after``: the last ``seq`` you've seen).",
+        "operationId": "buy_ins_buy_ins_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "contractId",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Contractid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Buy Ins Buy Ins Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Buy Ins",
+        "tags": [
+          "lifecycle"
         ]
       }
     },

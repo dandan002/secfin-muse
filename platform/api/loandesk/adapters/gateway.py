@@ -27,5 +27,9 @@ class Gateway(Client):
         """Client shorts that failed to deliver at CNS (``after``: the last ``seq`` seen)."""
         return await self.get("/v1/fails", params={"after": after, **({"status": status} if status else {})})
 
+    async def buy_ins(self, after: int = 0) -> list[dict[str, Any]]:
+        """CNS buy-ins on fails we didn't deliver (``after``: the last ``seq`` seen)."""
+        return await self.get("/v1/buy-ins", params={"after": after})
+
     async def deliver_fail(self, fail_id: str, quantity: int, ref: str | None = None) -> dict[str, Any]:
         return await self.post(f"/v1/fails/{fail_id}/deliver", json={"quantity": quantity, "ref": ref})

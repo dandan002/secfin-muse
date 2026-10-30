@@ -50,8 +50,8 @@ class Processor:
         return {"changes": fields}
 
     async def lifecycle(self, contract_id: str, event: str, quantity: int | None = None,
-                        fee_bps: float | None = None) -> dict[str, Any]:
-        self.calls.append((event, contract_id, quantity, fee_bps))
+                        fee_bps: float | None = None, price: float | None = None) -> dict[str, Any]:
+        self.calls.append((event, contract_id, quantity, fee_bps) + ((price,) if price else ()))
         return {"contract": {"contractId": contract_id}}
 
     async def run_marks(self) -> dict[str, Any]:
@@ -311,6 +311,37 @@ async def test_a_venue_b_rerate_waits_for_the_counterparty(client: httpx.AsyncCl
     r = next(x for x in (await client.get("/trades")).json() if x["id"] == t["id"])
     assert (r["feeBps"], r["pendingRerateBps"]) == (26.0, None)
     assert post_trade.processor.calls[-1] == ("RERATE", t["contractId"], None, 26.0)
+
+
+async def test_a_venue_b_buy_in_closes_the_loan_and_is_booked_at_the_processor(
+        client: httpx.AsyncClient, post_trade: SimpleNamespace, venue_b: VenueB) -> None:
+    """The lender recalls on the venue and, not returned in time, buys in there: the loan closes for those shares
+    at the venue, so we book it at the processor, and the return card for the recall goes."""
+    o = (await client.post("/orders", json={"instrument": "NVDA US", "quantity": 30_000, "feeBps": 30,
+                                            "venue": "VENUE_B", "override": True})).json()
+    venue_b.dealer_counters(o["venueOrderId"], 30.0, 30_000)
+    await client.post(f"/orders/{o['id']}/accept")
+    await sync.sync_venue_b()
+    t = next(x for x in (await client.get("/trades")).json() if x["orderId"] == o["id"])
+    loan = next(x for x in venue_b.loan_rows if x["loanId"] == t["venueTradeId"])
+    loan["recall"] = {"quantity": 12_000, "dueDate": "2026-10-28", "overdue": False}
+    await sync.sync_venue_b()
+    async with db.session() as s:
+        ref = f"recall:{loan['loanId']}"
+        [card] = (await s.execute(select(Action).where(Action.source_ref == ref))).scalars().all()
+    loan.update(recall=None, quantityOpen=18_000, buyIns=[{
+        "buyInId": f"{loan['loanId']}-B1", "quantity": 12_000, "price": 183.5, "ccy": "USD", "cost": 2_202_000.0,
+        "collateralKept": 2_203_200.0, "amountDue": -1_200.0, "remaining": 18_000, "ts": "2026-10-29T14:05:00Z"}])
+    await sync.sync_venue_b()
+    await sync.sync_venue_b()  # once
+    r = next(x for x in (await client.get("/trades")).json() if x["id"] == t["id"])
+    assert (r["openQty"], r["recalledQty"], r["recallDue"], r["boughtIn"]) == (18_000, 0, None, 12_000)
+    assert [e["event"] for e in r["lifecycle"]].count("BOUGHT_IN") == 1
+    assert ("BUY_IN", t["contractId"], 12_000, None, 183.5) in post_trade.processor.calls
+    async with db.session() as s:
+        assert (await s.get(Action, card.id)).status == "SUPERSEDED"
+    [b] = [x for x in (await client.get("/buy-ins")).json() if x["tradeId"] == t["id"]]
+    assert (b["kind"], b["origin"], b["counterparty"], b["amountDue"]) == ("RECALL", "venue_b", "HARBORAL", -1_200.0)
 
 
 # -- chat -------------------------------------------------------------------------------------------------

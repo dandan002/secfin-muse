@@ -70,6 +70,7 @@ const STATE: Record<string, string> = {
   EXCESS: "text-warm",
   CLOSED_OUT: "text-warm",
   DELIVERED: "text-up",
+  BOUGHT_IN: "text-down",
 };
 
 export function State({ s }: { s: string | null | undefined }) {

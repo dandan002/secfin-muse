@@ -684,3 +684,134 @@ async def test_a_cover_left_under_the_market_is_redrafted_at_todays_fee(
                                                       Action.status == "PENDING"))).scalars().all()
     assert new.id in out["drafted"] and new.payload["feeBps"] > old.payload["feeBps"]
     assert new.payload["feeBps"] >= secmaster.live(name.id)["feeBps"]
+
+
+async def test_a_lender_buys_in_part_of_an_overdue_recall_and_the_rest_is_redrafted(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At the processor: recalled 30k, overdue, the lender buys in 20k. Those come off the loan and the recall; the
+    return card for 30k is superseded and one for the 10k still owed is drafted. We owe the cost over the collateral
+    the lender kept."""
+    from datetime import UTC, date, datetime
+
+    from loandesk.models import Trade
+
+    [v] = (await _names("GC", 22))[21:]
+    at = datetime(2026, 10, 27, 13, 0, tzinfo=UTC)
+    async with db.session() as s:
+        s.add(Trade(id="trd_bi_1", venue="VENUE_A", venue_trade_id="NGT-T-BI1", uti="UTIBI1", side="BORROW",
+                    instrument_id=v.id, cp_code="MERIDIAL", qty=50_000, open_qty=50_000, fee_bps=18.0, price=40.0,
+                    ccy="USD", settle_date=date(2026, 10, 28), venue_json={}, executed_at=at,
+                    sfp_contract_id="SFP-C-BI1", booked_at=at, loan_status="OPEN", settle_status="SETTLED",
+                    lifecycle=[]))
+        await s.commit()
+
+    async def recalls(after: int = 0) -> list[dict[str, Any]]:
+        notice = {"seq": 150, "recallId": "SFP-R-000150", "contractId": "SFP-C-BI1", "counterparty": "MERIDIAL",
+                  "status": "OPEN", "quantity": 30_000, "outstanding": 30_000, "dueDate": "2026-10-28"}
+        return [notice] if after < 150 else []
+
+    rows = [{"seq": 4, "buyInId": "SFP-B-000004", "recallId": "SFP-R-000150", "contractId": "SFP-C-BI1",
+             "counterparty": "MERIDIAL", "instrumentId": v.id, "quantity": 20_000, "price": 41.2, "ccy": "USD",
+             "cost": 824_000.0, "collateralKept": 816_000.0, "amountDue": 8_000.0, "ts": "2026-10-29T14:01:00Z"}]
+
+    async def buy_ins(after: int = 0) -> list[dict[str, Any]]:
+        return [r for r in rows if r["seq"] > after]
+
+    async def none(after: int = 0) -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setattr(systems().processor, "recalls", recalls)
+    monkeypatch.setattr(systems().processor, "buy_ins", buy_ins)
+    monkeypatch.setattr(systems().gateway, "buy_ins", none)
+    await sync.sync_recalls()
+    async with db.session() as s:
+        [first] = (await s.execute(select(Action).where(Action.source_ref == "recall:SFP-R-000150"))).scalars().all()
+    await sync.sync_buy_ins()
+    await sync.sync_buy_ins()  # the cursor: once
+    async with db.session() as s:
+        t = await s.get(Trade, "trd_bi_1")
+        assert (t.open_qty, t.recalled_qty, t.loan_status) == (30_000, 10_000, "OPEN")
+        assert [e["event"] for e in t.lifecycle].count("BOUGHT_IN") == 1
+        cards = (await s.execute(select(Action).where(Action.source_ref == "recall:SFP-R-000150"))).scalars().all()
+    assert {a.id: a.status for a in cards}[first.id] == "SUPERSEDED"
+    [rest] = [a for a in cards if a.status == "PENDING"]
+    assert rest.payload == {"tradeId": "trd_bi_1", "event": "RETURN", "quantity": 10_000}
+    assert "bought in 20,000" in rest.rationale and "after a buy-in" in rest.title
+    [b] = [x for x in (await client.get("/buy-ins")).json() if x["id"] == "SFP-B-000004"]
+    assert (b["quantity"], b["amountDue"], b["origin"]) == (20_000, 8_000.0, "processor")
+
+
+async def test_a_cns_buy_in_closes_the_fail_lifts_pre_borrow_and_is_charged_to_the_client(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fail missed its close-out and stayed open; the buyer bought it in at CNS. The fail is closed, the name
+    leaves the penalty box, and the shares cover the client's short before the next stock record says so."""
+    from datetime import UTC, datetime
+
+    from loandesk import clock
+    from loandesk.models import DeliveryFail
+
+    [name] = (await _names("GC", 24))[23:]
+    _cns(monkeypatch, [_fail(3, "CNS-F-000003", "BASALTHF", name.id, "2026-11-05", 15_000)])
+    clock.pin(datetime(2026, 11, 6, 15, 0, tzinfo=UTC))  # past the 09:30 close-out: missed
+    try:
+        _gateway(monkeypatch, {"tradeDate": "2026-11-05", "settlementDate": "2026-11-06",
+                               "closedAt": "2026-11-05T21:00:00Z", "shortSales": [], "locateUsage": [],
+                               "positions": [{"counterparty": "BASALTHF", "instrumentId": name.id,
+                                              "shortQuantity": 15_000, "soldQuantity": 0, "coveredQuantity": 0}]})
+        await sync.sync_stock_record()
+        await sync.sync_fails()
+        ln = await _line(client, "2026-11-05", name.id)
+        assert ln["preBorrow"] is True
+        [cover] = ln["drafted"]  # 15k to borrow, for now
+
+        rows = [{"seq": 9, "buyInId": "CNS-B-000009", "failId": "CNS-F-000003", "counterparty": "BASALTHF",
+                 "instrumentId": name.id, "quantity": 15_000, "price": 52.1, "salePrice": 50.0,
+                 "amountDue": 31_500.0, "boughtInAt": "2026-11-10T15:00:00Z"}]
+
+        async def buy_ins(after: int = 0) -> list[dict[str, Any]]:
+            return [r for r in rows if r["seq"] > after]
+
+        async def none(after: int = 0) -> list[dict[str, Any]]:
+            return []
+
+        monkeypatch.setattr(systems().gateway, "buy_ins", buy_ins)
+        monkeypatch.setattr(systems().processor, "buy_ins", none)
+        clock.pin(datetime(2026, 11, 10, 15, 5, tzinfo=UTC))
+        await sync.sync_buy_ins()
+        async with db.session() as s:
+            f = await s.get(DeliveryFail, "CNS-F-000003")
+            assert (f.status, f.open_qty, f.missed) == ("BOUGHT_IN", 0, True)
+        ln = await _line(client, "2026-11-05", name.id)
+        assert (ln["preBorrow"], ln["cnsFails"], ln["need"], ln["shortfall"], ln["drafted"]) == (False, 0, 0, 0, [])
+        async with db.session() as s:  # the cover drafted for the short isn't needed now
+            a = await s.get(Action, cover["actionId"])
+            assert a.status == "SUPERSEDED"  # stale or unneeded, it isn't drafted again: nothing's short
+        [b] = [x for x in (await client.get("/buy-ins")).json() if x["id"] == "CNS-B-000009"]
+        assert (b["kind"], b["counterparty"], b["amountDue"], b["failId"]) == ("CNS", "BASALTHF", 31_500.0,
+                                                                               "CNS-F-000003")
+    finally:
+        clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+
+
+async def test_a_cover_bigger_than_what_is_still_short_is_redrafted_to_size(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The clients bought back part of the short before the cover was approved: the card would borrow more than
+    anyone needs, so the next draft supersedes it and drafts what's still short."""
+    [name] = (await _names("GC", 26))[25:]
+    rec = {"tradeDate": "2026-11-11", "settlementDate": "2026-11-12", "closedAt": "2026-11-11T21:00:00Z",
+           "shortSales": [], "locateUsage": [],
+           "positions": [{"counterparty": "BASALTHF", "instrumentId": name.id, "shortQuantity": 30_000,
+                          "soldQuantity": 30_000, "coveredQuantity": 0}]}
+    _gateway(monkeypatch, rec)
+    await sync.sync_stock_record()
+    [first] = (await _line(client, "2026-11-11", name.id))["drafted"]
+    _gateway(monkeypatch, {**rec, "tradeDate": "2026-11-12", "settlementDate": "2026-11-13",
+                           "positions": [{**rec["positions"][0], "shortQuantity": 12_000, "soldQuantity": 0,
+                                          "coveredQuantity": 18_000}]})
+    await sync.sync_stock_record()
+    async with db.session() as s:
+        old = await s.get(Action, first["actionId"])
+        [new] = (await s.execute(select(Action).where(Action.source_ref == f"short:{name.id}",
+                                                      Action.status == "PENDING"))).scalars().all()
+    assert old.status == "SUPERSEDED" and "short 12,000 now, not 30,000" in old.result["reason"]
+    assert new.payload["quantity"] == 12_000

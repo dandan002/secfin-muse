@@ -26,10 +26,10 @@ class Processor(Client):
         return await self.post(f"/contracts/{contract_id}/amend", json={"fields": fields, "reason": reason})
 
     async def lifecycle(self, contract_id: str, event: str, quantity: int | None = None,
-                        fee_bps: float | None = None) -> dict[str, Any]:
-        """RETURN, RECALL, RERATE or MARK on one contract."""
+                        fee_bps: float | None = None, price: float | None = None) -> dict[str, Any]:
+        """RETURN, RECALL, RERATE, MARK or BUY_IN (a venue's, booked here) on one contract."""
         return await self.post(f"/lifecycle/{contract_id}", json={"event": event, "quantity": quantity,
-                                                                  "feeBps": fee_bps})
+                                                                  "feeBps": fee_bps, "price": price})
 
     async def run_marks(self) -> dict[str, Any]:
         """Mark every open contract to market; margin calls come back in ``calls``."""
@@ -45,3 +45,7 @@ class Processor(Client):
     async def recalls(self, after: int = 0) -> list[dict[str, Any]]:
         """Lenders' recalls on contracts where we borrow, after ``seq``: Venue A fills and bilateral trades."""
         return await self.get("/recalls", params={"after": after})
+
+    async def buy_ins(self, after: int = 0) -> list[dict[str, Any]]:
+        """Lenders' buy-ins on our overdue recalls at the processor, after ``seq``."""
+        return await self.get("/buy-ins", params={"after": after})

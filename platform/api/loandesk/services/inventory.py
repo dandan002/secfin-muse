@@ -71,6 +71,11 @@ async def apply(s: AsyncSession, positions: list[dict[str, Any]], as_of: datetim
     for iid, q in (await owed(s)).items():
         if iid in flat:
             flat[iid]["net"] -= q  # delivered on the clients' shorts
+    for t in (await s.execute(select(Trade).where(Trade.side == "BORROW", Trade.sfp_contract_id.is_not(None),
+                                                  Trade.instrument_id.in_(list(flat))))).scalars():
+        for e in t.lifecycle or []:  # gone since the positions were read (a refresh nets stale positions)
+            if e.get("event") in ("RETURN", "BOUGHT_IN") and clock.parse_ts(e["ts"]) > as_of:
+                flat[t.instrument_id]["net"] -= int(e["quantity"])
     long = {iid: n for iid, n in flat.items() if n["net"] > 0}
     for iid, a in have.items():  # names we no longer hold go to zero, so the ledger never lends what's gone
         if iid not in long:
@@ -105,13 +110,16 @@ async def refresh(s: AsyncSession) -> int:
 async def owed(s: AsyncSession) -> dict[str, int]:
     """Per name, the shares the box delivers for clients: their shorts at the latest close, or the name's CNS
     fails not delivered yet if those are more (as the short list counts its need)."""
+    from .buyins import covered_since
+
     latest = (await s.execute(select(func.max(ClientShort.trade_date)))).scalar()
     out: dict[str, int] = defaultdict(int)
     if latest is not None:
+        bought = await covered_since(s, latest)  # bought in at CNS since: covered, though the record shows it
         for iid, q in (await s.execute(select(ClientShort.instrument_id, func.sum(ClientShort.short_qty)).where(
                 ClientShort.trade_date == latest, ClientShort.counterparty != "-")
                 .group_by(ClientShort.instrument_id))).all():
-            out[iid] = int(q or 0)
+            out[iid] = max(int(q or 0) - bought.get(iid, 0), 0)
     for iid, q in (await s.execute(select(DeliveryFail.instrument_id, func.sum(DeliveryFail.open_qty)).where(
             DeliveryFail.status.in_(("OPEN", "CLOSED_OUT"))).group_by(DeliveryFail.instrument_id))).all():
         out[iid] = max(out[iid], int(q or 0))

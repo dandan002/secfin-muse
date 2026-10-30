@@ -60,7 +60,29 @@ class RecallNotice(Base):
     outstanding: Mapped[int] = mapped_column(BigInteger)  # not returned yet
     notice_date: Mapped[date] = mapped_column(Date)
     due_date: Mapped[date] = mapped_column(Date)
-    status: Mapped[str] = mapped_column(String(16))  # OPEN | RETURNED
+    status: Mapped[str] = mapped_column(String(16))  # OPEN | RETURNED | BOUGHT_IN
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bought_in_qty: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class BuyIn(Base):
+    """The lender bought in shares we didn't return on a recall: the loan closes for them, and the lender keeps
+    their share of our collateral against the cost. ``amount_due`` is what's left for us to pay (negative: the
+    collateral was more, and the lender owes us the rest)."""
+
+    __tablename__ = "buy_ins"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    buy_in_id: Mapped[str] = mapped_column(String(32), unique=True)
+    recall_id: Mapped[str] = mapped_column(String(32), index=True)
+    contract_id: Mapped[str] = mapped_column(String(32), index=True)
+    counterparty: Mapped[str] = mapped_column(String(32))
+    instrument_id: Mapped[str] = mapped_column(String(16))
+    qty: Mapped[int] = mapped_column(BigInteger)
+    price: Mapped[float] = mapped_column(Float)  # what the lender paid a share
+    ccy: Mapped[str] = mapped_column(String(3))
+    cost: Mapped[float] = mapped_column(Float)  # qty x price
+    collateral_kept: Mapped[float] = mapped_column(Float)
+    amount_due: Mapped[float] = mapped_column(Float)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
