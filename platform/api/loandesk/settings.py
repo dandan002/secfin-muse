@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./loandesk.db"
     seed: int = Field(20261027, validation_alias=AliasChoices("LOANDESK_SEED", "MOCK_SEED"))
     cors_origins: list[str] = ["http://localhost:5180", "http://127.0.0.1:5180"]
+    # Sign-in (see auth.py): the Clerk instance's Frontend API URL. Unset, the desk is open (local dev only).
+    clerk_issuer: str | None = None
+    clerk_authorized_parties: list[str] = []  # origins a token may be minted for; defaults to cors_origins
 
     # -- the outside world (the mocks, locally on 8000-8060) ------------------------------------
     control_url: str = _url("CONTROL", 8000)

@@ -32,6 +32,24 @@ curl -XPOST localhost:8000/scenarios/demo/run -H "authorization: Bearer $KEY" \
 The desk works with the mocks down too: reference data, rules, locates and the paste parser are local; anything
 that needs a venue fails visibly (order `FAILED`, reply `FAILED`) instead of hanging.
 
+## Sign-in (Clerk)
+
+The web app opens on a landing page; the desk is behind a Clerk sign-in, and the API checks every request itself.
+
+1. Create an application in the [Clerk dashboard](https://dashboard.clerk.com). Turn off sign-up (or restrict it)
+   so only invited traders get in.
+2. `platform/web/.env.local` (gitignored): `VITE_CLERK_PUBLISHABLE_KEY=pk_test_...`
+3. The API (`.env` or the environment): `LOANDESK_CLERK_ISSUER=https://<your-instance>.clerk.accounts.dev`
+   (the Frontend API URL on the dashboard's API keys page). Every route but `/health` then needs the session token
+   (`Authorization: Bearer`, `?token=` on the `/stream` WebSocket), checked against Clerk's JWKS for signature,
+   expiry, issuer and the site it was minted for (`azp`, from `LOANDESK_CLERK_AUTHORIZED_PARTIES`, default the CORS
+   origins). The trader in the audit trail is the token's `trader` or `username` claim (add one under
+   *Sessions → Customize session token*, e.g. `{"trader": "{{user.username}}"}`), else the Clerk user id; the
+   `X-Trader` header is ignored.
+
+Without the key the landing page says sign-in isn't configured; `npm run dev` still offers "open the desk (dev,
+no sign-in)", and without the issuer the API stays open, as before. Set both for anything beyond your laptop.
+
 ## What's built (spec module → code)
 
 | Spec | Backend | Screen |
@@ -99,8 +117,7 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
 
 Not built yet: quoting RFQs and handling recalls from chat (they are read and wait; agreed trades become order
 cards), basket routing (a whole basket to Venue B in one list; the Paste screen does it by hand), counterparty-
-initiated recalls, plain-language policies, FIX transport, and logins for the desk itself (the `X-Trader`
-header is a placeholder).
+initiated recalls, plain-language policies, FIX transport, and roles for the desk (every signed-in trader can do everything).
 
 ## Tests
 

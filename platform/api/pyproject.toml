@@ -15,6 +15,7 @@ dependencies = [
     # The reference-data feed (instrument universe, identifiers, counterparties). The platform uses it the way
     # a desk uses a vendor's security-master file; it never imports a mock system.
     "loandesk-refdata",
+    "pyjwt[crypto]>=2.10",
 ]
 
 [project.optional-dependencies]

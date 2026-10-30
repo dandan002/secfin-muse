@@ -1,3 +1,5 @@
+import { sessionToken } from "./auth";
+
 export const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8100";
 
 export class ApiError extends Error {
@@ -19,9 +21,10 @@ function trader(): string {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const token = await sessionToken();
   const r = await fetch(API_URL + path, {
     method,
-    headers: { "content-type": "application/json", "x-trader": trader() },
+    headers: { "content-type": "application/json", "x-trader": trader(), ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await r.text();

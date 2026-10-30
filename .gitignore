@@ -15,3 +15,5 @@ platform/api/*.db
 platform/api/*.db-*
 platform/api/cassettes/
 .playwright-mcp/
+.env.local
+.env.*.local
