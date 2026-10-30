@@ -331,3 +331,97 @@ async def test_borrows_the_clients_no_longer_need_are_returned_dearest_first(
         assert (lx["box"], lx["returnedSinceBox"], lx["excess"]) == (30_000, 0, 0)
     finally:
         clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+
+
+async def test_a_lenders_recall_comes_off_the_cover_gets_a_return_and_the_short_list_redrafts(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clients short 50k; we borrow 60k from Harbor and 20k from Northgate, so 30k is drafted back as excess. Then
+    Harbor recalls 40k: that's owed back, not cover. The recall gets its own return card on Harbor's borrow, the
+    excess returns are superseded (nothing is spare now), and the 10k the clients still need gets a cover."""
+    from datetime import UTC, date, datetime
+
+    from loandesk import clock
+    from loandesk.models import Trade
+
+    [z] = (await _names("GC", 10))[9:]
+
+    async def lifecycle(contract_id: str, event: str, quantity: int | None = None,
+                        fee_bps: float | None = None) -> dict[str, Any]:
+        return {}
+
+    async def instruct(body: dict[str, Any]) -> dict[str, Any]:
+        return {"instruction": {**body, "instructionId": "CUST-RCL-1", "status": "ACCEPTED"}}
+
+    monkeypatch.setattr(systems().processor, "lifecycle", lifecycle)
+    monkeypatch.setattr(systems().custodian, "instruct", instruct)
+    at = datetime(2026, 10, 27, 13, 0, tzinfo=UTC)
+
+    def borrow(tid: str, cp: str, qty: int, fee: float) -> Trade:
+        return Trade(id=tid, venue="VENUE_A", venue_trade_id=f"NGT-{tid}", uti=f"UTI{tid}", side="BORROW",
+                     instrument_id=z.id, cp_code=cp, qty=qty, open_qty=qty, fee_bps=fee, price=50.0, ccy="USD",
+                     settle_date=date(2026, 10, 28), venue_json={}, executed_at=at, sfp_contract_id=f"SFP-{tid}",
+                     booked_at=at, loan_status="OPEN", settle_status="SETTLED", lifecycle=[])
+
+    async with db.session() as s:
+        s.add_all([borrow("trd_rcl_harbor", "HARBORAL", 60_000, 20.0),
+                   borrow("trd_rcl_north", "NORTHAL", 20_000, 25.0)])
+        await inventory.apply(s, [{"instrumentId": z.id, "side": "BORROW", "openQuantity": 80_000,
+                                   "bookingEntity": "LOANDESK-US", "avgFeeBps": 21.0}])
+        await s.commit()
+    _gateway(monkeypatch, {"tradeDate": "2026-10-30", "settlementDate": "2026-11-02",
+                           "closedAt": "2026-10-30T20:00:00Z", "shortSales": [], "locateUsage": [],
+                           "positions": [{"counterparty": "SPRUCEHF", "instrumentId": z.id, "shortQuantity": 50_000,
+                                          "soldQuantity": 50_000, "coveredQuantity": 0}]})
+    await sync.sync_stock_record()
+    ln = await _line(client, "2026-10-30", z.id)
+    assert (ln["excess"], len(ln["returning"])) == (30_000, 2)
+    excess_cards = [r["actionId"] for r in ln["returning"]]
+
+    async with db.session() as s:
+        m = await chat.ingest(s, {"messageId": "m-recall-1", "streamId": "room-harbor-avails", "seq": 30_001,
+                                  "ts": "2026-10-27T15:00:00Z",
+                                  "sender": {"handle": "mdiaz.harbor", "kind": "persona", "cpCode": "HARBORAL"},
+                                  "text": f"Recall notice: {z.composite} 40,000, ref HAR-777, please return by T+2. "
+                                          f"Thanks!"})
+        await s.commit()
+    assert (m.intent, m.status) == ("RECALL", "ACTIONED"), m.note
+    async with db.session() as s:
+        t = await s.get(Trade, "trd_rcl_harbor")
+        assert (t.recalled_qty, t.recall_due, t.recall_ref) == (40_000, date(2026, 10, 29), "HAR-777")
+        assert [(await s.get(Action, i)).status for i in excess_cards] == ["SUPERSEDED"] * 2
+        [card] = (await s.execute(select(Action).where(Action.source_ref == "recall:m-recall-1"))).scalars().all()
+    assert card.payload == {"tradeId": "trd_rcl_harbor", "event": "RETURN", "quantity": 40_000}
+    assert "recall from HARBORAL: return 40,000" in card.title and "by 2026-10-29" in card.title
+
+    ln = await _line(client, "2026-10-30", z.id)
+    assert (ln["recalled"], ln["cover"], ln["shortfall"], ln["excess"]) == (40_000, 40_000, 10_000, 0)
+    [cover] = ln["drafted"]  # redrafted on the recall: borrow the 10k the clients still need
+    async with db.session() as s:
+        cover = await s.get(Action, cover["actionId"])
+    assert (cover.kind, cover.payload["side"], cover.payload["quantity"]) == ("order", "BORROW", 10_000)
+    assert "recalled 40,000" in cover.rationale
+    assert ln["returning"] == []  # the recall's return isn't excess
+
+    clock.pin(datetime(2026, 10, 27, 14, 5, tzinfo=UTC))
+    try:
+        assert (await client.post(f"/actions/{card.id}/approve")).json()["status"] == "EXECUTED"
+        [tr] = [x for x in (await client.get("/trades")).json() if x["id"] == "trd_rcl_harbor"]
+        assert (tr["openQty"], tr["recalledQty"], tr["recallDue"]) == (20_000, 0, None)
+        assert tr["lifecycle"][-1]["againstRecall"] == 40_000
+        ln = await _line(client, "2026-10-30", z.id)  # returned, not yet off the box: the same 40k of cover
+        assert (ln["recalled"], ln["returnedSinceBox"], ln["cover"], ln["shortfall"]) == (0, 40_000, 40_000, 10_000)
+    finally:
+        clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+
+
+async def test_a_recall_we_cant_match_waits_for_the_trader(client: httpx.AsyncClient) -> None:
+    [w] = (await _names("GC", 11))[10:]
+    async with db.session() as s:
+        m = await chat.ingest(s, {"messageId": "m-recall-2", "streamId": "room-harbor-avails", "seq": 30_002,
+                                  "ts": "2026-10-27T15:01:00Z",
+                                  "sender": {"handle": "mdiaz.harbor", "kind": "persona", "cpCode": "HARBORAL"},
+                                  "text": f"Sorry - beneficial owner is selling, recalling 25k {w.composite} "
+                                          f"(HAR-55501), T+1"})
+        await s.commit()
+    assert (m.intent, m.status) == ("RECALL", "OPEN")
+    assert "recalls 25,000 more than we borrow from them" in m.note

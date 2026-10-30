@@ -178,6 +178,8 @@ function Fills({ trades }: { trades: Trade[] }) {
                   <td className="td" title={t.settleRef ?? ""}><State s={t.settleStatus} /></td>
                   <td className="td" title={last ? `${last.event.toLowerCase()} ${time(last.ts)} by ${actor(last.by)}${last.error ? `: ${last.error}` : ""}` : ""}>
                     <State s={t.loanStatus} />{last && <span className="ml-2 text-faint">{last.event.toLowerCase().replace("_", " ")}</span>}
+                    {!!t.recalledQty && <span className="ml-2 text-warm" title={t.recallRef ? `ref ${t.recallRef}` : ""}>
+                      {qty(t.recalledQty)} recalled{t.recallDue ? `, due ${t.recallDue}` : ""}</span>}
                   </td>
                   <td className="td text-right whitespace-nowrap space-x-1">
                     {(t.compareStatus === "UNBOOKED" || t.compareStatus === "FAILED") && <button className="btn-accent h-6" onClick={() => run(t, "book")}>book</button>}

@@ -89,6 +89,6 @@ survives, so the gold labels stay true.
 `GET /_admin/credentials` (bot handle and token), `GET /_admin/labels?after=` (gold labels),
 `GET /_admin/personas`, `GET /_admin/llm` (calls, spend, cache misses); scenario verbs
 `ib.persona {persona, action}` (action: `any_of_these`, `offer`, `rfq`, `borrow_list`, `ioi`, `recall`,
-`return`, `internal_borrow`, `injection`, `chatter`, `locate_blast` or `auto`), `ib.say {as, room, text}`, `ib.persona_mode {persona, mode}`,
+`return`, `internal_borrow`, `injection`, `chatter`, `locate_blast` or `auto`; `recall` takes `instrument`, `qty` and `ref`, so a scenario can recall a loan the desk really has), `ib.say {as, room, text}`, `ib.persona_mode {persona, mode}`,
 `ib.ambient {on, everyS}`. `cd mocks/ib && uv run mock-ib-corpus` writes the 300-conversation
 labelled eval set.

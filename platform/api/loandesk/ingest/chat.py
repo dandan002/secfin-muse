@@ -21,7 +21,8 @@ answers, and which side of the trade we'd be on. The rules (the paste parser plu
 injections up front and stand in when the model is off.
 
 Statuses: **OPEN** (theirs, for the desk to answer), **AGREED** (a trade agreed in chat: each line is drafted
-as an order card to that counterparty, see ``services.orders.propose_from_chat``), **OURS** (our side, kept as
+as an order card to that counterparty, see ``services.orders.propose_from_chat``), **ACTIONED** (a lender's
+recall matched to our borrows, its returns drafted, see ``services.recalls``), **OURS** (our side, kept as
 context), **FLAGGED** (tries to talk the desk past its rules), **UNSURE** (for the trader), **IGNORED** (chatter;
 locates, which belong to sales). Nothing here trades or replies on its own: an order goes out only when the
 trader approves its card.
@@ -288,6 +289,13 @@ async def ingest(s: AsyncSession, msg: dict[str, Any]) -> ChatMessage | None:
         m.status = "UNSURE"
     elif reading.intent in OPEN:
         m.status = "OPEN"
+        if reading.intent == "RECALL":  # a lender wants shares back: put it on our borrows, draft the returns
+            from ..services import recalls
+
+            handled, notes = await recalls.on_recall(s, m)
+            m.note = "; ".join(x for x in (m.note, *notes) if x)
+            if handled:
+                m.status = "ACTIONED"
     else:  # LOCATE (sales and the API own those), CHATTER
         m.status = "IGNORED"
     events.record(s, "chat", m.id, m.status.lower(), message_json(m), actor=f"chat:{reading.parser}")

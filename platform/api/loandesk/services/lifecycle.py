@@ -53,6 +53,11 @@ async def close(s: AsyncSession, t: Trade, quantity: int | None, *, by: str) -> 
     if t.open_qty == 0:
         t.loan_status = "CLOSED"
     entry: dict[str, Any] = {"quantity": qty, "remaining": t.open_qty}
+    if event == "RETURN" and t.recalled_qty:  # a return answers the lender's recall first
+        entry["againstRecall"] = min(qty, t.recalled_qty)
+        t.recalled_qty -= entry["againstRecall"]
+        if not t.recalled_qty:
+            t.recall_due = None
     try:
         await systems().processor.lifecycle(contract, event, quantity=qty)
     except AdapterError as e:  # the venue leg stands; the books need a retry

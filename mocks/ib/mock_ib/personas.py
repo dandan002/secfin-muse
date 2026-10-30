@@ -326,12 +326,14 @@ def borrow_list(r: random.Random, p: PersonaDef, n: int = 5) -> Draft:
     return Draft(f"{intro}\n{header}\n" + "\n".join(rows), _label("RFQ", p, lines, side="BORROW", term="OPEN"))
 
 
-def recall(r: random.Random, p: PersonaDef, inst: Instrument | None = None, qty: int | None = None) -> Draft:
-    """A lender recalls shares it has lent us: we must return them (or re-borrow elsewhere)."""
+def recall(r: random.Random, p: PersonaDef, inst: Instrument | None = None, qty: int | None = None,
+           ref: str | None = None) -> Draft:
+    """A lender recalls shares it has lent us: we must return them (or re-borrow elsewhere). ``ref`` is the
+    loan's reference, when a scenario recalls a loan the desk really has."""
     inst = inst or pick_instruments(r, 1, {"GC": 0.5, "WARM": 0.4, "HOT": 0.1})[0]
     qty = qty or draw_qty(r, 400_000, 0.6)
     written, t = ident(r, inst, "composite")
-    ref = f"{p.cp_code[:3]}-{r.randint(10000, 99999)}"
+    ref = ref or f"{p.cp_code[:3]}-{r.randint(10000, 99999)}"
     settle = r.choice(("T+1", "T+2"))
     text = r.choice((
         f"Hi! We need to recall {fmt_qty(r, qty)} {written} from you, loan ref {ref}. Sale settles {settle} 🙏",

@@ -75,7 +75,7 @@ export function ShortListView() {
             <table className="w-full text-xs">
               <thead>
                 <tr>
-                  {["name", "tier", "clients", "client short", "sold", "box", "fails", "short by", "working", "to borrow", "excess", "status"].map((h) => (
+                  {["name", "tier", "clients", "client short", "sold", "box", "fails", "recalled", "short by", "working", "to borrow", "excess", "status"].map((h) => (
                     <th key={h} className={`th ${["name", "tier", "status"].includes(h) ? "" : "text-right"}`}>{h}</th>
                   ))}
                 </tr>
@@ -95,6 +95,7 @@ export function ShortListView() {
                     <td className="td text-right text-dim" title={l.unbooked ? `incl. ${full(l.unbooked)} not booked at the processor yet` : ""}>
                       {qty(Math.max(l.box, 0) + l.unbooked)}</td>
                     <td className={`td text-right ${l.fails ? "text-hot" : "text-faint"}`}>{l.fails ? qty(l.fails) : "—"}</td>
+                    <td className={`td text-right ${l.recalled ? "text-warm" : "text-faint"}`}>{l.recalled ? qty(l.recalled) : "—"}</td>
                     <td className="td text-right">{l.shortfall ? qty(l.shortfall) : "—"}</td>
                     <td className="td text-right text-warm">{l.working || l.drafted.length ? qty(l.shortfall - l.uncovered) : "—"}</td>
                     <td className={`td text-right ${l.uncovered ? "text-hot" : "text-faint"}`}>{l.uncovered ? qty(l.uncovered) : "—"}</td>
@@ -132,6 +133,7 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
         <Stat label="box" value={full(l.box)} />
         <Stat label="unbooked" value={full(l.unbooked)} />
         <Stat label="failing in" value={full(l.fails)} tone={l.fails ? "text-hot" : ""} />
+        <Stat label="recalled" value={full(l.recalled)} tone={l.recalled ? "text-warm" : ""} />
         <Stat label="short by" value={full(l.shortfall)} tone={l.shortfall ? "text-hot" : "text-up"} />
         <Stat label="market bps" value={bps(l.feeBps)} />
       </div>

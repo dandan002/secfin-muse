@@ -143,6 +143,9 @@ export interface Trade {
   openQty: number;
   loanStatus: "OPEN" | "CLOSED";
   pendingRerateBps: number | null;
+  recalledQty: number;
+  recallDue: string | null;
+  recallRef: string | null;
   lifecycle: { ts: string; event: string; by: string; quantity?: number; fromBps?: number; toBps?: number; feeBps?: number; callAmount?: number; error?: string }[];
   settleStatus: string | null;
   settleRef: string | null;
@@ -257,7 +260,7 @@ export interface ChatMessage {
   confidence: number;
   parser: string;
   lines: ChatLine[];
-  status: "OPEN" | "AGREED" | "OURS" | "FLAGGED" | "UNSURE" | "IGNORED" | "DISMISSED";
+  status: "OPEN" | "AGREED" | "OURS" | "FLAGGED" | "UNSURE" | "IGNORED" | "DISMISSED" | "ACTIONED";
   side: "US" | "THEM";
   refersTo: number | null;
   ourSide: "LEND" | "BORROW" | null;
@@ -281,6 +284,7 @@ export interface ShortListLine {
   box: number;
   unbooked: number;
   fails: number;
+  recalled: number;
   cover: number;
   shortfall: number;
   working: number;

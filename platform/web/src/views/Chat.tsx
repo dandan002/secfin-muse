@@ -9,7 +9,7 @@ import type { ChatMessage } from "../lib/types";
 const FILTERS = [
   { id: "needs", label: "needs you", status: "UNSURE,FLAGGED" },
   { id: "open", label: "open", status: "OPEN" },
-  { id: "agreed", label: "agreed", status: "AGREED" },
+  { id: "agreed", label: "agreed", status: "AGREED,ACTIONED" },
   { id: "all", label: "all", status: undefined },
 ] as const;
 
@@ -18,6 +18,7 @@ const STATUS_TONE: Record<string, string> = {
   FLAGGED: "text-hot",
   OPEN: "text-accent",
   AGREED: "text-up",
+  ACTIONED: "text-up",
   OURS: "text-faint",
 };
 
@@ -107,6 +108,11 @@ function Detail({ m, onDone }: { m: ChatMessage; onDone: () => void }) {
       {m.status === "AGREED" && (
         <div className="text-up border border-up/40 bg-up/[0.06] rounded-md p-2">
           Agreed in chat{m.ourSide ? `: we ${m.ourSide.toLowerCase()}` : ""}. To book.
+        </div>
+      )}
+      {m.status === "ACTIONED" && (
+        <div className="text-up border border-up/40 bg-up/[0.06] rounded-md p-2">
+          Recall matched to our borrows: the returns are at the gate, and the short list has redrafted.
         </div>
       )}
       {["UNSURE", "FLAGGED", "OPEN", "AGREED"].includes(m.status) && (

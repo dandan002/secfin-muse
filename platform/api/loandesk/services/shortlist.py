@@ -6,10 +6,10 @@ business day, and how much of each locate was used. Locates the client shorted a
 
 Per name, the shares to deliver are the clients' shorts. What covers them is the box: the net of every
 open borrow and loan on our books at the processor (``InternalPosition``), plus fills not booked there
-yet, less borrows whose delivery is failing. The rest is the shortfall. Covers already working (open
-borrow orders, and cover cards waiting at the gate) count against it; what's left is drafted as covers
-(``draft``): a borrow order the router places (a firm bid on Venue A for a GC name), or for a hot name a
-bid in chat to an agent lender we already talk to. The trader approves each card.
+yet, less borrows whose delivery is failing and shares their lenders recalled. The rest is the shortfall.
+Covers already working (open borrow orders, and cover cards waiting at the gate) count against it; what's
+left is drafted as covers (``draft``): a borrow order the router places (a firm bid on Venue A for a GC
+name), or for a hot name a bid in chat to an agent lender we already talk to. The trader approves each card.
 
 Borrows the clients no longer need are excess: a name we're net borrowed in that nobody is short, or where the
 box is more than the shorts. Each costs its fee every day it stays out, so ``draft`` also drafts returns for
@@ -115,6 +115,7 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
     box_at = clock.parse_ts(box_at.value) if box_at else None
     unbooked: dict[str, int] = defaultdict(int)  # fills the box doesn't show yet: unbooked, or booked since it was read
     fails: dict[str, int] = defaultdict(int)  # borrows booked but failing to arrive
+    recalled: dict[str, int] = defaultdict(int)  # borrows their lenders recalled: owed back, not cover
     for t in (await s.execute(select(Trade).where(Trade.instrument_id.in_(iids), Trade.loan_status == "OPEN"))
               ).scalars():
         q = (t.open_qty if t.open_qty is not None else t.qty) * (1 if t.side == "BORROW" else -1)
@@ -123,6 +124,9 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
             unbooked[t.instrument_id] += q
         elif t.side == "BORROW" and t.settle_status == "FAILING":
             fails[t.instrument_id] += q
+            continue  # all of it is off the cover already
+        if t.side == "BORROW" and t.recalled_qty:
+            recalled[t.instrument_id] += t.recalled_qty
     since: dict[str, int] = defaultdict(int)  # returns and recalls since the box was read: it still shows them
     if box_at is not None:
         for t in (await s.execute(select(Trade).where(Trade.instrument_id.in_(iids),
@@ -153,6 +157,8 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
     on = {t.id: t for t in (await s.execute(select(Trade).where(
         Trade.id.in_([a.payload["tradeId"] for a in cards])))).scalars()} if cards else {}
     for a in cards:
+        if (a.source_ref or "").startswith("recall:"):  # owed on a recall: already off the cover
+            continue
         if (tr := on.get(a.payload["tradeId"])) is not None:
             returning[tr.instrument_id].append((a, int(a.payload.get("quantity") or open_qty(tr))))
     lines = []
@@ -161,7 +167,7 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
         inst = insts.get(iid)
         lv = secmaster.live(iid)
         need = sum(c.short_qty for c in rows)
-        cover = max(box[iid] - since[iid], 0) + unbooked[iid] - fails[iid]
+        cover = max(box[iid] - since[iid], 0) + unbooked[iid] - fails[iid] - recalled[iid]
         shortfall = max(need - cover, 0)
         pending = working[iid] + sum(int(a.payload.get("quantity") or (a.original or {}).get("quantity") or 0)
                                      for a in drafted[iid])
@@ -179,7 +185,8 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
             "coveredToday": sum(c.covered_qty for c in rows),
             "clients": sorted(({"counterparty": c.counterparty, "short": c.short_qty, "sold": c.sold_qty,
                                 "covered": c.covered_qty} for c in rows), key=lambda x: -x["short"]),
-            "box": box[iid], "unbooked": unbooked[iid], "fails": fails[iid], "cover": cover,
+            "box": box[iid], "unbooked": unbooked[iid], "fails": fails[iid], "recalled": recalled[iid],
+            "cover": cover,
             "shortfall": shortfall, "working": working[iid],
             "drafted": [{"actionId": a.id, "kind": a.kind, "title": a.title} for a in drafted[iid]],
             "uncovered": uncovered, "uncoveredNotional": round(uncovered * px * fx, 2),
@@ -265,6 +272,7 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
         why = (f"clients short {ln['clientShort']:,} {ln['composite']} settling {sl['settlementDate']}; box "
                f"{ln['box']:,}" + (f", unbooked {ln['unbooked']:,}" if ln["unbooked"] else "")
                + (f", failing {ln['fails']:,}" if ln["fails"] else "")
+               + (f", recalled {ln['recalled']:,}" if ln["recalled"] else "")
                + (f", working {ln['working']:,}" if ln["working"] else "") + f": {ln['uncovered']:,} to borrow")
         ref = f"{SOURCE}:{ln['instrumentId']}"
         # A hot name is asked for in chat, once: if the lender countered or passed, the next cover goes to a venue.
@@ -324,16 +332,18 @@ async def _draft_returns(s: AsyncSession, sl: dict[str, Any], *, by: str, notes:
                f"{ln['box']:,}" + (f", unbooked {ln['unbooked']:,}" if ln["unbooked"] else "")
                + (f", returned since the box was read {ln['returnedSinceBox']:,}" if ln["returnedSinceBox"] else "")
                + (f", failing {ln['fails']:,}" if ln["fails"] else "")
+               + (f", recalled {ln['recalled']:,}" if ln["recalled"] else "")
                + f": {ln['excess']:,} more than they need")
         flags = [f"warning: borrow orders for {ln['working']:,} still working on the name; cancel them too"
                  ] if ln["working"] else []
         for t in trades:
             if left <= 0:
                 break
-            have = open_qty(t)
+            have = open_qty(t) - (t.recalled_qty or 0)  # what's recalled goes back on its own card
             if t.id in busy or have <= 0:
                 continue
             qty = have if have <= left else left
+            whole = qty == open_qty(t)
             left -= qty
             daily = qty * ln["lastPx"] * rules.FX_USD.get(ln["ccy"] or "USD", 1.0) * t.fee_bps / 10_000 / 360
             try:
@@ -341,7 +351,7 @@ async def _draft_returns(s: AsyncSession, sl: dict[str, Any], *, by: str, notes:
                     s, kind="lifecycle", payload={"tradeId": t.id, "event": "RETURN", "quantity": qty},
                     proposed_by=by,
                     title=f"return excess: {qty:,} {ln['composite']} to {t.cp_code} @ {t.fee_bps:g} bps",
-                    rationale=f"{why}. Returning {'all' if qty == have else f'{qty:,} of {have:,}'} of {t.id}, the "
+                    rationale=f"{why}. Returning {'all' if whole else f'{qty:,} of {open_qty(t):,}'} of {t.id}, the "
                               f"dearest borrow left, saves about ${daily:,.0f} a day.",
                     risk_flags=flags, source_ref=f"{RETURN}:{ln['instrumentId']}",
                     original={"shortList": sl["tradeDate"], "line": ln["instrumentId"], "excess": ln["excess"]})
