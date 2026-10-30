@@ -5,7 +5,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tf="$here/terraform"
 mocks="$here/../mocks"
 vars="-var-file=$tf/$env.tfvars"
-all_systems=(ib gateway ngt wematch sfp custodian control)
+all_systems=(ib gateway ngt wematch sfp custodian analytics control)
 autostop_schedule="loandesk-$env-autostop"
 
 [[ -f "$tf/$env.tfvars" ]] || { echo "missing $tf/$env.tfvars (copy example.tfvars)" >&2; exit 2; }

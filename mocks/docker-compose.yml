@@ -3,7 +3,7 @@
 # the sim clock.
 #   docker compose up --build
 # Then open http://localhost:5173 (Desk Chat) and http://localhost:8000/docs (sim control).
-# Synthetic data only. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg.
+# Synthetic data only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg.
 
 x-db: &db
   image: postgres:16.6-alpine
@@ -29,6 +29,7 @@ x-mock: &mock
     MOCK_WEMATCH_URL: http://wematch:8040
     MOCK_SFP_URL: http://sfp:8050
     MOCK_CUSTODIAN_URL: http://custodian:8060
+    MOCK_ANALYTICS_URL: http://analytics:8070
     MOCK_SEED: "20261027"
     MOCK_LLM_MODE: ${MOCK_LLM_MODE:-off}
   healthcheck:
@@ -65,6 +66,10 @@ services:
   db-custodian:
     <<: *db
     volumes: [pg-custodian:/var/lib/postgresql/data]
+
+  db-analytics:
+    <<: *db
+    volumes: [pg-analytics:/var/lib/postgresql/data]
 
   control:
     <<: *mock
@@ -154,6 +159,18 @@ services:
       MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-custodian:5432/mock
     ports: ["8060:8060"]
 
+  analytics:
+    <<: *mock
+    build: { context: ., dockerfile: analytics/Dockerfile }
+    depends_on:
+      db-analytics:
+        condition: service_healthy
+    environment:
+      <<: *env
+      PORT: "8070"
+      MOCK_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-analytics:5432/mock
+    ports: ["8070:8070"]
+
   desk-chat:
     build:
       context: ./ib/desk-chat
@@ -170,3 +187,4 @@ volumes:
   pg-wematch:
   pg-sfp:
   pg-custodian:
+  pg-analytics:

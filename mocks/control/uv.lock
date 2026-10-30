@@ -489,7 +489,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "loandesk-mockcore", directory = "../libs/mockcore" },
+    { name = "loandesk-mockcore", editable = "../libs/mockcore" },
     { name = "pyyaml", specifier = ">=6" },
 ]
 
@@ -505,7 +505,7 @@ dev = [
 [[package]]
 name = "loandesk-mockcore"
 version = "0.1.0"
-source = { directory = "../libs/mockcore" }
+source = { editable = "../libs/mockcore" }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },

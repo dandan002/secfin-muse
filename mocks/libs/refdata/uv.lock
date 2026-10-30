@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
@@ -722,7 +722,7 @@ wheels = [
 [[package]]
 name = "loandesk-mockcore"
 version = "0.1.0"
-source = { directory = "../mockcore" }
+source = { editable = "../mockcore" }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },
@@ -779,7 +779,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", marker = "extra == 'fetch'", specifier = ">=0.27" },
-    { name = "loandesk-mockcore", directory = "../mockcore" },
+    { name = "loandesk-mockcore", editable = "../mockcore" },
     { name = "yfinance", marker = "extra == 'fetch'", specifier = ">=0.2.66" },
 ]
 provides-extras = ["fetch"]

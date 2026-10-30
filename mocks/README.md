@@ -7,7 +7,7 @@ calls and reconciliation can genuinely disagree. `mock-control` pushes one simul
 and every mock derives its data from one seed, so a demo replays event for event.
 
 > **Disclaimer.** Simulators for demonstration only. Not affiliated with or endorsed by EquiLend,
-> Wematch, FIS or Bloomberg; all names are trademarks of their respective owners. The instrument
+> Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. The instrument
 > universe is real listed equities (names, tickers, FIGIs, shares outstanding, last closes and volumes
 > from OpenFIGI and Yahoo Finance; see *Reference data*), but everything about lending is synthetic:
 > fees, utilization, availability, short interest, prints and trades. CUSIPs, ISINs and SEDOLs are
@@ -24,6 +24,7 @@ and every mock derives its data from one seed, so a demo replays event for event
 | `wematch` | Wematch.live | Venue B (Wematch-style) | 8040 | Interest lists (≤10k lines), optimiser, negotiation, re-rate/return lifecycle |
 | `sfp` | FIS Securities Finance Processor | Processor (FIS-style) | 8050 | Booking (CDM-shaped), positions, compare with field diffs, amend, marks/margin calls, EOD file, ~3% seeded breaks |
 | `custodian` | Custodian | Custodian | 8060 | ISO 20022 `sese.023` in (XSD-validated); `sese.024` status and `sese.025` confirmations out; seeded fails |
+| `analytics` | S3 Partners / FIS Astec-style data vendor | Market Analytics (S3-style) | 8070 | Short interest, days to cover, utilization, fee, lendable supply, crowding and squeeze scores; history, screens, exchange-reported SI, daily file, watchlist alerts, OpenFIGI-shaped mapping |
 
 Every service serves OpenAPI docs at `/docs`.
 
@@ -35,9 +36,10 @@ another. They build on two small versioned libraries, the way vendors build on i
 
 ```
 mocks/
-  control/  ib/  gateway/  ngt/  wematch/  sfp/  custodian/
+  control/  ib/  gateway/  ngt/  wematch/  sfp/  custodian/  analytics/
                      one external system each: loandesk-mock-<name>, with its own pyproject, uv.lock,
-                     Dockerfile, tests and README-level docs (e.g. ngt/FIX_SPEC.md)
+                     Dockerfile, tests, API.md, openapi.json, and connector/ (its client package,
+                     loandesk-connector-<name>)
   ib/desk-chat/      mock-ib's terminal UI (its own npm project)
   libs/mockcore/     loandesk-mockcore: sim clock, scheduler, faults, event log, FastAPI factory
   libs/refdata/      loandesk-refdata: synthetic instruments, identifiers, counterparties, market
@@ -65,7 +67,7 @@ open http://localhost:8000/docs   # sim control
 cd mocks/harness
 # {service} becomes each mock's own database (created if missing); this is the default:
 export MOCK_DATABASE_URL='postgresql+asyncpg://postgres@localhost:5432/loandesk_{service}'
-uv run python run_all.py      # syncs each system's own environment, starts all seven; logs in harness/out/logs/
+uv run python run_all.py      # syncs each system's own environment, starts all eight; logs in harness/out/logs/
 cd ../ib/desk-chat && npm ci && npm run dev   # Desk Chat on http://localhost:5173
 ```
 
@@ -125,6 +127,27 @@ service resolves like an ISIN.
 `error_pct`, `outage`, and `drop_pct` / `dup_pct` / `reorder_pct`. The last three apply to outbound
 messages: WebSocket events, FIX execution reports and webhooks. Fault decisions come from the seeded RNG.
 
+## APIs, protocols and connectors
+
+Each system documents its API in its own `API.md` and ships a **connector**: a standalone client
+package in `<system>/connector/` that the LoanDesk platform installs, the way a vendor ships an SDK.
+Connectors depend on nothing from the system they call. Where a standard exists they implement it
+independently (Venue A's FIX engine uses [simplefix](https://pypi.org/project/simplefix/); the
+custodian connector builds and parses ISO 20022 with the standard library), so the harness tests
+also check each system against the standard rather than against its own code. Every system also
+publishes its OpenAPI contract as a committed `openapi.json`, which a test keeps in sync.
+
+| System | Protocols | Docs | Connector |
+| --- | --- | --- | --- |
+| Venue A (`ngt`) | **FIX 4.4** (NewOrderSingle, Cancel/Replace, Cancel, OrderStatusRequest, ExecutionReport, TradeCaptureReport with UTI, MarketData V/W/X/Y; resend and gap-fill); REST + WebSocket | [ngt/API.md](ngt/API.md) | `ngt_connector`: `FixSession`, `VenueAClient` |
+| Venue B (`wematch`) | REST interest lists (JSON, CSV, multipart), negotiation, loan lifecycle; WebSocket | [wematch/API.md](wematch/API.md) | `wematch_connector`: `VenueBClient` |
+| Processor (`sfp`) | **CDM**-shaped trade booking, compare with field diffs, amend; **ISO 20022 colr.003** margin calls; EOD CSV file; WebSocket | [sfp/API.md](sfp/API.md) | `sfp_connector`: `ProcessorClient`, `securities_lending_trade()` |
+| Market Analytics (`analytics`) | REST snapshots, screens and history; daily CSV file; WebSocket alerts; **OpenFIGI v3**-shaped `/v1/mapping` | [analytics/API.md](analytics/API.md) | `analytics_connector`: `AnalyticsClient`, `FigiResolver` (cached OpenFIGI client) |
+| Custodian | **ISO 20022** sese.023 and sese.020 in; sese.024, sese.025, sese.027 out (head.001 headers, XSD-validated) | [custodian/API.md](custodian/API.md) | `custodian_connector`: `CustodianClient`, ISO builders and parser |
+| Counterparty Gateway | **CDM** Borrower Locate, flat JSON or CSV; idempotency keys, rate limits; HMAC-signed webhooks | [gateway/API.md](gateway/API.md) | `gateway_connector`: `GatewayPlatformClient`, `CounterpartyClient`, `webhooks.verify` |
+| Desk Chat (`ib`) | Chat bot API (REST + WebSocket) with instrument chips | [ib/API.md](ib/API.md) | `ib_connector`: `DeskChatBot` |
+| Simulation Control | Clock, resets, faults, scenarios | [control/API.md](control/API.md) | `control_connector`: `SimControl` |
+
 ## Access: API keys, scopes and plans
 
 Every business API sits behind a gate (`mockcore/keys.py`), the way a vendor's does. `/health`, `/`
@@ -160,6 +183,7 @@ means local dev, no check).
 | wematch | `apiKey`, `readOnlyKey` | `reference:read`, `lists:read`, `lists:write`, `matching:run`, `matches:read`, `matches:negotiate`, `loans:read`, `loans:manage` |
 | sfp | `apiKey`, `readOnlyKey` (operations) | `trades:write`, `contracts:read`, `contracts:write`, `reconcile`, `marks:read`, `marks:run`, `eod:read` |
 | custodian | `apiKey` | `instructions:write`, `instructions:read`, `outbox:read` |
+| analytics | `apiKey`, `readOnlyKey` (research) | `data:read`, `files:read`, `alerts:read`, `alerts:manage`; `/v1/mapping` is also open without a key (10 jobs per request) |
 
 Onboarding a new counterparty on the gateway, say on a trial plan:
 
@@ -168,57 +192,24 @@ curl -XPOST localhost:8020/_admin/keys -H 'content-type: application/json' \
   -d '{"principal":"CEDARHF","scopes":["locates:write","locates:read"],"plan":"trial","label":"Cedar Hollow"}'
 ```
 
-## Service notes
+Credentials derive from the seed: every system serves `GET /_admin/credentials`. Set `MOCK_ADMIN_TOKEN`
+to require an `X-Admin-Token` header on every `/_admin` route (and on WebSockets under `/_admin`).
 
-**mock-ib / Desk Chat.** Human API under `/api` and `/ws?as=<handle>`. Bot API: `GET /streams`,
-`GET /streams/{id}/messages?after=`, WebSocket `/streams/subscribe`, `POST /chats/{room}/messages`, and
-`POST /compose` (pushes a draft into a human's composer). Chat is where stock-loan traders work borrows and
-loans; locates come through the gateway API. Personas are fictional: PB-ALPHA (terse borrow bids and returns,
-negotiates quotes), PB-BRAVO (borrow lists), Harbor Lane (IOIs and recalls), Kestrel (RFQs, negotiates against a
-hidden limit), Delta One (internal borrows) and Juniper (RFQs plus prompt injection); `locate_blast` remains
-only for the odd stray locate. Every persona message stores a gold label (`GET /_admin/labels`).
-`cd ib && uv run mock-ib-corpus` writes the 300-conversation labelled eval set.
-
-The Desk Chat React app (`ib/desk-chat`) defaults to an amber-on-black **terminal theme** modelled on
-institutional terminal chat: a command line with `<GO>` (type a chat name, `MSG <handle>`, `SRCH <text>`,
+**Desk Chat UI.** The React app (`ib/desk-chat`) defaults to an amber-on-black **terminal theme** modelled
+on institutional terminal chat: a command line with `<GO>` (type a chat name, `MSG <handle>`, `SRCH <text>`,
 `BLAST`, `THEME`, `HELP`), a function-key strip (F1 help, F2 chats, F3 command line, F8 Blast, F9 search,
 F10 theme, Esc), dense one-line message rows, and amber title bars. It uses no vendor logo or name.
 F10 (or `THEME`) cycles to the dark and light themes. Every theme has folders, tabs, unread and mention
 badges, typing indicators, exchange-local timestamps, instrument chips with an instrument card, and an
-"acting as" switcher so one browser can play any persona. `src/index.ts` exports `<DeskChat/>` for embedding in the trader UI; a
-chip's "Open ticket" dispatches a `deskchat:ticket` window event.
+"acting as" switcher so one browser can play any persona. `src/index.ts` exports `<DeskChat/>` for
+embedding in the trader UI; a chip's "Open ticket" dispatches a `deskchat:ticket` window event.
 
 **LLM personas (optional).** `MOCK_LLM_MODE=off|replay|record|live` (default `off`). `MOCK_LLM_MODEL`
 defaults to `muse-spark-1.3` and `MOCK_LLM_BASE_URL` to `https://api.meta.ai/v1`. The key is read from
 `META_AI_API` in the repo `.env` and never logged. `MOCK_LLM_BUDGET_USD` caps spend (default $0.50).
-Responses are recorded to `cassettes/personas.jsonl` for exact replays. The model only restyles a scripted
-message, and the output is rejected unless every identifier survives, so gold labels stay true. Switch a
-persona with the `ib.persona_mode` verb.
-
-**mock-gateway.** `POST /v1/locates` accepts our CDM-Borrower-Locate-shaped JSON (`{"borrowerLocate": …}`),
-the flat form from the spec, or `text/csv`, up to 5,000 lines. Bad check digits come back per line with a
-"did you mean". The platform pulls from `GET /v1/inbox` or WebSocket `/v1/inbox/stream`; alternatively, set
-`MOCK_GATEWAY_DOWNSTREAM_URL` to have locates pushed to it. The platform answers with `POST /v1/decisions`, and
-the decision reaches the counterparty's callback as an HMAC-signed webhook
-(`X-Mock-Signature: t=…,v1=…`), retried with backoff. Built-in receivers at `/cp/{code}/callback` record
-what each counterparty got. The `gateway.loadgen` verb produces Poisson arrivals with a 09:00–09:45 burst.
-
-**mock-ngt.** See [`ngt/FIX_SPEC.md`](ngt/FIX_SPEC.md) for the FIX
-dialect: persisted sequence numbers, ResendRequest/gap-fill, and reports raised offline recovered on the
-next logon. Simulated lenders execute, counter (partial size or higher fee), or reject after 1–3 s (GC) or
-5–20 s (specials) of sim time. Venue codes and agreement types are checked
-(`AGREEMENT_MISMATCH`). REST and FIX share one engine.
-
-**mock-sfp.** `POST /trades` takes our simplified CDM securities-lending trade or a flat form. `POST /compare`
-returns `MATCHED`/`UNMATCHED` with field diffs and opens a break; `POST /contracts/{id}/amend` resolves it.
-The answer key is at `GET /_admin/injected-breaks`. The nightly mark (or `POST /marks/run`) recalculates
-collateral and emits margin calls with a `colr.003`-shaped payload. `GET /eod/contracts.csv` is the
-end-of-day file (the `eod_break` flag makes it disagree).
-
-**mock-custodian.** `POST /iso/sese.023` takes XML validated against the XSD subsets in
-`custodian/mock_custodian/xsd/` (head.001 + sese.023; a schema failure returns a `sese.024` RJCT naming the
-field). `POST /instructions` takes JSON and builds the XML for you. Outbound messages go to `GET /iso/outbox`
-and the `/stream` WebSocket.
+Responses are recorded to `ib/cassettes/personas.jsonl` for exact replays. The model only restyles a
+scripted message, and the output is rejected unless every identifier survives, so gold labels stay true.
+Switch a persona with the `ib.persona_mode` verb.
 
 **Reference data.** The universe (`libs/refdata`) is about 1,900 real listed equities across the US,
 UK, Germany, France, the Netherlands and Japan, plus 30 widely held US ETFs, read from the committed
@@ -245,24 +236,44 @@ FIGI, ISIN, SEDOL, CUSIP, `TICK XX` (also `BRK.B US` for `BRK/B US`), `TICK XX E
 universe and the 25 counterparties as JSON and CSV. Fees, utilization and prices are pure functions of
 (seed, instrument, sim time): an OU process on log fee with occasional squeezes, and GBM prices.
 
+**Keep real reference data fresh from open sources, and cache it.** The platform's security master should
+be filled and refreshed from free sources wherever possible: [OpenFIGI](https://www.openfigi.com/api) for
+identifier mapping (ISIN, CUSIP, SEDOL, ticker + exchange to FIGI, name and security type), GLEIF for LEIs,
+and the published ISO MIC, currency and country lists. Call OpenFIGI whenever a new identifier shows up and
+on each security-master refresh, but cache every answer (FIGIs are permanent: keep hits for about 30 days
+and misses for a day), send only uncached look-ups, batch them (100 per request with a free key) and honour
+`429 Retry-After`. `analytics_connector.FigiResolver` does exactly this, and `refdata fetch` already uses
+OpenFIGI for the snapshot's FIGIs. The mocks' ISINs, CUSIPs and SEDOLs are fictitious, so OpenFIGI won't
+know them: point the same resolver at the analytics mock's OpenFIGI-shaped `/v1/mapping` for those (it
+returns the same real FIGIs). See [analytics/API.md](analytics/API.md#reference-data-use-open-sources-and-cache-them).
+
 ## Tests
 
 Each project tests itself, in its own environment:
 
 ```bash
 cd mocks
-for p in libs/* control ib gateway ngt wematch sfp custodian; do (cd $p && uv run pytest -q); done   # unit tests; each system checks its app builds
+for p in libs/* control ib gateway ngt wematch sfp custodian analytics */connector; do (cd $p && uv run pytest -q); done   # unit tests; each system checks its app builds
 (cd libs/mockcore && uv run mypy) && (cd libs/refdata && uv run mypy)
-cd harness && uv run ruff check .. && uv run pytest               # 30 cross-system tests, 7 of them on the gate; need Postgres
+cd harness && uv run ruff check .. && uv run pytest               # cross-system tests; need Postgres
 cd ../ib/desk-chat && npm run build
 ```
 
-The harness tests start every system from its own project environment on ports 18000–18060, each against
-its own throwaway database (`loandesk_test_<service>`), and check that no system's database holds another's
-tables. They act only as a client: HTTP, Venue A's FIX client, and their own ISO 20022 message files. They
-cover each API end to end, FIX recovery, the full demo (`harness/smoke.py`) and stepped-run determinism.
-With `MOCK_TEST_DATABASE_ADMIN_URL` set (a plain `postgresql://` URL), an unreachable Postgres fails the
-run instead of skipping it.
+* **Systems** (28 tests): each checks its app builds with only its own dependencies and that its committed
+  `openapi.json` matches the code (`uv run python -m mockcore.openapi mock_<name>.app` regenerates it);
+  ib also tests its personas and LLM restyling, ngt its FIX codec, analytics its metrics.
+* **Connectors** (17 tests): offline, against in-memory transports or a tiny in-process FIX acceptor: FIX
+  session handling (logon, TestRequest, gaps, gap-fill, sequence persistence) and parsing, ISO 20022
+  structure, CDM building, webhook signatures, CSV and idempotency handling, OpenFIGI caching and batching.
+* **Libraries** (22 tests): clock, scheduler, faults, admin-token guard, API keys, scopes and plans, reference data.
+* **Harness** (40 tests, 7 of them on the key gate): starts every system from its own project environment on ports 18000–18070, each
+  against its own throwaway database (`loandesk_test_<service>`), and drives them only as a client,
+  mostly through their connectors (`tests/test_connectors.py`, `tests/test_fix_session.py`). It covers
+  every API end to end, FIX order flow, market data and offline recovery, ISO 20022 settlement and
+  cancellation, CDM booking with break and amend, margin calls as colr.003, signed webhooks, the short-interest feed and alerts, the full
+  demo (`harness/smoke.py`), stepped-run determinism, and database isolation. With
+  `MOCK_TEST_DATABASE_ADMIN_URL` set (a plain `postgresql://` URL), an unreachable Postgres fails the run
+  instead of skipping it.
 
 ## Limits (by design, for now)
 

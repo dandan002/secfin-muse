@@ -5,7 +5,7 @@ variable "name" {
 
 variable "service" {
   type        = string
-  description = "Mock name: control, ib, gateway, ngt, wematch, sfp or custodian."
+  description = "Mock name: control, ib, gateway, ngt, wematch, sfp, custodian or analytics."
 }
 
 variable "region" {

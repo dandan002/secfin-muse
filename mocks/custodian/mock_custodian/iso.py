@@ -1,4 +1,9 @@
-"""Build and parse the ISO 20022 subset the mock custodian speaks (head.001 + sese.023/024/025)."""
+"""Build and parse the ISO 20022 subset the mock custodian speaks.
+
+In: sese.023 settlement instruction, sese.020 cancellation request.
+Out: sese.024 status advice, sese.025 confirmation, sese.027 cancellation request status advice.
+All wrapped in a business message envelope with a head.001 application header.
+"""
 
 from __future__ import annotations
 
@@ -17,16 +22,17 @@ NS_HEAD = "urn:iso:std:iso:20022:tech:xsd:head.001.001.02"
 NS_023 = "urn:iso:std:iso:20022:tech:xsd:sese.023.001.09"
 NS_024 = "urn:iso:std:iso:20022:tech:xsd:sese.024.001.10"
 NS_025 = "urn:iso:std:iso:20022:tech:xsd:sese.025.001.09"
+NS_020 = "urn:iso:std:iso:20022:tech:xsd:sese.020.001.07"
+NS_027 = "urn:iso:std:iso:20022:tech:xsd:sese.027.001.05"
 CUSTODIAN_BIC = "MKCUUS33XXX"
 
-_schema: etree.XMLSchema | None = None
+_schemas: dict[str, etree.XMLSchema] = {}
 
 
-def schema() -> etree.XMLSchema:
-    global _schema
-    if _schema is None:
-        _schema = etree.XMLSchema(etree.parse(str(XSD_DIR / "envelope.xsd")))
-    return _schema
+def schema(envelope: str = "envelope.xsd") -> etree.XMLSchema:
+    if envelope not in _schemas:
+        _schemas[envelope] = etree.XMLSchema(etree.parse(str(XSD_DIR / envelope)))
+    return _schemas[envelope]
 
 
 @dataclass
@@ -56,16 +62,43 @@ class ValidationFailure(Exception):
         self.errors = errors
 
 
-def parse_sese023(xml: bytes) -> Instruction:
+def _validated(xml: bytes, envelope: str) -> etree._Element:
     try:
         parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
         doc = etree.fromstring(xml, parser)
     except etree.XMLSyntaxError as e:
         raise ValidationFailure([f"not well-formed XML: {e}"]) from e
-    s = schema()
+    s = schema(envelope)
     if not s.validate(doc):
         errors = [f"line {e.line}: {e.message}" for e in s.error_log]  # type: ignore[attr-defined]
         raise ValidationFailure(errors[:10])
+    return doc
+
+
+@dataclass
+class CancellationRequest:
+    biz_msg_id: str
+    sender_bic: str
+    tx_id: str  # AcctOwnrTxId of the sese.023 to cancel
+    acct_svcr_tx_id: str | None
+
+
+def parse_sese020(xml: bytes) -> CancellationRequest:
+    doc = _validated(xml, "envelope_sese020.xsd")
+    n = {"h": NS_HEAD, "s": NS_020}
+
+    def t(path: str) -> str | None:
+        el = doc.find(path, n)
+        return el.text.strip() if el is not None and el.text else None
+
+    req = "s:Document/s:SctiesTxCxlReq/"
+    return CancellationRequest(biz_msg_id=t("h:AppHdr/h:BizMsgIdr") or "",
+                               sender_bic=t("h:AppHdr/h:Fr/h:FIId/h:FinInstnId/h:BICFI") or "",
+                               tx_id=t(req + "s:AcctOwnrTxId") or "", acct_svcr_tx_id=t(req + "s:AcctSvcrTxId"))
+
+
+def parse_sese023(xml: bytes) -> Instruction:
+    doc = _validated(xml, "envelope.xsd")
     n = {"h": NS_HEAD, "s": NS_023}
 
     def t(path: str) -> str | None:
@@ -185,4 +218,27 @@ def build_sese025(to_bic: str, biz_id: str, i: dict[str, Any], settled_at: datet
     _sub(_sub(_sub(q, NS_025, "SttldQty"), NS_025, "Qty"), NS_025, "Unit", i["quantity"])
     _sub(_sub(q, NS_025, "SfkpgAcct"), NS_025, "Id", i["account"])
     _sub(_sub(_sub(x, NS_025, "SttlmParams"), NS_025, "SctiesTxTp"), NS_025, "Cd", i["txType"])
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+
+
+def build_sese027(to_bic: str, biz_id: str, cxl_biz_msg_id: str, tx_id: str, acct_ref: str | None, accepted: bool,
+                  reason: str | None = None, detail: str | None = None) -> bytes:
+    """Cancellation request status advice: the custodian's answer to a sese.020."""
+    root = etree.Element(f"{{{NS_ENV}}}BizMsg", nsmap={None: NS_ENV, "h": NS_HEAD, "s27": NS_027})
+    _app_hdr(root, CUSTODIAN_BIC, to_bic, biz_id, "sese.027.001.05")
+    d = _sub(root, NS_027, "Document")
+    x = _sub(d, NS_027, "SctiesTxCxlReqStsAdvc")
+    _sub(_sub(x, NS_027, "CxlReqRef"), NS_027, "AcctOwnrTxId", cxl_biz_msg_id[:35])
+    txn = _sub(x, NS_027, "TxId")
+    _sub(txn, NS_027, "AcctOwnrTxId", tx_id)
+    if acct_ref:
+        _sub(txn, NS_027, "AcctSvcrTxId", acct_ref)
+    sts = _sub(_sub(x, NS_027, "CxlReqSts"), NS_027, "Accptd" if accepted else "Rjctd")
+    if reason:
+        rsn = _sub(sts, NS_027, "Rsn")
+        _sub(_sub(rsn, NS_027, "Cd"), NS_027, "Cd", reason)
+        if detail:
+            _sub(rsn, NS_027, "AddtlRsnInf", detail[:210])
+    else:
+        _sub(sts, NS_027, "NoSpcfdRsn", "NORE")
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)

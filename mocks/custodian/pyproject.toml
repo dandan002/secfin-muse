@@ -6,8 +6,8 @@ requires-python = ">=3.13"
 dependencies = ["loandesk-mockcore", "loandesk-refdata", "lxml>=5"]
 
 [tool.uv.sources]
-loandesk-mockcore = { path = "../libs/mockcore" }
-loandesk-refdata = { path = "../libs/refdata" }
+loandesk-mockcore = { path = "../libs/mockcore", editable = true }
+loandesk-refdata = { path = "../libs/refdata", editable = true }
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.10", "types-pyyaml"]

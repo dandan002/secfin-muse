@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -489,8 +489,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "loandesk-mockcore", directory = "../libs/mockcore" },
-    { name = "loandesk-refdata", directory = "../libs/refdata" },
+    { name = "loandesk-mockcore", editable = "../libs/mockcore" },
+    { name = "loandesk-refdata", editable = "../libs/refdata" },
 ]
 
 [package.metadata.requires-dev]
@@ -505,7 +505,7 @@ dev = [
 [[package]]
 name = "loandesk-mockcore"
 version = "0.1.0"
-source = { directory = "../libs/mockcore" }
+source = { editable = "../libs/mockcore" }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },
@@ -539,7 +539,7 @@ dev = [
 [[package]]
 name = "loandesk-refdata"
 version = "0.1.0"
-source = { directory = "../libs/refdata" }
+source = { editable = "../libs/refdata" }
 dependencies = [
     { name = "loandesk-mockcore" },
 ]
@@ -547,7 +547,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", marker = "extra == 'fetch'", specifier = ">=0.27" },
-    { name = "loandesk-mockcore", directory = "../libs/mockcore" },
+    { name = "loandesk-mockcore", editable = "../libs/mockcore" },
     { name = "yfinance", marker = "extra == 'fetch'", specifier = ">=0.2.66" },
 ]
 provides-extras = ["fetch"]

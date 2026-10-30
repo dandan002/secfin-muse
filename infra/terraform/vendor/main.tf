@@ -24,7 +24,7 @@ variable "stack" {
 
 locals {
   stack   = coalesce(var.stack, terraform.workspace)
-  parts   = regex("^(?P<env>[a-z0-9]{1,8})-(?P<service>control|ib|gateway|ngt|wematch|sfp|custodian)$", local.stack)
+  parts   = regex("^(?P<env>[a-z0-9]{1,8})-(?P<service>control|ib|gateway|ngt|wematch|sfp|custodian|analytics)$", local.stack)
   env     = local.parts.env
   service = local.parts.service
   prefix  = "loandesk-${local.env}"
@@ -37,6 +37,7 @@ locals {
     wematch   = { port = 8040 }
     sfp       = { port = 8050 }
     custodian = { port = 8060 }
+    analytics = { port = 8070 }
   }
   port     = local.catalog[local.service].port
   hostname = "${local.service}.${var.domain_name}"

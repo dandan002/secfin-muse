@@ -151,6 +151,7 @@ class ServiceContext:
         rng.set_seed(seed)
         self.faults.reset()
         self.hub.seq = 0
+        self.hub.topic_seq.clear()
         await self.db.truncate()
         self.scheduler.reset()
         if self.spec.on_reset:

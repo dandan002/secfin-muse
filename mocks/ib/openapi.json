@@ -1,0 +1,2486 @@
+{
+  "components": {
+    "schemas": {
+      "BlastBody": {
+        "properties": {
+          "chips": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chips"
+          },
+          "clientMsgId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clientmsgid"
+          },
+          "roomIds": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Roomids",
+            "type": "array"
+          },
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "roomIds"
+        ],
+        "title": "BlastBody",
+        "type": "object"
+      },
+      "ClockPush": {
+        "properties": {
+          "rev": {
+            "title": "Rev",
+            "type": "integer"
+          },
+          "state": {
+            "additionalProperties": true,
+            "title": "State",
+            "type": "object"
+          }
+        },
+        "required": [
+          "state",
+          "rev"
+        ],
+        "title": "ClockPush",
+        "type": "object"
+      },
+      "ComposeBody": {
+        "properties": {
+          "roomId": {
+            "title": "Roomid",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "user": {
+            "default": "srivera",
+            "description": "handle of the human whose composer receives the text",
+            "title": "User",
+            "type": "string"
+          }
+        },
+        "required": [
+          "roomId",
+          "text"
+        ],
+        "title": "ComposeBody",
+        "type": "object"
+      },
+      "FaultConfig": {
+        "properties": {
+          "drop_pct": {
+            "default": 0.0,
+            "description": "Outbound messages silently dropped",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Drop Pct",
+            "type": "number"
+          },
+          "dup_pct": {
+            "default": 0.0,
+            "description": "Outbound messages sent twice",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Dup Pct",
+            "type": "number"
+          },
+          "error_pct": {
+            "default": 0.0,
+            "description": "Non-admin requests fail with 500",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Error Pct",
+            "type": "number"
+          },
+          "jitter_ms": {
+            "default": 0,
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Jitter Ms",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "default": 0,
+            "description": "Added latency on every non-admin request",
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "outage": {
+            "default": false,
+            "description": "All non-admin endpoints return 503; sessions refuse logon",
+            "title": "Outage",
+            "type": "boolean"
+          },
+          "reorder_pct": {
+            "default": 0.0,
+            "description": "Outbound messages held and sent after the next",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Reorder Pct",
+            "type": "number"
+          }
+        },
+        "title": "FaultConfig",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "KeyChange": {
+        "properties": {
+          "plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "title": "KeyChange",
+        "type": "object"
+      },
+      "KeyIn": {
+        "properties": {
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "plan": {
+            "default": "standard",
+            "title": "Plan",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "ttlDays": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttldays"
+          }
+        },
+        "required": [
+          "principal",
+          "scopes"
+        ],
+        "title": "KeyIn",
+        "type": "object"
+      },
+      "PlanIn": {
+        "properties": {
+          "burst": {
+            "minimum": 1.0,
+            "title": "Burst",
+            "type": "number"
+          },
+          "dailyQuota": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dailyquota"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "ratePerSecond": {
+            "exclusiveMinimum": 0.0,
+            "title": "Ratepersecond",
+            "type": "number"
+          }
+        },
+        "required": [
+          "ratePerSecond",
+          "burst"
+        ],
+        "title": "PlanIn",
+        "type": "object"
+      },
+      "Prefs": {
+        "properties": {
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder"
+          },
+          "muted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted"
+          },
+          "tabPos": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tabpos"
+          }
+        },
+        "title": "Prefs",
+        "type": "object"
+      },
+      "ReadBody": {
+        "properties": {
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq"
+        ],
+        "title": "ReadBody",
+        "type": "object"
+      },
+      "ResetRequest": {
+        "properties": {
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          }
+        },
+        "title": "ResetRequest",
+        "type": "object"
+      },
+      "RoomCreate": {
+        "properties": {
+          "kind": {
+            "default": "group",
+            "title": "Kind",
+            "type": "string"
+          },
+          "members": {
+            "description": "handles",
+            "items": {
+              "type": "string"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "RoomCreate",
+        "type": "object"
+      },
+      "RotateIn": {
+        "properties": {
+          "graceSeconds": {
+            "default": 3600,
+            "title": "Graceseconds",
+            "type": "integer"
+          }
+        },
+        "title": "RotateIn",
+        "type": "object"
+      },
+      "SendBody": {
+        "properties": {
+          "chips": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chips"
+          },
+          "clientMsgId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clientmsgid"
+          },
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SendBody",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Persistent chat rooms, Blast, @mentions, search, typing and unread counts, plus a bot API (streams, subscribe, post as bot, push to composer). Behaviour modelled on institutional chat; the API shape and look are our own.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. Listed instruments come from public reference data (OpenFIGI, Yahoo Finance); lending data, counterparties and trades are synthetic.**",
+    "title": "Desk Chat \u2014 mock-ib",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Root  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Root",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/_admin/clock": {
+      "get": {
+        "operationId": "get_clock__admin_clock_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Clock  Admin Clock Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Clock",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "mock-control pushes the sim clock here; the mocks never read each other's databases.",
+        "operationId": "put_clock__admin_clock_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClockPush"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Clock  Admin Clock Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Clock",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/credentials": {
+      "get": {
+        "operationId": "credentials__admin_credentials_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Credentials  Admin Credentials Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Credentials",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/events": {
+      "get": {
+        "operationId": "events__admin_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 5000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Events  Admin Events Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Events",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/faults": {
+      "get": {
+        "operationId": "get_faults__admin_faults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Faults  Admin Faults Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Faults",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "put_faults__admin_faults_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FaultConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Faults  Admin Faults Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Faults",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/jobs": {
+      "get": {
+        "operationId": "jobs__admin_jobs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Jobs  Admin Jobs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Jobs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys": {
+      "get": {
+        "operationId": "list_keys__admin_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Keys  Admin Keys Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Keys",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Issue a random key. The plaintext is in this response only; it is never stored.",
+        "operationId": "issue_key__admin_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Issue Key  Admin Keys Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}": {
+      "patch": {
+        "description": "Change a key's entitlements (scopes) or plan; takes effect on its next call.",
+        "operationId": "change_key__admin_keys__key_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Change Key  Admin Keys  Key Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}/revoke": {
+      "post": {
+        "operationId": "revoke_key__admin_keys__key_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Key  Admin Keys  Key Id  Revoke Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}/rotate": {
+      "post": {
+        "description": "A new key with the same entitlements; the old one expires after ``graceSeconds``.",
+        "operationId": "rotate_key__admin_keys__key_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RotateIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rotate Key  Admin Keys  Key Id  Rotate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/labels": {
+      "get": {
+        "operationId": "labels__admin_labels_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "maximum": 10000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Labels  Admin Labels Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Labels",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/llm": {
+      "get": {
+        "operationId": "llm_stats__admin_llm_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Llm Stats  Admin Llm Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Llm Stats",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/personas": {
+      "get": {
+        "operationId": "persona_list__admin_personas_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Persona List  Admin Personas Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Persona List",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/plans": {
+      "delete": {
+        "operationId": "reset_plans__admin_plans_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset Plans  Admin Plans Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reset Plans",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/plans/{name}": {
+      "put": {
+        "description": "Change a plan's limits for every key on it (until restart, or DELETE /_admin/plans).",
+        "operationId": "put_plan__admin_plans__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Plan  Admin Plans  Name  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Plan",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/reset": {
+      "post": {
+        "operationId": "reset__admin_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ResetRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Req"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset  Admin Reset Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/scenario": {
+      "get": {
+        "operationId": "list_verbs__admin_scenario_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Verbs  Admin Scenario Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Verbs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/scenario/{verb}": {
+      "post": {
+        "operationId": "run_verb__admin_scenario__verb__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "verb",
+            "required": true,
+            "schema": {
+              "title": "Verb",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Args"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Run Verb  Admin Scenario  Verb  Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Verb",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/tick": {
+      "post": {
+        "operationId": "tick__admin_tick_post",
+        "parameters": [
+          {
+            "description": "Run jobs due up to this sim time",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Run jobs due up to this sim time",
+              "title": "Until"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Tick  Admin Tick Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tick",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/blast": {
+      "post": {
+        "operationId": "blast_api_blast_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlastBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Blast Api Blast Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Blast",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/instruments/resolve": {
+      "get": {
+        "operationId": "resolve_instrument_api_instruments_resolve_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Resolve Instrument Api Instruments Resolve Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Instrument",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/me": {
+      "get": {
+        "operationId": "me_api_me_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Me Api Me Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Me",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/rooms": {
+      "get": {
+        "operationId": "rooms_api_rooms_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Rooms Api Rooms Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rooms",
+        "tags": [
+          "human"
+        ]
+      },
+      "post": {
+        "operationId": "create_room_api_rooms_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoomCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Room Api Rooms Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Room",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/messages": {
+      "get": {
+        "operationId": "room_messages_api_rooms__room_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Room Messages Api Rooms  Room Id  Messages Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Room Messages",
+        "tags": [
+          "human"
+        ]
+      },
+      "post": {
+        "operationId": "send_api_rooms__room_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Send Api Rooms  Room Id  Messages Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/prefs": {
+      "put": {
+        "operationId": "prefs_api_rooms__room_id__prefs_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Prefs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Prefs Api Rooms  Room Id  Prefs Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prefs",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/read": {
+      "post": {
+        "operationId": "mark_read_api_rooms__room_id__read_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Mark Read Api Rooms  Room Id  Read Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Read",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/typing": {
+      "post": {
+        "operationId": "typing_api_rooms__room_id__typing_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Typing Api Rooms  Room Id  Typing Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Typing",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/search": {
+      "get": {
+        "operationId": "search_api_search_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "roomId",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Roomid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Search Api Search Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/api/users": {
+      "get": {
+        "operationId": "users_api_users_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Users Api Users Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Users",
+        "tags": [
+          "human"
+        ]
+      }
+    },
+    "/chats/{room_id}/messages": {
+      "post": {
+        "operationId": "bot_send_chats__room_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "title": "Room Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Bot Send Chats  Room Id  Messages Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bot Send",
+        "tags": [
+          "bot"
+        ]
+      }
+    },
+    "/compose": {
+      "post": {
+        "operationId": "compose_compose_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComposeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Compose Compose Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compose",
+        "tags": [
+          "bot"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/streams": {
+      "get": {
+        "operationId": "streams_streams_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Streams Streams Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Streams",
+        "tags": [
+          "bot"
+        ]
+      }
+    },
+    "/streams/{stream_id}/messages": {
+      "get": {
+        "operationId": "stream_messages_streams__stream_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "stream_id",
+            "required": true,
+            "schema": {
+              "title": "Stream Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stream Messages Streams  Stream Id  Messages Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Messages",
+        "tags": [
+          "bot"
+        ]
+      }
+    },
+    "/whoami": {
+      "get": {
+        "description": "Who this key belongs to, what it's entitled to, and how much of its plan is left.",
+        "operationId": "whoami_whoami_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whoami Whoami Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Whoami",
+        "tags": [
+          "meta"
+        ]
+      }
+    }
+  }
+}

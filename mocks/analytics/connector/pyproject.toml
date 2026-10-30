@@ -1,0 +1,26 @@
+[project]
+name = "loandesk-connector-analytics"
+version = "0.1.0"
+description = "Client connector for Market Analytics (S3-style): short-interest snapshots, history, screens, exchange-reported SI, daily file, alerts; plus a cached OpenFIGI resolver. Synthetic data only."
+requires-python = ">=3.13"
+# Standalone: depends on nothing from the system it talks to.
+dependencies = ["httpx>=0.27", "websockets>=13", "pydantic>=2.7"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.10"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["analytics_connector"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+files = ["analytics_connector"]

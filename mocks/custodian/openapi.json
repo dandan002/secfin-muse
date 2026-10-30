@@ -1,0 +1,1535 @@
+{
+  "components": {
+    "schemas": {
+      "ClockPush": {
+        "properties": {
+          "rev": {
+            "title": "Rev",
+            "type": "integer"
+          },
+          "state": {
+            "additionalProperties": true,
+            "title": "State",
+            "type": "object"
+          }
+        },
+        "required": [
+          "state",
+          "rev"
+        ],
+        "title": "ClockPush",
+        "type": "object"
+      },
+      "FaultConfig": {
+        "properties": {
+          "drop_pct": {
+            "default": 0.0,
+            "description": "Outbound messages silently dropped",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Drop Pct",
+            "type": "number"
+          },
+          "dup_pct": {
+            "default": 0.0,
+            "description": "Outbound messages sent twice",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Dup Pct",
+            "type": "number"
+          },
+          "error_pct": {
+            "default": 0.0,
+            "description": "Non-admin requests fail with 500",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Error Pct",
+            "type": "number"
+          },
+          "jitter_ms": {
+            "default": 0,
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Jitter Ms",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "default": 0,
+            "description": "Added latency on every non-admin request",
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "outage": {
+            "default": false,
+            "description": "All non-admin endpoints return 503; sessions refuse logon",
+            "title": "Outage",
+            "type": "boolean"
+          },
+          "reorder_pct": {
+            "default": 0.0,
+            "description": "Outbound messages held and sent after the next",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Reorder Pct",
+            "type": "number"
+          }
+        },
+        "title": "FaultConfig",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InstructionIn": {
+        "description": "JSON convenience form; the custodian builds the sese.023 itself and runs the same flow.",
+        "properties": {
+          "account": {
+            "default": "LOANDESK-SAFE-01",
+            "title": "Account",
+            "type": "string"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "ccy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ccy"
+          },
+          "commonId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commonid"
+          },
+          "counterpartyBic": {
+            "title": "Counterpartybic",
+            "type": "string"
+          },
+          "instrument": {
+            "title": "Instrument",
+            "type": "string"
+          },
+          "movement": {
+            "enum": [
+              "RECE",
+              "DELI"
+            ],
+            "title": "Movement",
+            "type": "string"
+          },
+          "payment": {
+            "default": "FREE",
+            "enum": [
+              "FREE",
+              "APMT"
+            ],
+            "title": "Payment",
+            "type": "string"
+          },
+          "quantity": {
+            "exclusiveMinimum": 0.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "settlementDate": {
+            "format": "date",
+            "title": "Settlementdate",
+            "type": "string"
+          },
+          "tradeDate": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tradedate"
+          },
+          "txId": {
+            "maxLength": 35,
+            "title": "Txid",
+            "type": "string"
+          },
+          "txType": {
+            "enum": [
+              "SECL",
+              "SECB",
+              "SLRE",
+              "SBRE",
+              "TRAD"
+            ],
+            "title": "Txtype",
+            "type": "string"
+          }
+        },
+        "required": [
+          "txId",
+          "movement",
+          "txType",
+          "instrument",
+          "quantity",
+          "settlementDate",
+          "counterpartyBic"
+        ],
+        "title": "InstructionIn",
+        "type": "object"
+      },
+      "KeyChange": {
+        "properties": {
+          "plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "title": "KeyChange",
+        "type": "object"
+      },
+      "KeyIn": {
+        "properties": {
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "plan": {
+            "default": "standard",
+            "title": "Plan",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "ttlDays": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttldays"
+          }
+        },
+        "required": [
+          "principal",
+          "scopes"
+        ],
+        "title": "KeyIn",
+        "type": "object"
+      },
+      "PlanIn": {
+        "properties": {
+          "burst": {
+            "minimum": 1.0,
+            "title": "Burst",
+            "type": "number"
+          },
+          "dailyQuota": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dailyquota"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "ratePerSecond": {
+            "exclusiveMinimum": 0.0,
+            "title": "Ratepersecond",
+            "type": "number"
+          }
+        },
+        "required": [
+          "ratePerSecond",
+          "burst"
+        ],
+        "title": "PlanIn",
+        "type": "object"
+      },
+      "ResetRequest": {
+        "properties": {
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          }
+        },
+        "title": "ResetRequest",
+        "type": "object"
+      },
+      "RotateIn": {
+        "properties": {
+          "graceSeconds": {
+            "default": 3600,
+            "title": "Graceseconds",
+            "type": "integer"
+          }
+        },
+        "title": "RotateIn",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Simulated custodian: ISO 20022 sese.023 in; sese.024 status and sese.025 confirmations out.\n\n**Simulator for demonstration only. Not affiliated with or endorsed by EquiLend, Wematch, FIS, S3 Partners or Bloomberg; all names are trademarks of their respective owners. Listed instruments come from public reference data (OpenFIGI, Yahoo Finance); lending data, counterparties and trades are synthetic.**",
+    "title": "Custodian \u2014 mock-custodian",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Root  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Root",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/_admin/clock": {
+      "get": {
+        "operationId": "get_clock__admin_clock_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Clock  Admin Clock Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Clock",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "mock-control pushes the sim clock here; the mocks never read each other's databases.",
+        "operationId": "put_clock__admin_clock_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClockPush"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Clock  Admin Clock Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Clock",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/config": {
+      "get": {
+        "operationId": "get_config__admin_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Config  Admin Config Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Config",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "put_config__admin_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Cfg",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Config  Admin Config Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Config",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/credentials": {
+      "get": {
+        "operationId": "credentials__admin_credentials_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Credentials  Admin Credentials Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Credentials",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/events": {
+      "get": {
+        "operationId": "events__admin_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 5000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Events  Admin Events Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Events",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/faults": {
+      "get": {
+        "operationId": "get_faults__admin_faults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Faults  Admin Faults Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Faults",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "put_faults__admin_faults_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FaultConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Faults  Admin Faults Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Faults",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/jobs": {
+      "get": {
+        "operationId": "jobs__admin_jobs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Jobs  Admin Jobs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Jobs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys": {
+      "get": {
+        "operationId": "list_keys__admin_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Keys  Admin Keys Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Keys",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Issue a random key. The plaintext is in this response only; it is never stored.",
+        "operationId": "issue_key__admin_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Issue Key  Admin Keys Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}": {
+      "patch": {
+        "description": "Change a key's entitlements (scopes) or plan; takes effect on its next call.",
+        "operationId": "change_key__admin_keys__key_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Change Key  Admin Keys  Key Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}/revoke": {
+      "post": {
+        "operationId": "revoke_key__admin_keys__key_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Key  Admin Keys  Key Id  Revoke Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/keys/{key_id}/rotate": {
+      "post": {
+        "description": "A new key with the same entitlements; the old one expires after ``graceSeconds``.",
+        "operationId": "rotate_key__admin_keys__key_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RotateIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rotate Key  Admin Keys  Key Id  Rotate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/plans": {
+      "delete": {
+        "operationId": "reset_plans__admin_plans_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset Plans  Admin Plans Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reset Plans",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/plans/{name}": {
+      "put": {
+        "description": "Change a plan's limits for every key on it (until restart, or DELETE /_admin/plans).",
+        "operationId": "put_plan__admin_plans__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Plan  Admin Plans  Name  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Plan",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/reset": {
+      "post": {
+        "operationId": "reset__admin_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ResetRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Req"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset  Admin Reset Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/scenario": {
+      "get": {
+        "operationId": "list_verbs__admin_scenario_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Verbs  Admin Scenario Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Verbs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/scenario/{verb}": {
+      "post": {
+        "operationId": "run_verb__admin_scenario__verb__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "verb",
+            "required": true,
+            "schema": {
+              "title": "Verb",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Args"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Run Verb  Admin Scenario  Verb  Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Verb",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/_admin/tick": {
+      "post": {
+        "operationId": "tick__admin_tick_post",
+        "parameters": [
+          {
+            "description": "Run jobs due up to this sim time",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Run jobs due up to this sim time",
+              "title": "Until"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Tick  Admin Tick Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tick",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/instructions": {
+      "get": {
+        "operationId": "list_instr_instructions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Instr Instructions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Instr",
+        "tags": [
+          "json"
+        ]
+      },
+      "post": {
+        "operationId": "create_json_instructions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstructionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Json Instructions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Json",
+        "tags": [
+          "json"
+        ]
+      }
+    },
+    "/instructions/{ref}": {
+      "get": {
+        "operationId": "get_instr_instructions__ref__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Instr Instructions  Ref  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Instr",
+        "tags": [
+          "json"
+        ]
+      }
+    },
+    "/instructions/{ref}/cancel": {
+      "post": {
+        "description": "JSON convenience form of a sese.020: same flow and messages.",
+        "operationId": "cancel_instructions__ref__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Instructions  Ref  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel",
+        "tags": [
+          "json"
+        ]
+      }
+    },
+    "/iso/outbox": {
+      "get": {
+        "operationId": "outbox_iso_outbox_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 5000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Outbox Iso Outbox Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Outbox",
+        "tags": [
+          "iso20022"
+        ]
+      }
+    },
+    "/iso/sese.020": {
+      "post": {
+        "description": "ISO 20022 cancellation request; answered with a sese.027 (and a sese.024 CAND when accepted).",
+        "operationId": "receive_cancellation_iso_sese_020_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Receive Cancellation",
+        "tags": [
+          "iso20022"
+        ]
+      }
+    },
+    "/iso/sese.023": {
+      "post": {
+        "operationId": "receive_iso_sese_023_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Receive",
+        "tags": [
+          "iso20022"
+        ]
+      }
+    },
+    "/whoami": {
+      "get": {
+        "description": "Who this key belongs to, what it's entitled to, and how much of its plan is left.",
+        "operationId": "whoami_whoami_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Whoami Whoami Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Whoami",
+        "tags": [
+          "meta"
+        ]
+      }
+    }
+  }
+}

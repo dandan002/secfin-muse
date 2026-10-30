@@ -22,7 +22,7 @@ on the next start. Standby costs about $1 a month.
 │  (mock + pg: clock)  │   resets, faults,      │ ib.<domain> + chat.<domain> (Desk Chat)      │
 └──────────────────────┘   scenario verbs       │   own VPC · ALB · 2 tasks (mock + pg, chat)  │
                                                 ├─────────────────────────────────────────────┤
-                                                │ gateway · wematch · sfp · custodian          │
+                                                │ gateway · wematch · sfp · custodian · analytics│
                                                 │   each: own VPC · ALB · task (mock + pg)     │
                                                 └─────────────────────────────────────────────┘
 ```
@@ -165,16 +165,16 @@ Per hour **while running**:
 
 | System | Pieces | $/hour |
 | --- | --- | --- |
-| gateway, wematch, sfp, custodian | each: ALB ~0.025, its 2 public IPv4 0.01, Fargate 0.25 vCPU / 1 GB ~0.015, task IP 0.005 | each ~0.055 |
+| gateway, wematch, sfp, custodian, analytics | each: ALB ~0.025, its 2 public IPv4 0.01, Fargate 0.25 vCPU / 1 GB ~0.015, task IP 0.005 | each ~0.055 |
 | ib | the above + the Desk Chat task and its IP | ~0.075 |
 | ngt | the above + NLB and its 2 IPs | ~0.09 |
 | control | the above + NAT gateway, minus the task IP | ~0.095 |
-| **All seven** | | **~0.50** (a 3-hour session ≈ $1.50) |
+| **All eight** | | **~0.55** (a 3-hour session ≈ $1.65) |
 
 **While stopped:** ~$0.50–1/month. That's the hosted zone ($0.50) plus cents for ECR images, logs and
 snapshots. The admin token and key secret are SSM SecureStrings (free), and mock-control's Elastic IP exists only
 during a session. The auto-stop's CodeBuild runs, Lambda and Scheduler cost fractions of a cent per
-session. $100 of credits covers roughly 190 hours with every system on, or far more with a
+session. $100 of credits covers roughly 180 hours with every system on, or far more with a
 few.
 
 ## Mock audit (Oct 2026)

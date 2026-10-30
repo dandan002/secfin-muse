@@ -2,7 +2,8 @@
 
 Booking (``POST /trades``, CDM-shaped or flat JSON), positions, lifecycle (return, recall,
 re-rate, mark), contract compare with field-level diffs, amendments, a nightly mark that
-recalculates collateral and emits margin calls, and an end-of-day contracts file.
+recalculates collateral and emits margin calls (JSON, or ISO 20022 colr.003 XML), an end-of-day
+contracts file, and a WebSocket stream of contract, break and margin-call events. Reference: ../API.md.
 
 A seeded ~3% of bookings land with one deliberately wrong field (fee, quantity or settle
 date) so reconciliation has real breaks to find. ``force_break_next`` makes the next one
@@ -16,8 +17,8 @@ import io
 from datetime import date
 from typing import Any, Literal
 
-from fastapi import Depends, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi import Depends, HTTPException, Query, WebSocket
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -489,6 +490,90 @@ async def marks(contractId: str | None = None, who: str = Depends(client("marks:
                  "loanValue": m.loan_value, "requiredCollateral": m.required_collateral,
                  "postedCollateral": m.posted_collateral, "callAmount": m.call_amount, "ts": clock.iso(m.ts)}
                 for m in (await s.execute(q)).scalars()]
+
+
+# -- margin calls -----------------------------------------------------------------------------------
+NS_COLR003 = "urn:iso:std:iso:20022:tech:xsd:colr.003.001.05"
+
+
+def _call_json(m: Mark, c: Contract) -> dict[str, Any]:
+    caller = "LENDER" if m.call_amount > 0 else "BORROWER"
+    we_call = (caller == "LENDER") == (c.side == "LEND")
+    return {"callId": f"MC-{m.id:08d}", "contractId": c.contract_id, "uti": c.uti, "markDate": m.mark_date.isoformat(),
+            "direction": "WE_CALL" if we_call else "WE_ARE_CALLED", "amount": abs(m.call_amount),
+            "ccy": c.collateral_ccy, "deliverOrReturn": "DLVR" if m.call_amount > 0 else "RTRN",
+            "loanValue": m.loan_value, "requiredCollateral": m.required_collateral,
+            "postedCollateral": m.posted_collateral, "counterparty": counterparty_by_code(c.counterparty).lei,
+            "bookingEntity": c.booking_entity}
+
+
+async def _calls(s, call_id: str | None = None) -> list[tuple[Mark, Contract]]:
+    q = select(Mark, Contract).join(Contract, Contract.contract_id == Mark.contract_id).where(
+        (Mark.call_amount >= 1) | (Mark.call_amount <= -1)).order_by(Mark.id)
+    if call_id:
+        if not call_id.startswith("MC-") or not call_id[3:].isdigit():
+            raise HTTPException(404, f"no margin call {call_id}")
+        q = q.where(Mark.id == int(call_id[3:]))
+    return [(m, c) for m, c in (await s.execute(q)).all()]
+
+
+@app.get("/margin-calls", tags=["collateral"])
+async def margin_calls(since: date | None = None, who: str = Depends(client("marks:read"))) -> list[dict]:
+    """Every margin call from the marks, newest last."""
+    async with ctx.session() as s:
+        return [_call_json(m, c) for m, c in await _calls(s) if since is None or m.mark_date >= since]
+
+
+@app.get("/margin-calls/{call_id}/colr.003", tags=["collateral"], response_class=Response)
+async def margin_call_colr003(call_id: str, who: str = Depends(client("marks:read"))) -> Response:
+    """The margin call as an ISO 20022 colr.003 MarginCallRequest (simplified subset)."""
+    from xml.etree import ElementTree as ET
+
+    async with ctx.session() as s:
+        rows = await _calls(s, call_id)
+    if not rows:
+        raise HTTPException(404, f"no margin call {call_id}")
+    j = _call_json(*rows[0])
+    ET.register_namespace("", NS_COLR003)
+
+    def sub(parent: ET.Element, tag: str, text: Any = None, **attrs: str) -> ET.Element:
+        el = ET.SubElement(parent, f"{{{NS_COLR003}}}{tag}", attrs)
+        if text is not None:
+            el.text = str(text)
+        return el
+
+    doc = ET.Element(f"{{{NS_COLR003}}}Document")
+    req = sub(doc, "MrgnCallReq")
+    sub(req, "TxId", j["callId"])
+    ob = sub(req, "Oblgtn")
+    caller_is_us = j["direction"] == "WE_CALL"
+    us, them = OUR_FIRM["lei"], j["counterparty"]
+    sub(sub(sub(ob, "PtyA"), "Id"), "LEI", us if caller_is_us else them)
+    sub(sub(sub(ob, "PtyB"), "Id"), "LEI", them if caller_is_us else us)
+    sub(sub(ob, "CollAcctId"), "Id", j["bookingEntity"])
+    sub(sub(ob, "ValtnDt"), "Dt", j["markDate"])
+    rslt = sub(sub(req, "MrgnCallRslt"), "MrgnCallAmt")
+    sub(rslt, "Amt", f"{j['amount']:.2f}", Ccy=j["ccy"])
+    sub(rslt, "DlvrRtrInd", j["deliverOrReturn"])
+    ex = sub(req, "Expsr")
+    sub(ex, "ExpsrTp", "SLEB")  # securities lending and borrowing
+    sub(ex, "LnVal", f"{j['loanValue']:.2f}", Ccy=j["ccy"])
+    sub(ex, "ReqrdCollVal", f"{j['requiredCollateral']:.2f}", Ccy=j["ccy"])
+    sub(ex, "PstdCollVal", f"{j['postedCollateral']:.2f}", Ccy=j["ccy"])
+    sub(ex, "CtrctRef", j["uti"] or j["contractId"])
+    ET.indent(doc)
+    return Response(ET.tostring(doc, encoding="UTF-8", xml_declaration=True), media_type="application/xml")
+
+
+@app.websocket("/stream")
+async def stream(ws: WebSocket, topics: str = "contracts,breaks,marks") -> None:
+    """Live events: contracts (booked, amended, lifecycle), breaks (opened, resolved), marks (margin calls).
+    Pass the key as ``?key=``; contracts and breaks need ``contracts:read``, marks ``marks:read``."""
+    wanted = [t.strip() for t in topics.split(",") if t.strip()]
+    need = {"contracts": "contracts:read", "breaks": "contracts:read", "marks": "marks:read"}
+    if await ctx.gate.websocket(ws, *{need[t] for t in wanted if t in need}) is None:
+        return
+    await ctx.ws_stream(ws, wanted)
 
 
 # -- end-of-day file -------------------------------------------------------------------------------

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Business message envelope for a sese.020 cancellation request (head.001 + sese.020 subsets). -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:head="urn:iso:std:iso:20022:tech:xsd:head.001.001.02"
+           xmlns:sese="urn:iso:std:iso:20022:tech:xsd:sese.020.001.07"
+           targetNamespace="urn:loandesk:mock:envelope"
+           elementFormDefault="qualified">
+  <xs:import namespace="urn:iso:std:iso:20022:tech:xsd:head.001.001.02" schemaLocation="head001_subset.xsd"/>
+  <xs:import namespace="urn:iso:std:iso:20022:tech:xsd:sese.020.001.07" schemaLocation="sese020_subset.xsd"/>
+  <xs:element name="BizMsg">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="head:AppHdr"/>
+        <xs:element ref="sese:Document"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

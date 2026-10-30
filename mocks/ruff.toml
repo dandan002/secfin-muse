@@ -8,4 +8,4 @@ ignore = ["B008"]
 
 [lint.isort]
 known-first-party = ["mockcore", "refdata", "mock_control", "mock_ib", "mock_gateway", "mock_ngt", "mock_wematch",
-                     "mock_sfp", "mock_custodian", "run_all", "smoke", "conftest"]
+                     "mock_sfp", "mock_custodian", "mock_analytics", "run_all", "smoke", "conftest"]
