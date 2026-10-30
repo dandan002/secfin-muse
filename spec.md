@@ -136,7 +136,7 @@ Six modules, each usable by the agent as a tool and by the trader as a screen.
 
 ### 3. Locates
 
-We are a prime broker: a client asks for a locate, we agree a fee and grant it, and the client shorts against it or goes elsewhere. Its shorts show up the next day on the short list, which the desk covers.
+We are a prime broker: a client asks for a locate, we agree a fee and grant it, and the client shorts against it or goes elsewhere. Its shorts show up the next day on the short list, which the desk covers. Borrows the clients no longer need (the box over their shorts, or a name nobody is short any more) cost their fee every day they stay out, so the short list drafts their returns, the dearest borrow first.
 
 - **The locate:** a quantity, an agreed fee (what the client pays on what it shorts), an entry time (when it was granted) and an expiry (the close, 16:00 New York, by default; the next business day's close if granted after it). A client may send the most it will pay; a limit under our floor goes to the trader, not the auto-approve policy.
 - **Intake:** sales on the Locates screen, REST API (`POST /locates`), file drop (CSV/XLSX), paste box, and internal requests from our own desks. Not chat: traders use chat for borrows and loans.

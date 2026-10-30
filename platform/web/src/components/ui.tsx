@@ -67,6 +67,7 @@ const STATE: Record<string, string> = {
   SHORT: "text-hot",
   WORKING: "text-warm",
   COVERED: "text-up",
+  EXCESS: "text-warm",
 };
 
 export function State({ s }: { s: string | null | undefined }) {
