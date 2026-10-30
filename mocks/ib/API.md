@@ -5,8 +5,9 @@
 > not Bloomberg's licensed API. No vendor names, logos or layouts. All data and personas are
 > fictional.
 
-Counterparty personas (prime brokers, agent lenders, funds) post locates, IOIs and RFQs in desk
-shorthand. The LoanDesk agent reads them through the **bot API**, and traders use the **Desk Chat**
+Counterparty personas (prime brokers, agent lenders, funds) work borrows and loans in desk
+shorthand: borrow bids and lists, offers, IOIs, RFQs, counters, recalls and returns. Locates come
+through the gateway API instead; `locate_blast` remains only for the odd stray locate. The LoanDesk agent reads them through the **bot API**, and traders use the **Desk Chat**
 web terminal ([`desk-chat/`](desk-chat)). Every persona message stores a **gold label** of what it
 contains, for parser evaluations.
 
@@ -68,11 +69,11 @@ exposed beyond a demo allowlist.
 
 | Persona | Firm type | Sends |
 | --- | --- | --- |
-| PB-ALPHA | Prime broker | Terse locate blasts (`pb-alpha`) |
-| PB-BRAVO | Prime broker | Locate lists by SEDOL/ISIN (`pb-bravo`) |
-| Harbor Lane | Agent lender | Morning availability IOIs (`harbor-lending`) |
+| PB-ALPHA | Prime broker | Terse borrow bids and returns; negotiates quotes (`pb-alpha`) |
+| PB-BRAVO | Prime broker | Borrow lists by SEDOL/ISIN (`pb-bravo`) |
+| Harbor Lane | Agent lender | Availability IOIs, offers and recalls (`harbor-lending`) |
 | Kestrel | Hedge fund | RFQs; negotiates against a hidden limit (`kestrel-hf`) |
-| Delta One | Internal desk | Internal borrow requests (`delta-one`) |
+| Delta One | Internal desk | Internal borrows (`delta-one`) |
 | Juniper | Hedge fund | RFQs, plus a prompt-injection attempt (`juniper-hf`) |
 
 Personas are scripted by default. With `MOCK_LLM_MODE` set to `replay`, `record` or `live`, an
@@ -83,6 +84,7 @@ survives, so the gold labels stay true.
 
 `GET /_admin/credentials` (bot handle and token), `GET /_admin/labels?after=` (gold labels),
 `GET /_admin/personas`, `GET /_admin/llm` (calls, spend, cache misses); scenario verbs
-`ib.persona {persona, action}`, `ib.say {as, room, text}`, `ib.persona_mode {persona, mode}`,
+`ib.persona {persona, action}` (action: `any_of_these`, `offer`, `rfq`, `borrow_list`, `ioi`, `recall`,
+`return`, `internal_borrow`, `injection`, `chatter`, `locate_blast` or `auto`), `ib.say {as, room, text}`, `ib.persona_mode {persona, mode}`,
 `ib.ambient {on, everyS}`. `cd mocks/ib && uv run mock-ib-corpus` writes the 300-conversation
 labelled eval set.

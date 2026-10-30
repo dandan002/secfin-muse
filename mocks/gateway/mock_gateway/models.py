@@ -24,7 +24,7 @@ class LocateRequest(Base):
     source: Mapped[str] = mapped_column(String(8))  # API | LOADGEN
     settle_date: Mapped[date | None] = mapped_column(Date)
     callback_url: Mapped[str | None] = mapped_column(String(512))
-    status: Mapped[str] = mapped_column(String(16))  # RECEIVED | DECIDED | PARTIALLY_DECIDED
+    status: Mapped[str] = mapped_column(String(24))  # RECEIVED | DECIDED | PARTIALLY_DECIDED
     forward_status: Mapped[str] = mapped_column(String(16))  # SINK | PENDING | FORWARDED | FAILED
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     response: Mapped[dict[str, Any]] = mapped_column()

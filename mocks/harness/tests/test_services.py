@@ -58,19 +58,17 @@ def test_faults_outage_and_clear(mocks):
 
 
 # -- mock-ib --------------------------------------------------------------------------------------
-def test_ib_persona_blast_labels_and_bot_api(mocks):
-    out = mocks.verb("ib", "persona", persona="pb-alpha", action="locate_blast", tierCounts={"GC": 34, "WARM": 6},
-                     spacingS=3)
-    assert out["lines"] == 40
-    mocks.advance(300)  # let the remaining messages of the blast arrive
+def test_ib_persona_borrows_labels_and_bot_api(mocks):
+    out = mocks.verb("ib", "persona", persona="pb-bravo", action="borrow_list", n=6)
+    assert out["lines"] == 6
+    mocks.verb("ib", "persona", persona="harbor-lending", action="recall")
     token = mocks.creds("ib")["botToken"]
     h = {"authorization": f"Bearer {token}"}
-    msgs = mocks.get("ib", "/streams/pbalpha-locates/messages?after=0&limit=1000", headers=h).json()["messages"]
-    today = [m for m in msgs if m["ts"].startswith("2026-10-27")]
-    assert len(today) == out["messages"]
+    msgs = mocks.get("ib", "/streams/pbbravo-desk/messages?after=0&limit=1000", headers=h).json()["messages"]
+    assert [m for m in msgs if m["ts"].startswith("2026-10-27")]
     labels = [x for x in mocks.get("ib", "/_admin/labels").json() if x["ts"].startswith("2026-10-27")]
-    lines = [ln for x in labels for ln in x["label"]["lines"]]
-    assert len(lines) == 40 and all(x["label"]["intent"] == "LOCATE" for x in labels)
+    assert {x["label"]["intent"] for x in labels} >= {"RFQ", "RECALL"}
+    assert sum(len(x["label"]["lines"]) for x in labels if x["label"]["persona"] == "pb-bravo") == 6
     # each labelled identifier really appears in its message text
     for x in labels:
         for ln in x["label"]["lines"]:
@@ -91,23 +89,23 @@ def test_ib_rfq_negotiation_reaction(mocks):
     last = mocks.get("ib", "/streams/kestrel-desk/messages?after=0&limit=1000", headers=h).json()["messages"][-1]
     assert last["sender"]["handle"] == "rpatel.kestrel" and "650" in last["text"]
     label = mocks.get("ib", "/_admin/labels").json()[-1]["label"]
-    assert label["intent"] == "TRADE_CONFIRM" and label["lines"][0]["feeBps"] == 650
+    assert label["intent"] == "ACCEPT" and label["lines"][0]["feeBps"] == 650
 
 
 def test_ib_human_api_unread_search_blast_compose(mocks):
     rooms = {r["id"]: r for r in mocks.get("ib", "/api/rooms", headers={"x-user": "srivera"}).json()}
-    assert rooms["pbalpha-locates"]["unread"] == 0 and rooms["pbalpha-locates"]["folder"] == "Clients"
-    mocks.post("ib", "/api/rooms/pbalpha-locates/messages", headers={"x-user": "jkowalski.pba"},
+    assert rooms["pbalpha-desk"]["unread"] == 0 and rooms["pbalpha-desk"]["folder"] == "Clients"
+    mocks.post("ib", "/api/rooms/pbalpha-desk/messages", headers={"x-user": "jkowalski.pba"},
                json={"text": "@srivera loc 100k ZSXS pls"}).raise_for_status()
     rooms = {r["id"]: r for r in mocks.get("ib", "/api/rooms", headers={"x-user": "srivera"}).json()}
-    assert rooms["pbalpha-locates"]["unread"] == 1 and rooms["pbalpha-locates"]["unreadMentions"] == 1
+    assert rooms["pbalpha-desk"]["unread"] == 1 and rooms["pbalpha-desk"]["unreadMentions"] == 1
     hits = mocks.get("ib", "/api/search?q=ZSXS", headers={"x-user": "srivera"}).json()
     assert any("ZSXS" in m["text"] for m in hits)
     b = mocks.post("ib", "/api/blast", headers={"x-user": "srivera"},
-                   json={"roomIds": ["pbalpha-locates", "pbbravo-locates"], "text": "GC rates unchanged today"}).json()
+                   json={"roomIds": ["pbalpha-desk", "pbbravo-desk"], "text": "GC rates unchanged today"}).json()
     assert len(b["messages"]) == 2 and b["messages"][0]["blastId"] == b["messages"][1]["blastId"]
     h = {"authorization": f"Bearer {mocks.creds('ib')['botToken']}"}
-    assert mocks.post("ib", "/compose", headers=h, json={"roomId": "pbalpha-locates", "text": "draft"}).json()["ok"]
+    assert mocks.post("ib", "/compose", headers=h, json={"roomId": "pbalpha-desk", "text": "draft"}).json()["ok"]
     assert mocks.get("ib", "/streams", headers={"authorization": "Bearer nope"}).status_code == 401
 
 

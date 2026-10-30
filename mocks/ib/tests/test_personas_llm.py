@@ -17,7 +17,9 @@ def test_labels_match_text_for_every_generator():
     rng.set_seed(20261027)
     r = random.Random(1)
     for p in P.PERSONAS.values():
-        drafts = P.locate_blast(r, p, 12) + [P.ioi(r, p), P.rfq(r, p)[0], P.injection(r, p)]
+        drafts = P.locate_blast(r, p, 12) + [P.ioi(r, p), P.rfq(r, p)[0], P.injection(r, p), P.borrow_list(r, p),
+                                             P.recall(r, p), P.return_shares(r, p), P.any_of_these(r, p)[0],
+                                             P.offer(r, p)]
         for d in drafts:
             for ln in d.label["lines"]:
                 assert ln["identifier"] in d.text
@@ -36,11 +38,39 @@ def test_exact_tier_counts():
     assert sorted(tiers).count("GC") == 34 and tiers.count("WARM") == 6
 
 
+def test_pb_trader_bids_and_negotiates():
+    rng.set_seed(20261027)
+    p = P.PERSONAS["pb-alpha"]
+    d, hidden = P.rfq(random.Random(5), p)
+    assert d.label["intent"] == "RFQ" and d.label["side"] == "BORROW"
+    st = {**hidden, "counters": 0}
+    assert P.react(random.Random(0), p, f"can show {hidden['maxFeeBps'] - 5}bps", st)[1].label["intent"] == \
+        "ACCEPT"
+
+
+def test_any_of_these_then_send():
+    rng.set_seed(20261027)
+    p = P.PERSONAS["pb-alpha"]
+    insts = [resolve("META US"), resolve("CRWV US"), resolve("SPCX US")]
+    d, hidden = P.any_of_these(random.Random(1), p, insts, [24000, 300000, 24000])
+    assert d.text.splitlines()[1:] == ["META 24000", "CRWV 300000", "SPCX 24000"]
+    for ln in hidden["lines"]:
+        ln["maxFeeBps"] = 40
+    out = P.answer_quote(random.Random(0), p, "Maybe these\nMETA 0.15%\nSPCX 0.3%", hidden)[0]
+    assert out.label["intent"] == "ACCEPT" and out.text.lower().startswith("send")
+    assert [(ln["identifier"], ln["feeBps"]) for ln in out.label["lines"]] == [("META", 15.0), ("SPCX", 30.0)]
+    part = P.answer_quote(random.Random(0), p, "META 0.15%\nSPCX 0.6%", hidden)[0]
+    assert part.text.startswith("Send META") and [ln["identifier"] for ln in part.label["lines"]] == ["META"]
+    assert P.answer_quote(random.Random(0), p, "META 1%\nSPCX 0.9%", hidden)[0].label["intent"] == "DECLINE"
+    offer = P.offer(random.Random(2), P.PERSONAS["harbor-lending"], resolve("ASML NA"), 1500, gc=True)
+    assert offer.label["intent"] == "OFFER" and offer.label["lines"][0]["rate"] == "GC" and "GC" in offer.text
+
+
 def test_react_to_quotes():
     p = P.PERSONAS["kestrel-hf"]
     st = {"instrumentId": "I00005", "composite": "OESV US", "qty": 500000, "maxFeeBps": 700, "counters": 0}
     r = random.Random(0)
-    assert P.react(r, p, "can show 650bps", st)[1].label["intent"] == "TRADE_CONFIRM"
+    assert P.react(r, p, "can show 650bps", st)[1].label["intent"] == "ACCEPT"
     delay, d, new = P.react(r, p, "best is 800", st) or (None, None, None)
     assert d is None or d.label["intent"] in ("COUNTER", "CHATTER")
     _, d, new = P.react(r, p, "@ 780", st)
@@ -55,7 +85,10 @@ def test_corpus_is_deterministic_and_labelled():
     assert len(a) == 300
     labelled = [m for c in a for m in c["messages"] if "label" in m]
     intents = {m["label"]["intent"] for m in labelled}
-    assert {"LOCATE", "IOI", "RFQ", "INTERNAL_BORROW", "INJECTION", "CHATTER", "TRADE_CONFIRM"} <= intents
+    assert {"IOI", "RFQ", "OFFER", "QUOTE", "ACCEPT", "DECLINE", "RECALL", "RETURN", "INTERNAL_BORROW", "INJECTION",
+            "CHATTER"} <= intents
+    rfqs = [m for m in labelled if m["label"]["intent"] == "RFQ"]
+    assert sum(1 for m in labelled if m["label"]["intent"] == "LOCATE") < len(rfqs) // 4  # the odd stray
 
 
 def test_llm_off_replay_and_budget(tmp_path):

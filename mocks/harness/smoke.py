@@ -67,15 +67,15 @@ class Smoke:
         run = self.post("control", "/scenarios/demo/run?wait=true", json={"mode": "stepped"})
         self.check("demo scenario runs (stepped)", run["status"] == "completed", run["id"])
 
-        # 1. Chat: PB-ALPHA's 40 locates arrive in Desk Chat; the bot API sees them.
+        # 1. Chat: traders work borrows and loans; the bot API sees them.
         ib_h = {"authorization": f"Bearer {self.get('ib', '/_admin/credentials')['botToken']}"}
         streams = self.get("ib", "/streams", headers=ib_h)
-        msgs = self.get("ib", "/streams/pbalpha-locates/messages?after=0&limit=1000", headers=ib_h)["messages"]
+        msgs = self.get("ib", "/streams/pbalpha-desk/messages?after=0&limit=1000", headers=ib_h)["messages"]
         labels = [x for x in self.get("ib", "/_admin/labels?limit=10000") if x["ts"] >= "2026-10-27T12:55"]
-        pba = sum(len(x["label"]["lines"]) for x in labels  # the 09:00 blast (ambient chat starts 09:10)
-                  if x["label"]["persona"] == "pb-alpha" and x["ts"] < "2026-10-27T13:10")
-        self.check("chat: 40 locate lines from PB-ALPHA", pba == 40,
-                   f"{len(msgs)} msgs in room, {len(streams)} streams")
+        scripted = {x["label"]["intent"] for x in labels if x["ts"] < "2026-10-27T13:10"}  # ambient starts 09:10
+        self.check("chat: RFQs, a borrow list, IOIs, a recall and an internal borrow",
+                   {"RFQ", "IOI", "RECALL", "INTERNAL_BORROW"} <= scripted,
+                   f"{len(msgs)} msgs in PB-ALPHA's room, {len(streams)} streams")
         inj = [x for x in labels if x["label"]["intent"] == "INJECTION"]
         self.check("chat: prompt-injection message present", len(inj) == 1, inj[0]["text"][:60] if inj else "")
 

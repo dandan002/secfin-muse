@@ -33,14 +33,14 @@ def test_demo_scenario_inputs(mocks):
     _run(mocks)
     labels = mocks.get("ib", "/_admin/labels?limit=10000").json()
     today = [x for x in labels if x["ts"] >= "2026-10-27T12:55"]
-    # The 09:00 blast; ambient traffic from 09:10 adds more PB-ALPHA locates later.
-    pba = [x for x in today if x["label"]["persona"] == "pb-alpha" and x["label"]["intent"] == "LOCATE"
-           and x["ts"] < "2026-10-27T13:10"]
-    assert sum(len(x["label"]["lines"]) for x in pba) == 40
+    # Chat carries borrows and loans; locates come through the API.
     intents = {x["label"]["intent"] for x in today}
-    assert {"LOCATE", "IOI", "RFQ", "INTERNAL_BORROW", "INJECTION"} <= intents
+    assert {"IOI", "RFQ", "RECALL", "INTERNAL_BORROW", "INJECTION"} <= intents
+    assert "LOCATE" not in {x["label"]["intent"] for x in today if x["ts"] < "2026-10-27T13:10"}
     ph = {"authorization": f"Bearer {mocks.creds('gateway')['platformToken']}"}
     inbox = mocks.get("gateway", "/v1/inbox?limit=5000", headers=ph).json()
+    pba = [x for x in inbox if x["requestId"] == "PBALPHA-DEMO-0001"]
+    assert len(pba) == 1 and len(pba[0]["lines"]) == 40
     demo_batch = [x for x in inbox if x["requestId"] == "KESTRELHF-DEMO-0001"]
     assert len(demo_batch) == 1 and len(demo_batch[0]["lines"]) == 25
     assert len(inbox) > 100  # the 09:00-09:45 burst

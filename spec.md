@@ -10,14 +10,14 @@ LoanDesk AI is a securities-lending desk where a Muse Wonder agent runs the day 
 
 - **Security master:** resolves any SEDOL, ticker, ISIN or CUSIP to one instrument, with last price, shares outstanding, ADV and utilization.
 - **Live market:** streams NGT/Wematch availability, last traded fees and counterparty codes into one grid.
-- **Locates:** takes locates by API, chat, file or paste; auto-approves GC/ETB names; routes limited-availability names to the agent for a reasoned decision.
+- **Locates:** takes locates from sales (the Locates screen), the API, file or paste; auto-approves GC/ETB names; routes limited-availability names to the agent for a reasoned decision.
 - **Trading:** builds and sends NGT/Wematch requests with the right fields, rates and counterparty codes; books fills to the processor mock.
 - **Agentic layer:** a chat-ingest subagent reads every IB room, turns RFQs and IOIs into structured orders, and drafts replies, trades and bookings into an approval queue.
 - **Manual mode:** a dense, keyboard-first trading UI with paste-anything ingestion for when the trader wants the wheel.
 
 **Why it wins the hackathon:** incumbents digitised the screen but left the trader as the integration layer between chat, venue and books. Wematch's own agent, Oz, launched in February 2026, is limited to reporting and monitoring at launch ([SFT](https://www.securitiesfinancetimes.com/securitieslendingnews/article.php?article_id=228502)). LoanDesk AI acts: it negotiates, executes and books, with a human gate on every external side effect.
 
-**Demo promise:** in five minutes, a mock prime broker blasts 40 locates and two RFQs in an IB-style chat; the agent clears 34 locates automatically, escalates 6 with reasoning, quotes both RFQs, executes one on mock NGT after a one-click approval, and the booking appears in the mock processor ledger.
+**Demo promise:** in five minutes, a mock prime broker's API sends 40 locates while traders work borrows and two RFQs in an IB-style chat; the agent clears 34 locates automatically, escalates 6 with reasoning, quotes both RFQs, executes one on mock NGT after a one-click approval, and the booking appears in the mock processor ledger.
 
 ## Landscape: what each incumbent does today
 
@@ -29,7 +29,7 @@ The desk today spans five systems that do not share a brain: a chat terminal, a 
 | [EquiLend NGT](https://equilend.com/wp-content/uploads/2025/04/NGT-Fact-Sheet-2025.pdf) | Main electronic sec-lending venue: 24-hour trading, real-time bid/offer, web UI or full automation via a proprietary messaging protocol. 135+ firms, record 165k trades in a day (Mar 4, 2025). Standardised counterparty codes. Firm Bids for low-touch GC. | Fact sheet, feature list, no public message spec. | `mock-ngt`: availability feed, bid/offer/firm-bid, execution, counterparty code table, ledger. |
 | [Wematch.live](https://www.islaemea.org/isla-events/isla-33rd-annual-securities-finance-collateral-management-conference/sponsors/wematch) | Regulated matching venue for SBL, TRS and equity repo: "one list, one API". 1,300+ dealers, 85 institutions. Interest-list upload, SM@RT Matching optimiser, GC and specials. Ongoing notional hit US$1.72tn by May 2026 ([SFT](https://www.securitiesfinancetimes.com/securitieslendingnews/article.php?article_id=228685)). | Marketing pages, release notes. | `mock-wematch`: interest-list upload, match engine, negotiation modal, lifecycle events. |
 | [FIS Securities Finance Processor](https://fisglobal.com/products/fis-securities-finance-processor) (formerly Global One) | Books and records for principal, agency and fully paid lending; lifecycle, marks, returns, recalls. FIS also runs Loanet (US accounting/comparison utility) and a Securities Finance Matching Platform (ATOM lineage). | Product page; Loanet historically bound to \~7 fields per message ([Finadium](https://finadium.com/?p=143806)). | `mock-sfp`: trade booking API, position ledger, contract compare, mark-to-market. |
-| [Instant Bloomberg (IB)](https://professional.bloomberg.com/products/bloomberg-terminal/collaboration-tools/instant-bloomberg/) | Where locates, IOIs and RFQs actually arrive. Persistent chat rooms, tabs/folders, Blast, structured data links, @mentions. IB Connect adds chatbots and chat-initiation APIs; Bloomberg's own NLP pulls security and intent out of chats. | Feature page; chatbot posts arrive as JSON and bots post back through an API ([WatersTechnology via Bloomberg](https://www.bloomberg.com/company/?p=33873)). | `mock-ib`: a look-alike-in-behaviour chat client plus an IB-Connect-shaped bot API. |
+| [Instant Bloomberg (IB)](https://professional.bloomberg.com/products/bloomberg-terminal/collaboration-tools/instant-bloomberg/) | Where stock-loan traders negotiate borrows and loans: RFQs, IOIs, counters, confirms, recalls (locates come through sales and APIs). Persistent chat rooms, tabs/folders, Blast, structured data links, @mentions. IB Connect adds chatbots and chat-initiation APIs; Bloomberg's own NLP pulls security and intent out of chats. | Feature page; chatbot posts arrive as JSON and bots post back through an API ([WatersTechnology via Bloomberg](https://www.bloomberg.com/company/?p=33873)). | `mock-ib`: a look-alike-in-behaviour chat client plus an IB-Connect-shaped bot API. |
 | Short-interest and lending data vendors ([S3 Partners](https://s3partners.com/), FIS Astec Analytics, S&P Global Securities Finance) | The market's view of each name: estimated short interest, days to cover, utilization, borrow cost, lendable supply, crowding and squeeze signals. Desks load a daily file and watch intraday alerts. | Marketing pages and sample metrics; FINRA's bi-monthly short interest is public. | `mock-analytics`: snapshots, history, screens, exchange-reported short interest, daily file, watchlist alerts. |
 | Pirum / EquiLend Post-Trade | Contract compare, marks, returns, billing between counterparties. Wematch already pairs with Pirum for post-trade ([Global Custodian](https://globalcustodian.com/?p=61170)). | Partial. | Out of scope for v1; recon stub only. |
 
@@ -45,7 +45,7 @@ The trader is still the integration bus: they read a chat, retype it into a cock
 
 | Today's pain | Incumbent behaviour | LoanDesk AI behaviour |
 | --- | --- | --- |
-| Locates and RFQs arrive as free text in IB ("can u locate 250k ABC, 75k XYZ pls") | Bloomberg NLP tags tickers; trader still retypes into the cockpit | Chat subagent parses every message into CDM-shaped locate/RFQ objects in under 2 s, links them to the thread, and drafts the reply |
+| Borrows and loans are negotiated as free text in IB ("bid 250k ABC 35 open", "recalling 500k XYZ, T+2") | Bloomberg NLP tags tickers; trader still retypes into the cockpit | Chat subagent parses every message into CDM-shaped RFQ/IOI/recall objects in under 2 s, links them to the thread, and drafts the reply |
 | Rule-based auto-approve is binary | ETB list or manual | Three tiers: GC/ETB auto; warm names scored by agent with written rationale; hot names held for trader with a suggested partial fill |
 | Rate setting is gut plus a screen | Last fee and utilization shown, trader decides | Agent proposes a fee from last traded fee, venue bids, utilization trend, days-to-cover and recall risk, and shows the reasons |
 | Two venues, two screens | NGT and Wematch accessed separately | Smart router picks venue per line (firm bid vs negotiate vs interest list) and explains why |
@@ -104,7 +104,7 @@ Chat and pasted text go through the Spark parser; structured API requests skip i
 
 ### Agent loop
 
-1. **Ingest:** the chat subagent subscribes to every room, classifies each message (locate, RFQ, IOI, trade confirm, chatter) and emits schema-valid objects with a confidence score. Low confidence goes to the trader as "I'm not sure what this means".
+1. **Ingest:** the chat subagent subscribes to every room, classifies each message in its conversation, both sides, over hours if a broker is slow (RFQ, offer, IOI, our quote, counter, accept, decline, recall, return, internal borrow, chatter; a stray locate is ignored, since sales and the API own locates). Desk chat leans on context ("Any of these?" / "Maybe these: META 0.15%" / "Send"), so the parser reads every message with the room's recent conversation and emits schema-valid objects with a confidence score. Low confidence goes to the trader as "I'm not sure what this means".
 2. **Enrich:** resolver attaches instrument, tier, live availability, last fee, counterparty limits.
 3. **Decide:** rules engine settles what it can; the orchestrator takes the rest with tools and returns a decision plus rationale.
 4. **Draft:** chat reply, venue order or booking is drafted as an `action` with a diff against the request.
@@ -136,13 +136,13 @@ Six modules, each usable by the agent as a tool and by the trader as a screen.
 
 ### 3. Locates
 
-- **Intake:** REST API (`POST /locates`), IB chat (parsed by the subagent), file drop (CSV/XLSX), paste box, and internal borrow requests from our own desks.
+- **Intake:** sales on the Locates screen, REST API (`POST /locates`), file drop (CSV/XLSX), paste box, and internal requests from our own desks. Not chat: traders use chat for borrows and loans.
 - **Decision tiers:**
   - *Auto-approve:* name on today's ETB list (built from data under 24 hours old) or classified GC, and quantity under the per-name cap and under live availability. Decrement availability instantly.
   - *Agent review:* Warm names, or quantity over the cap, or availability below 2x the request. Agent returns approve / partial / reject, a quantity, an indicative fee and a short rationale, then queues for one-click approval (or auto-sends if a policy allows).
   - *Trader hold:* Hot names, threshold-list names, restricted list, or counterparty over limit.
 - **Lifecycle:** received, approved, partially approved, rejected, expired (end of day), used (matched to a short sale), released. Every state change is timestamped and records the source used to satisfy Rule 203(b).
-- **Reply:** confirmation sent back the same channel it came in (chat line, API callback, file).
+- **Reply:** confirmation sent back the same channel it came in (API callback, file, or sales on the screen).
 
 ### 4. Trading and order routing
 
@@ -216,7 +216,7 @@ Naming NGT, Wematch, FIS, S3 Partners or Bloomberg to describe what you integrat
 Behaves like IB; looks original. Do not copy Bloomberg's trademark, logo, amber-on-black terminal styling or exact layout: build our own "desk chat" skin with the same *behaviours* so judges see the workflow, not a clone.
 
 - **Behaviours:** persistent rooms, 1:1 chats, tabs and folders, Blast to many rooms, @mentions, search (`Ctrl+F`), unread counts, typing indicator, timestamps in exchange local time, message history paging.
-- **Personas (scripted + LLM-driven):** 6 counterparties with distinct styles, e.g. a terse PB locate desk ("loc 250k ABC 75k XYZ"), a chatty agent lender sending availability IOIs, a hedge fund asking for a quote on a hot name, an internal desk asking for an internal borrow.
+- **Personas (scripted + LLM-driven):** 6 counterparties with distinct styles, e.g. a terse PB stock-loan trader bidding for borrows ("bid 250k ABC 35 open"), a PB desk sending borrow lists, a chatty agent lender sending availability IOIs and recalls, a hedge fund asking for a quote on a hot name, an internal desk asking for an internal borrow.
 - **Bot API (shaped like IB Connect):** `GET /streams`, `GET /streams/{id}/messages?after=`, WebSocket `/streams/subscribe`, `POST /chats/{room}/messages` (bot identity), `POST /compose` (push text into the human's composition box without sending). Messages arrive as JSON with sender UUID, room ID and text.
 - **Structured links:** messages can carry an instrument chip that opens a prefilled ticket on click.
 
@@ -443,7 +443,7 @@ Ten async days is enough to ship the full spec plus a hosted demo and a recorded
 ### Five-minute demo script
 
 1. **09:00 open (sim clock):** market grid streams; short list for the day is already built.
-2. **Burst:** PB-ALPHA blasts 40 locates in chat; a hedge fund API posts 25 more. 34 ETB lines auto-confirm in the chat within seconds.
+2. **Burst:** PB-ALPHA's API sends 40 locates and a hedge fund's API posts 25 more; 34 ETB lines auto-confirm on the API within seconds. Meanwhile in chat, PB-ALPHA's stock-loan trader bids for a borrow and PB-BRAVO sends a borrow list, read and queued for the desk.
 3. **Agent review:** 6 Warm names appear as cards with rationale; trader batch-approves 5, edits one to a partial.
 4. **RFQ:** a hedge fund asks for a quote on a Hot name. Agent pulls last fee, NGT bids and utilization, proposes 650 bps, drafts the chat reply; trader nudges to 700 and approves.
 5. **Execution:** client accepts; agent routes the borrow to mock NGT, gets a fill, books to mock SFP; the booking returns a break, and the agent drafts the fix.
