@@ -425,3 +425,36 @@ async def test_a_recall_we_cant_match_waits_for_the_trader(client: httpx.AsyncCl
         await s.commit()
     assert (m.intent, m.status) == ("RECALL", "OPEN")
     assert "recalls 25,000 more than we borrow from them" in m.note
+
+
+async def test_a_recall_from_the_processor_is_put_on_the_borrow_once(client: httpx.AsyncClient,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Venue A fill has no venue lifecycle: its lender's recall arrives at the processor, on the contract."""
+    from datetime import UTC, date, datetime
+
+    from loandesk.models import Trade
+
+    [v] = (await _names("GC", 12))[11:]
+    at = datetime(2026, 10, 27, 13, 0, tzinfo=UTC)
+    async with db.session() as s:
+        s.add(Trade(id="trd_prc_1", venue="VENUE_A", venue_trade_id="NGT-T-PRC1", uti="UTIPRC1", side="BORROW",
+                    instrument_id=v.id, cp_code="MERIDIAL", qty=50_000, open_qty=50_000, fee_bps=18.0, price=40.0,
+                    ccy="USD", settle_date=date(2026, 10, 28), venue_json={}, executed_at=at,
+                    sfp_contract_id="SFP-C-PRC1", booked_at=at, loan_status="OPEN", settle_status="SETTLED",
+                    lifecycle=[]))
+        await s.commit()
+    notices = [{"seq": 7, "recallId": "SFP-R-000007", "contractId": "SFP-C-PRC1", "counterparty": "MERIDIAL",
+                "status": "OPEN", "quantity": 20_000, "outstanding": 20_000, "dueDate": "2026-10-28"}]
+
+    async def recalls(after: int = 0) -> list[dict[str, Any]]:
+        return [n for n in notices if n["seq"] > after]
+
+    monkeypatch.setattr(systems().processor, "recalls", recalls)
+    await sync.sync_recalls()
+    await sync.sync_recalls()  # the cursor: the same notice isn't taken twice
+    async with db.session() as s:
+        t = await s.get(Trade, "trd_prc_1")
+        assert (t.recalled_qty, t.recall_due, t.recall_ref) == (20_000, date(2026, 10, 28), "SFP-R-000007")
+        [card] = (await s.execute(select(Action).where(Action.source_ref == "recall:SFP-R-000007"))).scalars().all()
+    assert card.payload == {"tradeId": "trd_prc_1", "event": "RETURN", "quantity": 20_000}
+    assert "at the processor" in card.rationale and "buy the shares in" in card.rationale

@@ -41,3 +41,7 @@ class Processor(Client):
 
     async def contracts(self) -> list[dict[str, Any]]:
         return await self.get("/contracts")
+
+    async def recalls(self, after: int = 0) -> list[dict[str, Any]]:
+        """Lenders' recalls on contracts where we borrow, after ``seq``: Venue A fills and bilateral trades."""
+        return await self.get("/recalls", params={"after": after})

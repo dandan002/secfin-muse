@@ -1,11 +1,13 @@
 """Recalls from lenders (spec module 5): a lender wants back shares it lent us.
 
-A recall arrives in Desk Chat ("Recall notice: VOD LN 250k, ref HAR-12345, please return by T+1"). Each line is
-matched to our open borrows from that lender in that name: the one carrying the lender's ref first, then the
-oldest. The recalled shares go on the trade (``recalled_qty``, due ``recall_due``) and stop counting as cover on
-the short list. A return card for them goes to the gate; any excess return already drafted in the name is
-superseded, since the recall changes what's spare; and the short list redrafts, so a name the clients still
-need gets a cover to borrow it elsewhere. A recall we can't match waits in chat for the trader.
+A recall arrives three ways. In Desk Chat ("Recall notice: VOD LN 250k, ref HAR-12345, please return by T+1"),
+each line is matched to our open borrows from that lender in that name: the one carrying the lender's ref first,
+then the oldest (``on_recall``). From the processor, for a Venue A fill or a bilateral trade, whose contract there
+is the loan; and on Venue B, on the venue's loan (``on_notice``, both from ``sync``). The recalled shares go on
+the trade (``recalled_qty``, due ``recall_due``) and stop counting as cover on the short list. A return card for
+them goes to the gate; any excess return already drafted in the name is superseded, since the recall changes
+what's spare; and the short list redrafts, so a name the clients still need gets a cover to borrow it elsewhere.
+A chat recall we can't match waits in chat for the trader.
 """
 
 from __future__ import annotations
@@ -37,15 +39,13 @@ def terms(text: str, sent: Any) -> tuple[Any, str | None]:
 
 
 async def on_recall(s: AsyncSession, m: ChatMessage) -> tuple[bool, list[str]]:
-    """Put a recall on the borrows it hits and draft their returns. True if every line was matched in full."""
-    from .. import gate
-    from . import shortlist
-
+    """Put a chat recall on the borrows it hits and draft their returns. True if every line was matched in full."""
     if not m.counterparty:
         return False, ["a recall, but from whom isn't clear: the trader matches it"]
     due, ref = terms(m.text, m.sent_at)
     by = f"chat:{m.counterparty}"
-    notes, made, whole, names = [], [], True, set()
+    notes: list[str] = []
+    made, whole, names = [], True, set()
     for ln in m.lines or []:
         iid, left = ln.get("instrumentId"), int(ln.get("quantity") or 0)
         if not iid or left <= 0:
@@ -67,43 +67,76 @@ async def on_recall(s: AsyncSession, m: ChatMessage) -> tuple[bool, list[str]]:
                 continue
             qty = min(free, left)
             left -= qty
-            before = trade_json(t)
-            t.recalled_qty, t.recall_due, t.recall_ref = (t.recalled_qty or 0) + qty, due, ref
-            t.lifecycle = [*(t.lifecycle or []), {"ts": clock.iso(clock.now()), "event": "RECALLED", "by": by,
-                                                  "quantity": qty, "due": due.isoformat(), "ref": ref,
-                                                  "message": m.id}]
-            events.record(s, "trade", t.id, "recalled", trade_json(t), before=before, actor=by)
             names.add(iid)
-            if not t.sfp_contract_id:
-                notes.append(f"{name}: {t.id} is recalled but isn't booked yet: book it, then return it")
-                continue
-            flags = ["warning: due back today"] if due <= clock.local_date() else []
-            a = await gate.propose(
-                s, kind="lifecycle", payload={"tradeId": t.id, "event": "RETURN", "quantity": qty},
-                proposed_by=f"rules:{SOURCE}",
-                title=f"recall from {m.counterparty}: return {qty:,} {name} by {due.isoformat()}",
-                rationale=f"{m.counterparty} recalled {int(ln['quantity']):,} {name}" + (f" (ref {ref})" if ref else "")
-                          + f", due back {due.isoformat()}: \"{m.text[:120]}\". Returning {qty:,} of the "
-                          f"{open_qty(t):,} open on {t.id} @ {t.fee_bps:g} bps.",
-                risk_flags=flags, source_ref=f"{SOURCE}:{m.id}",
-                original={"message": m.id, "line": ln, "due": due.isoformat(), "ref": ref})
-            made.append(a.id)
-            notes.append(f"{name}: recalled {qty:,} on {t.id}, return card {a.id}")
+            why = (f"{m.counterparty} recalled {int(ln['quantity']):,} {name}" + (f" (ref {ref})" if ref else "")
+                   + f" in chat, due back {due.isoformat()}: \"{m.text[:120]}\"")
+            a = await _recall(s, t, qty, due, ref, by=by, key=m.id, why=why, name=name, notes=notes,
+                              original={"message": m.id, "line": ln, "due": due.isoformat(), "ref": ref})
+            if a is not None:
+                made.append(a.id)
         if left > 0:
             whole = False
             notes.append(f"{name}: {m.counterparty} recalls {left:,} more than we borrow from them")
+    notes += await _after(s, names, made, f"{m.counterparty}'s recall (message {m.id})")
+    return whole and bool(made), notes
+
+
+async def on_notice(s: AsyncSession, t: Trade, qty: int, due: Any, *, ref: str, origin: str) -> list[str]:
+    """A recall on one of our borrows from the processor or Venue B: put it on the trade and draft the return."""
+    inst = await s.get(Instrument, t.instrument_id)
+    name = inst.composite if inst else t.instrument_id
+    qty = min(qty, open_qty(t) - (t.recalled_qty or 0))
+    if qty <= 0:
+        return []
+    notes: list[str] = []
+    via = {"processor": "at the processor", "venue_b": "on Venue B"}.get(origin, f"via {origin}")
+    why = f"{t.cp_code} recalled {qty:,} {name} {via} (ref {ref}), due back {due.isoformat()}"
+    a = await _recall(s, t, qty, due, ref, by=f"{origin}:{t.cp_code}", key=ref, why=why, name=name, notes=notes,
+                      original={"origin": origin, "ref": ref, "due": due.isoformat(), "quantity": qty})
+    return notes + await _after(s, {t.instrument_id}, [a.id] if a else [], f"{t.cp_code}'s recall ({ref})")
+
+
+async def _recall(s: AsyncSession, t: Trade, qty: int, due: Any, ref: str | None, *, by: str, key: str, why: str,
+                  name: str, notes: list[str], original: dict[str, Any]) -> Action | None:
+    """Mark ``qty`` of a borrow recalled and draft its return (none until it's booked)."""
+    from .. import gate
+
+    before = trade_json(t)
+    t.recalled_qty, t.recall_due, t.recall_ref = (t.recalled_qty or 0) + qty, due, ref
+    t.lifecycle = [*(t.lifecycle or []), {"ts": clock.iso(clock.now()), "event": "RECALLED", "by": by,
+                                          "quantity": qty, "due": due.isoformat(), "ref": ref, "source": key}]
+    events.record(s, "trade", t.id, "recalled", trade_json(t), before=before, actor=by)
+    if not t.sfp_contract_id:
+        notes.append(f"{name}: {t.id} is recalled but isn't booked yet: book it, then return it")
+        return None
+    a = await gate.propose(
+        s, kind="lifecycle", payload={"tradeId": t.id, "event": "RETURN", "quantity": qty},
+        proposed_by=f"rules:{SOURCE}", title=f"recall from {t.cp_code}: return {qty:,} {name} by {due.isoformat()}",
+        rationale=f"{why}. Returning {qty:,} of the {open_qty(t):,} open on {t.id} @ {t.fee_bps:g} bps; not back "
+                  f"by then, the lender can buy the shares in at our cost.",
+        risk_flags=["warning: due back today"] if due <= clock.local_date() else [],
+        source_ref=f"{SOURCE}:{key}", original=original)
+    notes.append(f"{name}: recalled {qty:,} on {t.id}, return card {a.id}")
+    return a
+
+
+async def _after(s: AsyncSession, names: set[str], made: list[str], cause: str) -> list[str]:
+    """What's spare has changed: supersede excess returns drafted in these names and redraft the short list."""
+    from . import shortlist
+
+    notes: list[str] = []
     if names:
-        await _supersede_returns(s, names, m)
+        await _supersede_returns(s, names, cause)
         if get_settings().draft_covers:
             out = await shortlist.draft(s, by=f"rules:{SOURCE}")
             if out["drafted"]:
                 notes.append(f"short list redrafted: {len(out['drafted'])} card(s)")
     if made:
         events.publish_later(s, "short_list", {"type": "recall", "actions": made})
-    return whole and bool(made), notes
+    return notes
 
 
-async def _supersede_returns(s: AsyncSession, names: set[str], m: ChatMessage) -> None:
+async def _supersede_returns(s: AsyncSession, names: set[str], cause: str) -> None:
     """Excess returns drafted before the recall: what's spare has changed, so the short list drafts them again."""
     from .. import gate
     from .shortlist import RETURN
@@ -111,5 +144,4 @@ async def _supersede_returns(s: AsyncSession, names: set[str], m: ChatMessage) -
     for a in (await s.execute(select(Action).where(Action.status == "PENDING", Action.kind == "lifecycle",
                                                    Action.source_ref.in_([f"{RETURN}:{i}" for i in names])))
               ).scalars():
-        await gate.reject(s, a, "rules:recall", f"superseded by {m.counterparty}'s recall (message {m.id})",
-                          status="SUPERSEDED")
+        await gate.reject(s, a, "rules:recall", f"superseded by {cause}", status="SUPERSEDED")

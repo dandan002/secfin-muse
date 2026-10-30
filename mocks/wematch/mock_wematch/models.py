@@ -105,6 +105,9 @@ class Loan(Base):
     settle_date: Mapped[date] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(16))  # OPEN | RETURNED
     pending_rerate_bps: Mapped[float | None] = mapped_column(Float)
+    # The lender's recall on a loan we borrowed: shares owed back by recall_due (cleared as we return them).
+    recall_qty: Mapped[int | None] = mapped_column(BigInteger)
+    recall_due: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     history: Mapped[list[Any]] = mapped_column(default=list)
     note: Mapped[str | None] = mapped_column(Text)
