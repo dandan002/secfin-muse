@@ -224,7 +224,7 @@ async def _schedule_reactions(room_id: str, text: str) -> None:
         for u in rows.scalars():
             p = P.PERSONAS[u.persona]
             st = await s.get(PersonaState, (p.key, "open_rfq"))
-            out = P.react(rng.stream("ib", "react", p.key), p, text, st.value if st else None)
+            out = P.react(rng.stream("ib", "react", p.key), p, text, st.value if st else None, now=clock.now())
             if out is None:
                 continue
             delay, draft, new_state = out

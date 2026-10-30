@@ -19,7 +19,7 @@ export function useStream() {
       ws.onopen = () => {
         retry = 0;
         setConnected(true);
-        ["locate", "order", "trade", "break", "action", "market", "agent_run", "chat"].forEach(bump);
+        ["locate", "order", "trade", "break", "action", "market", "agent_run", "chat", "short_list"].forEach(bump);
       };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);

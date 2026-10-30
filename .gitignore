@@ -17,3 +17,4 @@ platform/api/cassettes/
 .playwright-mcp/
 .env.local
 .env.*.local
+.vite/

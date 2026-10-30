@@ -60,7 +60,7 @@ RFQ = re.compile(r"\b(quote|levels?|lvl|bid/offer|where can (you|u) show|where a
 RECALL = re.compile(r"\brecall(s|ing|ed)?\b", re.I)
 RETURN = re.compile(r"\b(return(ing)?|ret|sending back)\b", re.I)
 CONFIRM = re.compile(r"\b(done|we'?ll take it|take it)\b.*\bref\b", re.I | re.S)
-COUNTER = re.compile(r"\b(can (you|u) do \d|\d+ and we'?re done|best we can (pay|do)|bit rich)", re.I)
+COUNTER = re.compile(r"\b(can (you|u) do \d|\d+ and we'?re done|best (we|i) can (pay|do)|bit rich)", re.I)
 IOI = re.compile(r"\b(avails?|available|supply|inventory)\b", re.I)
 INTERNAL = re.compile(r"\binternal(ly)?\b", re.I)
 LOCATE = re.compile(r"\b(locs?|locates?)\b", re.I)
@@ -266,6 +266,8 @@ async def ingest(s: AsyncSession, msg: dict[str, Any]) -> ChatMessage | None:
             reading.note = "; ".join(x for x in (reading.note, f"parser model unavailable: {e}") if x)
     if side == "US" and reading.intent == "INJECTION":
         reading.intent = "CHATTER"  # our own desk is not an injection risk
+    if side == "THEM" and reading.intent == "ACCEPT" and reading.our_side is None:
+        reading.our_side = _side_from_bid(context)
     m = ChatMessage(id=mid, stream_id=msg["streamId"], seq=int(msg["seq"]), sender=sender["handle"],
                     sender_name=sender.get("displayName"), counterparty=cp.code if cp else None, text=text,
                     sent_at=_ts(msg.get("ts")), intent=reading.intent, confidence=reading.confidence,
@@ -290,6 +292,16 @@ async def ingest(s: AsyncSession, msg: dict[str, Any]) -> ChatMessage | None:
         m.status = "IGNORED"
     events.record(s, "chat", m.id, m.status.lower(), message_json(m), actor=f"chat:{reading.parser}")
     return m
+
+
+OUR_BID = re.compile(r"^\s*bid\b", re.I)
+
+
+def _side_from_bid(context: list[ChatMessage]) -> str | None:
+    """The rules can't tell sides; one case they can: "done" answering our own borrow bid ("Bid 120k NVDA US @
+    35bps open?", as the short list sends) means we borrowed."""
+    ours = next((m for m in reversed(context) if m.side == "US"), None)
+    return "BORROW" if ours is not None and OUR_BID.match(ours.text) else None
 
 
 def _ts(value: str | None) -> datetime:

@@ -18,8 +18,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import clock, events
-from ..models import Availability, InternalPosition
+from ..models import Availability, InternalPosition, SyncCursor
 from .market import INTERNAL
+
+AS_OF = "inventory_as_of"
 
 
 def flatten(positions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -45,6 +47,12 @@ async def apply(s: AsyncSession, positions: list[dict[str, Any]], as_of: datetim
     """Replace the per-book positions and the netted INTERNAL availability. Returns names with internal supply."""
     as_of = as_of or clock.now()
     flat = flatten(positions)
+    # When the box was last read: a fill booked after this isn't in it yet (the short list counts it apart).
+    cur = await s.get(SyncCursor, AS_OF)
+    if cur is None:
+        s.add(SyncCursor(name=AS_OF, value=clock.iso(as_of)))
+    else:
+        cur.value = clock.iso(as_of)
     await s.execute(delete(InternalPosition))
     for iid, n in flat.items():
         for book, b in n["books"].items():

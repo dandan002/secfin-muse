@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any
 
 from refdata import market
-from refdata.universe import Instrument, universe
+from refdata.universe import Instrument, resolve, universe
 
 
 @dataclass
@@ -470,10 +470,44 @@ def parse_fee(text: str) -> float | None:
     return None
 
 
+_BID = re.compile(r"\bbid\s+([\d.,]+)\s*(k|m|mm)?\s+(.+?)\s*@\s*(\d{1,5}(?:\.\d+)?)\s*(?:bps|bp)?\b", re.I)
+
+
+def parse_bid(text: str) -> tuple[int, str, float] | None:
+    """Our borrow bid in a lender's room: "Bid 120k NVDA US @ 35bps open?" -> (120000, "NVDA US", 35.0)."""
+    m = _BID.search(text)
+    if not m:
+        return None
+    qty = float(m.group(1).replace(",", "")) * {"k": 1e3, "m": 1e6, "mm": 1e6}.get((m.group(2) or "").lower(), 1)
+    return int(qty), m.group(3).strip(), float(m.group(4))
+
+
+def answer_bid(r: random.Random, p: PersonaDef, text: str, now: datetime) -> tuple[float, Draft, None] | None:
+    """An agent lender's answer to our borrow bid: done (all or part) at our fee if it meets its ask, else its ask."""
+    bid = parse_bid(text)
+    inst = resolve(bid[1]) if bid else None
+    if bid is None or inst is None:
+        return None
+    qty, written, fee = bid
+    ask = round(market.fee_bps(inst, now) * r.uniform(0.95, 1.2), 1)
+    if fee < ask * 0.98:
+        line = _line(inst, written, "TICKER", qty, feeBps=ask)
+        return r.uniform(10, 40), Draft(f"best I can do on {written} is {ask:g}bps", _label("COUNTER", p, [line],
+                                                                                            side="LEND")), None
+    give = qty if r.random() < 0.7 else max(qty // 2 // 1000 * 1000, 1000)
+    ref = f"{p.cp_code[:3]}-{r.randint(10000, 99999)}"
+    line = _line(inst, written, "TICKER", give, feeBps=fee)
+    reply = (f"done - {fmt_qty(r, give)} {written} @ {fee:g}bps open, ref {ref}" if give == qty
+             else f"done {fmt_qty(r, give)} {written} @ {fee:g}bps, that's all we have. ref {ref}")
+    return r.uniform(8, 30), Draft(reply, _label("ACCEPT", p, [line], ref=ref, side="LEND")), None
+
+
 def react(
-    r: random.Random, p: PersonaDef, text: str, state: dict[str, Any] | None
+    r: random.Random, p: PersonaDef, text: str, state: dict[str, Any] | None, now: datetime | None = None
 ) -> tuple[float, Draft, dict | None] | None:
     """How a persona answers one of our messages: (delay seconds, reply, new state or None to clear)."""
+    if p.style == "chatty" and now is not None and (out := answer_bid(r, p, text, now)):  # agent lenders
+        return out
     if state and "lines" in state:  # our quote on an "Any of these?" list
         out = answer_quote(r, p, text, state)
         return (r.uniform(4, 20), out[0], None) if out else None

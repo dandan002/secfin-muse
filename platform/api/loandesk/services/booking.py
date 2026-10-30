@@ -16,7 +16,8 @@ from ..adapters import AdapterError, systems
 from ..models import Action, Counterparty, Instrument, Trade
 from ..settings import get_settings
 
-VENUE_LABEL = {"VENUE_A": "Venue A (NGT-style)", "VENUE_B": "Venue B (Wematch-style)"}
+VENUE_LABEL = {"VENUE_A": "Venue A (NGT-style)", "VENUE_B": "Venue B (Wematch-style)",
+               "BILATERAL": "Bilateral (agreed in chat)"}
 # Rule 10c-1a asks for the borrower's type; ours is a broker-dealer desk.
 BORROWER_TYPE = {"PRIME_BROKER": "BROKER_DEALER", "BROKER_DEALER": "BROKER_DEALER", "INTERNAL": "BROKER_DEALER",
                  "HEDGE_FUND": "CUSTOMER", "AGENT_LENDER": "OTHER"}

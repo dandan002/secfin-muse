@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import JSON, MetaData, String
+from sqlalchemy import JSON, MetaData, String, inspect
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -45,6 +45,17 @@ class Database:
             await conn.exec_driver_sql("SELECT pg_advisory_xact_lock(424242)")
             await conn.exec_driver_sql(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
             await conn.run_sync(self.metadata.create_all)
+            await conn.run_sync(self._add_missing_columns)
+
+    def _add_missing_columns(self, conn: Any) -> None:
+        """``create_all`` never alters a table: add columns new to the models (all nullable) to an existing one."""
+        insp = inspect(conn)
+        for table in self.metadata.sorted_tables:
+            have = {c["name"] for c in insp.get_columns(table.name, schema=self.schema)}
+            for col in table.columns:
+                if col.name not in have and col.nullable:
+                    conn.exec_driver_sql(f'ALTER TABLE "{self.schema}"."{table.name}" ADD COLUMN "{col.name}" '
+                                         f"{col.type.compile(dialect=conn.dialect)}")
 
     async def truncate(self) -> None:
         # Tables marked keep_on_reset (API keys) are identity, not sim state.

@@ -63,6 +63,10 @@ const STATE: Record<string, string> = {
   AUTO: "text-gc",
   REVIEW: "text-warm",
   HOLD: "text-hot",
+  USED: "text-up",
+  SHORT: "text-hot",
+  WORKING: "text-warm",
+  COVERED: "text-up",
 };
 
 export function State({ s }: { s: string | null | undefined }) {

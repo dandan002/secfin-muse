@@ -79,6 +79,35 @@ def test_react_to_quotes():
     assert P.parse_fee("indic 6.5%") == 650 and P.parse_fee("@ 700") == 700
 
 
+def test_an_agent_lender_answers_our_borrow_bid():
+    """Our cover bid in a lender's room: "done" (all or part) at our fee when it meets the lender's ask, else its
+    ask. Everything else to a lender still gets the old "I'll check with the book"."""
+    from datetime import UTC, datetime
+
+    from refdata import market
+
+    harbor, at = P.PERSONAS["harbor-lending"], datetime(2026, 10, 27, 14, tzinfo=UTC)
+    nvda = resolve("NVDA US")
+    fee = market.fee_bps(nvda, at)
+    assert P.parse_bid("Bid 120k NVDA US @ 35bps open?") == (120_000, "NVDA US", 35.0)
+    assert P.parse_bid("Bid 24,200 AAP US @ 2627.9bps open?") == (24_200, "AAP US", 2627.9)
+    seen = set()
+    for seed in range(30):
+        delay, draft, state = P.react(random.Random(seed), harbor, f"Bid 120k NVDA US @ {fee * 1.25:.1f}bps open?",
+                                      None, now=at)
+        assert draft.label["intent"] == "ACCEPT" and draft.label["side"] == "LEND" and state is None
+        assert draft.text.startswith("done") and "ref" in draft.text  # the desk's rules read "done ... ref"
+        [line] = draft.label["lines"]
+        assert line["instrumentId"] == nvda.id and line["quantity"] in (120_000, 60_000)
+        seen.add(line["quantity"])
+    assert seen == {120_000, 60_000}  # sometimes only part
+    _, low, _ = P.react(random.Random(1), harbor, f"Bid 120k NVDA US @ {fee * 0.5:.1f}bps open?", None, now=at)
+    assert low.label["intent"] == "COUNTER" and low.label["lines"][0]["feeBps"] > fee * 0.5
+    assert low.text.startswith("best I can do")
+    _, other, _ = P.react(random.Random(1), harbor, "we'd like to borrow some", None, now=at)
+    assert other.label["intent"] == "CHATTER"
+
+
 def test_corpus_is_deterministic_and_labelled():
     a = corpus.generate(300, 20261027)
     assert a == corpus.generate(300, 20261027)

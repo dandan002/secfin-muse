@@ -71,10 +71,14 @@ exposed beyond a demo allowlist.
 | --- | --- | --- |
 | PB-ALPHA | Prime broker | Terse borrow bids and returns; negotiates quotes (`pb-alpha`) |
 | PB-BRAVO | Prime broker | Borrow lists by SEDOL/ISIN (`pb-bravo`) |
-| Harbor Lane | Agent lender | Availability IOIs, offers and recalls (`harbor-lending`) |
+| Harbor Lane | Agent lender | Availability IOIs, offers and recalls; answers our borrow bids (`harbor-lending`) |
 | Kestrel | Hedge fund | RFQs; negotiates against a hidden limit (`kestrel-hf`) |
 | Delta One | Internal desk | Internal borrows (`delta-one`) |
 | Juniper | Hedge fund | RFQs, plus a prompt-injection attempt (`juniper-hf`) |
+
+**Our borrow bids.** A bid in an agent lender's room ("Bid 120k NVDA US @ 35bps open?", as the desk's
+short list sends) gets "done - 120k NVDA US @ 35bps open, ref HAR-12345" (sometimes only part) when the
+fee meets the lender's ask (the market fee, give or take), or "best I can do on NVDA US is 41bps".
 
 Personas are scripted by default. With `MOCK_LLM_MODE` set to `replay`, `record` or `live`, an
 LLM restyles each scripted message, and the restyled text is rejected unless every identifier

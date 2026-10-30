@@ -300,7 +300,7 @@ async def test_locates_quote_above_market_and_hold_the_floor(client: httpx.Async
     market_fee = secmaster.live(inst.id)["feeBps"]
     loc = (await client.post("/locates", json={"counterparty": "KESTRELHF", "lines": [
         {"identifier": isin, "quantity": 10_000}]})).json()[0]
-    assert loc["feeIndBps"] > market_fee
+    assert loc["feeBps"] > market_fee
     if loc["status"] != "RECEIVED":
         return  # auto-approved under the ETB policy, at the quote
     under = await client.post(f"/locates/{loc['id']}/decision", json={"decision": "APPROVED", "feeBps": market_fee})

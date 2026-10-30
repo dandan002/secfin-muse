@@ -119,7 +119,9 @@ class Locate(Base):
     route: Mapped[str] = mapped_column(String(8))  # AUTO | REVIEW | HOLD: who the rules engine says decides
     route_reasons: Mapped[list[Any]] = mapped_column(default=list)
     tier_at_decision: Mapped[str | None] = mapped_column(String(8))
-    fee_ind_bps: Mapped[float | None] = mapped_column(Float)
+    # The fee: our quote until the line is decided, then the fee agreed with the client (what it pays on its shorts).
+    fee_bps: Mapped[float | None] = mapped_column("fee_ind_bps", Float)
+    fee_limit_bps: Mapped[float | None] = mapped_column(Float)  # the most the client said it would pay, if it did
     decided_by: Mapped[str | None] = mapped_column(String(48))  # policy:<name> | agent:<model> | trader:<user>
     rationale: Mapped[str | None] = mapped_column(Text)
     source_channel: Mapped[str] = mapped_column(String(8))  # API | CHAT | PASTE | FILE | MANUAL | INTERNAL
@@ -128,8 +130,8 @@ class Locate(Base):
     reply_status: Mapped[str | None] = mapped_column(String(12))  # PENDING | SENT | FAILED | N/A
     error: Mapped[str | None] = mapped_column(Text)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # the locate's entry time
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # default: the close
 
 
 class Order(Base):
@@ -289,6 +291,20 @@ class ChatMessage(Base):
     status: Mapped[str] = mapped_column(String(12))
     note: Mapped[str | None] = mapped_column(Text)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ClientShort(Base):
+    """One client's short position in one name at a close, from the stock record; it settles the next business day
+    and the desk has to deliver it. The day's sales and buy-backs ride along."""
+
+    __tablename__ = "client_shorts"
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    counterparty: Mapped[str] = mapped_column(String(16), primary_key=True)
+    instrument_id: Mapped[str] = mapped_column(String(16), primary_key=True, index=True)
+    short_qty: Mapped[int] = mapped_column(BigInteger)
+    sold_qty: Mapped[int] = mapped_column(BigInteger, default=0)
+    covered_qty: Mapped[int] = mapped_column(BigInteger, default=0)
+    settle_date: Mapped[date] = mapped_column(Date)
 
 
 class SyncCursor(Base):

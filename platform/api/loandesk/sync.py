@@ -1,5 +1,5 @@
-"""Background sync with the outside world: clock, gateway inbox, Desk Chat, Venue A market data, our orders on
-both venues, the processor's positions (internal inventory) and the custodian's settlements.
+"""Background sync with the outside world: clock, gateway inbox and stock record, Desk Chat, Venue A market data,
+our orders on both venues, the processor's positions (internal inventory) and the custodian's settlements.
 
 Polling keeps the scaffold simple and restart-safe (cursors live in ``sync_cursors``). The venues
 also offer WebSocket streams; switching to them changes only this module.
@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -20,7 +21,7 @@ from . import clock, db, events
 from .adapters import AdapterError, systems
 from .ingest import chat
 from .models import Order, SyncCursor, Trade
-from .services import booking, inventory, lifecycle, locates, market, orders
+from .services import booking, inventory, lifecycle, locates, market, orders, shortlist
 from .settings import get_settings
 
 log = logging.getLogger("loandesk.sync")
@@ -51,12 +52,40 @@ async def sync_inbox() -> None:
         reqs = await systems().gateway.inbox(after=after)
         for r in reqs:
             lines = [locates.LineIn(identifier=ln.get("isin") or ln["identifier"], quantity=ln["quantity"],
-                                    line_no=ln["lineNo"]) for ln in r["lines"] if ln["status"] != "INVALID"]
+                                    line_no=ln["lineNo"], max_fee_bps=ln.get("maxFeeBps"))
+                     for ln in r["lines"] if ln["status"] != "INVALID"]
             if lines:
                 await locates.intake(s, counterparty=r["counterparty"], lines=lines, channel="API",
                                      request_ref=r["locateId"], source_ref=r.get("requestId"), actor="gateway")
             after = max(after, int(r["seq"]))
         await _set_cursor(s, "gateway_inbox", str(after))
+        await s.commit()
+
+
+async def sync_stock_record() -> None:
+    """After each close: the stock record (client shorts settling next, locates used), then the cover drafts."""
+    gw = systems().gateway
+    try:
+        latest = await gw.stock_record()
+    except AdapterError as e:
+        if e.status == 404:  # no close yet
+            return
+        raise
+    d = date.fromisoformat(latest["tradeDate"])
+    async with db.session() as s:
+        have = await shortlist.latest_date(s)
+        if have is not None and d <= have:
+            return
+        for day in shortlist.missed_closes(have, d):
+            try:
+                rec = latest if day == d else await gw.stock_record(day.isoformat())
+            except AdapterError as e:
+                if e.status == 404:  # a holiday: no close
+                    continue
+                raise
+            await shortlist.apply_stock_record(s, rec)
+        if get_settings().draft_covers:
+            await shortlist.draft(s)
         await s.commit()
 
 
@@ -192,6 +221,7 @@ class Syncer:
                 "market": (cfg.availability_every_s, sync_market), "orders": (cfg.poll_s, sync_orders),
                 "venue_b": (cfg.poll_s, sync_venue_b), "settlement": (cfg.poll_s * 2.5, sync_settlement),
                 "inventory": (cfg.inventory_every_s, sync_inventory),
+                "stock_record": (cfg.poll_s * 5, sync_stock_record),
                 "housekeeping": (30.0, housekeeping)}
         self.tasks = [asyncio.create_task(_every(n, sec, fn), name=f"sync-{n}") for n, (sec, fn) in jobs.items()]
 

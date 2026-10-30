@@ -10,6 +10,9 @@ Our platform's side (the platform's bearer key):
   counterparty's callback URL as HMAC-signed webhooks with retries.
 Simulated counterparties: ``/cp/{code}/callback`` receivers record what they get, and a load
 generator produces Poisson arrivals with a 09:00-09:45 New York burst.
+The clients' trading: at each close, every locate expiring then is used by its client or not (a short
+sale against it), clients buy back some of their shorts, and ``GET /v1/stock-record`` publishes the
+day's client short positions as the prime broker's stock record would.
 """
 
 from __future__ import annotations
@@ -20,24 +23,24 @@ import io
 import json
 import math
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from typing import Any, Literal
 
 from fastapi import Depends, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import select
 
 from mockcore import auth, clock, rng
 from mockcore.app import ServiceContext, ServiceSpec, create_app
 from mockcore.keys import DEFAULT_PLANS, AuthSpec, Grant, Plan, Principal
-from refdata import calendar
+from refdata import calendar, market
 from refdata import identifiers as ids
 from refdata.counterparties import Counterparty, counterparties, counterparty_by_code
 from refdata.universe import resolve, universe
 
-from .models import Base, CpOrder, CpReceived, Delivery, LocateLine, LocateRequest
+from .models import Base, CpOrder, CpReceived, DayClose, Delivery, LocateLine, LocateRequest, ShortPosition, ShortSale
 
 MAX_LINES = 5000
 DOWNSTREAM = os.environ.get("MOCK_GATEWAY_DOWNSTREAM_URL", "")
@@ -48,7 +51,7 @@ CP_SCOPES = {
     "orders:write": "Send orders",
 }
 PLATFORM_SCOPES = {
-    "inbox:read": "Pull new requests (REST and stream)",
+    "inbox:read": "Pull new requests (REST and stream) and the stock record",
     "decisions:write": "Answer locate requests",
     "deliveries:read": "Webhook delivery log",
 }
@@ -102,14 +105,15 @@ def counterparty(scope: str):  # noqa: ANN201 - a FastAPI dependency
 def _norm_lines_cdm(doc: dict[str, Any]) -> tuple[str | None, date | None, str | None, list[dict[str, Any]]]:
     b = doc["borrowerLocate"]
     lines = [{"identifier": ln["security"]["identifier"], "idType": ln["security"].get("identifierType"),
-              "quantity": ln["quantity"]["amount"]} for ln in b.get("locateLines", [])]
+              "quantity": ln["quantity"]["amount"], "maxFeeBps": (ln.get("maxFee") or {}).get("bps")}
+             for ln in b.get("locateLines", [])]
     sd = b.get("settlementDate")
     return b.get("locateRequestId"), date.fromisoformat(sd) if sd else None, b.get("callbackUrl"), lines
 
 
 def _norm_lines_flat(doc: dict[str, Any]) -> tuple[str | None, date | None, str | None, list[dict[str, Any]]]:
     if "lines" not in doc and "identifier" in doc:  # single-line shorthand
-        doc = {**doc, "lines": [{k: doc[k] for k in ("identifier", "idType", "quantity") if k in doc}]}
+        doc = {**doc, "lines": [{k: doc[k] for k in ("identifier", "idType", "quantity", "maxFeeBps") if k in doc}]}
     sd = doc.get("settlementDate")
     return doc.get("requestId"), date.fromisoformat(sd) if sd else None, doc.get("callbackUrl"), doc.get("lines", [])
 
@@ -124,11 +128,13 @@ def _norm_csv(text: str) -> list[dict[str, Any]]:
     if not id_col or not qty_col:
         raise HTTPException(422, f"CSV needs identifier and quantity columns; got {reader.fieldnames}")
     type_col = cols.get("idtype") or cols.get("id_type")
+    fee_col = cols.get("maxfeebps") or cols.get("max_fee_bps")
     out = []
     for row in reader:
         idt = (row.get(type_col) if type_col else None) or (id_col.upper() if id_col.lower() != "identifier" else None)
         out.append({"identifier": (row[id_col] or "").strip(), "idType": idt,
-                    "quantity": (row[qty_col] or "0").replace(",", "").strip()})
+                    "quantity": (row[qty_col] or "0").replace(",", "").strip(),
+                    "maxFeeBps": (row.get(fee_col) or "").strip() or None if fee_col else None})
     return out
 
 
@@ -138,7 +144,11 @@ def _resolve_line(raw: dict[str, Any]) -> dict[str, Any]:
         qty = int(float(raw.get("quantity", 0)))
     except (TypeError, ValueError):
         qty = 0
-    out: dict[str, Any] = {"identifier": ident, "idType": raw.get("idType"), "quantity": qty}
+    try:
+        max_fee = float(raw["maxFeeBps"]) if raw.get("maxFeeBps") not in (None, "") else None
+    except (TypeError, ValueError):
+        max_fee = None
+    out: dict[str, Any] = {"identifier": ident, "idType": raw.get("idType"), "quantity": qty, "maxFeeBps": max_fee}
     if qty <= 0:
         return {**out, "status": "INVALID", "error": "quantity must be a positive number of shares"}
     inst = resolve(ident)
@@ -154,10 +164,12 @@ def _resolve_line(raw: dict[str, Any]) -> dict[str, Any]:
 
 def line_json(ln: LocateLine) -> dict[str, Any]:
     return {"lineId": ln.id, "lineNo": ln.line_no, "identifier": ln.identifier, "idType": ln.id_type,
-            "instrumentId": ln.instrument_id, "isin": ln.isin, "quantity": ln.quantity, "status": ln.status,
-            "approvedQuantity": ln.approved_qty, "indicativeFeeBps": ln.fee_bps, "rationale": ln.rationale,
-            "regShoBasis": ln.reg_sho_basis, "expiresAt": clock.iso(ln.expires_at) if ln.expires_at else None,
-            "decidedAt": clock.iso(ln.decided_at) if ln.decided_at else None, "error": ln.error}
+            "instrumentId": ln.instrument_id, "isin": ln.isin, "quantity": ln.quantity,
+            "maxFeeBps": ln.max_fee_bps, "status": ln.status, "approvedQuantity": ln.approved_qty,
+            "feeBps": ln.fee_bps, "rationale": ln.rationale, "regShoBasis": ln.reg_sho_basis,
+            "enteredAt": clock.iso(ln.decided_at) if ln.decided_at else None,
+            "expiresAt": clock.iso(ln.expires_at) if ln.expires_at else None,
+            "usedQuantity": ln.used_qty, "error": ln.error}
 
 
 def request_json(r: LocateRequest, lines: list[LocateLine]) -> dict[str, Any]:
@@ -197,8 +209,8 @@ async def create_locate(cp: Counterparty, fmt: str, request_id: str | None, sett
             r = _resolve_line(raw)
             rows.append(LocateLine(locate_id=req.locate_id, line_no=n, identifier=r["identifier"][:64],
                                    id_type=r.get("idType"), instrument_id=r.get("instrumentId"), isin=r.get("isin"),
-                                   tier=r.get("tier"), quantity=r["quantity"], status=r["status"],
-                                   error=r.get("error")))
+                                   tier=r.get("tier"), quantity=r["quantity"], max_fee_bps=r.get("maxFeeBps"),
+                                   status=r["status"], error=r.get("error")))
         s.add_all(rows)
         await s.flush()
         body = {"locateId": req.locate_id, "requestId": request_id, "status": "RECEIVED",
@@ -340,10 +352,12 @@ class LineDecision(BaseModel):
     lineNo: int
     decision: Literal["APPROVED", "PARTIAL", "REJECTED"]
     approvedQuantity: int = Field(0, ge=0)
-    indicativeFeeBps: float | None = None
+    feeBps: float | None = Field(None, validation_alias=AliasChoices("feeBps", "indicativeFeeBps"),
+                                 description="The agreed fee the client pays on what it shorts against this locate")
     rationale: str | None = None
     regShoBasis: str | None = None
-    expiresAt: datetime | None = None
+    expiresAt: datetime | None = Field(None, description="Default: today's close (16:00 New York), or the next "
+                                                         "business day's if decided after it")
 
 
 class DecisionIn(BaseModel):
@@ -361,7 +375,7 @@ async def decide(body: DecisionIn) -> dict:
         lines = {x.line_no: x for x in (await s.execute(select(LocateLine).where(
             LocateLine.locate_id == body.locateId))).scalars()}
         now = clock.now()
-        eod = datetime.combine(now.astimezone(clock.NEW_YORK).date(), dtime(23, 59), tzinfo=clock.NEW_YORK)
+        expiry = calendar.locate_expiry(now)
         decided = []
         for d in body.lines:
             ln = lines.get(d.lineNo)
@@ -373,8 +387,8 @@ async def decide(body: DecisionIn) -> dict:
                 raise HTTPException(422, f"line {d.lineNo}: approved quantity exceeds requested")
             ln.status = d.decision
             ln.approved_qty = 0 if d.decision == "REJECTED" else d.approvedQuantity or ln.quantity
-            ln.fee_bps, ln.rationale, ln.reg_sho_basis = d.indicativeFeeBps, d.rationale, d.regShoBasis
-            ln.expires_at, ln.decided_at = d.expiresAt or eod, now
+            ln.fee_bps, ln.rationale, ln.reg_sho_basis = d.feeBps, d.rationale, d.regShoBasis
+            ln.expires_at, ln.decided_at = d.expiresAt or expiry, now
             decided.append(ln)
         open_lines = [x for x in lines.values() if x.status == "RECEIVED"]
         req.status = "PARTIALLY_DECIDED" if open_lines else "DECIDED"
@@ -419,6 +433,136 @@ async def deliveries(locateId: str | None = None) -> list[dict]:
             q = q.where(Delivery.locate_id == locateId)
         return [{"locateId": d.locate_id, "url": d.url, "attempt": d.attempt, "statusCode": d.status_code,
                  "ok": d.ok, "error": d.error, "ts": clock.iso(d.ts)} for d in (await s.execute(q)).scalars()]
+
+
+# -- the clients' trading: locates used or not, shorts, the stock record ----------------------------------
+# How likely a client is to short against a locate it was granted. Funds trade what they locate; other
+# requesters shop several desks and use fewer.
+USE_RATE = {"HEDGE_FUND": 0.7, "PRIME_BROKER": 0.4, "BROKER_DEALER": 0.3}
+COVER_RATE = 0.25  # chance a client buys back some of a short at a close
+
+
+def _lot(q: float) -> int:
+    return int(q // 100 * 100)
+
+
+async def close_due() -> int:
+    """Run every business-day close that has passed and isn't recorded yet (in order). Returns how many ran."""
+    now = clock.now()
+    today = calendar.trade_date(now)
+    async with ctx.session() as s:
+        last = (await s.execute(select(DayClose.trade_date).order_by(DayClose.trade_date.desc()).limit(1))).scalar()
+        if last is not None:
+            d = last + timedelta(days=1)
+        else:  # first close: start from the oldest locate still waiting on one
+            first = (await s.execute(select(LocateLine.expires_at).where(LocateLine.used_qty.is_(None),
+                                                                         LocateLine.expires_at.is_not(None))
+                                     .order_by(LocateLine.expires_at).limit(1))).scalar()
+            d = min(calendar.trade_date(first), today) if first else today
+        ran = 0
+        while d <= today and ran < 30:
+            if calendar.is_business_day(d) and calendar.close_at(d) <= now:
+                await close_day(s, d)
+                ran += 1
+            d += timedelta(days=1)
+        await s.commit()
+    return ran
+
+
+async def close_day(s, d: date) -> dict[str, Any]:
+    """One close: each locate expiring by it is used by its client or not; some shorts are bought back; the
+    day's client short positions are written as the stock record, settling the next business day."""
+    if await s.get(DayClose, d) is not None:
+        raise HTTPException(409, f"{d} is already closed")
+    r = rng.stream("gateway", f"close:{d.isoformat()}")
+    close = calendar.close_at(d)
+    lines = (await s.execute(select(LocateLine, LocateRequest.cp_code)
+                             .join(LocateRequest, LocateRequest.locate_id == LocateLine.locate_id)
+                             .where(LocateLine.status.in_(("APPROVED", "PARTIAL")), LocateLine.used_qty.is_(None),
+                                    LocateLine.expires_at <= close)
+                             .order_by(LocateLine.id))).all()
+    sold: dict[tuple[str, str], int] = {}
+    for ln, cp_code in lines:
+        cp = counterparty_by_code(cp_code)
+        over_limit = ln.max_fee_bps is not None and (ln.fee_bps or 0) > ln.max_fee_bps
+        used = 0
+        if not over_limit and r.random() < USE_RATE.get(cp.kind if cp else "", 0.3):
+            used = max(_lot((ln.approved_qty or 0) * r.uniform(0.25, 1.0)), min(ln.approved_qty or 0, 100))
+        ln.used_qty, ln.used_on = used, d
+        if used and ln.instrument_id:
+            start = ln.decided_at or close
+            end = min(ln.expires_at or close, close)
+            at = start + (end - start) * r.random() if end > start else start
+            s.add(ShortSale(trade_date=d, cp_code=cp_code, instrument_id=ln.instrument_id, quantity=used,
+                            locate_id=ln.locate_id, line_no=ln.line_no, executed_at=at))
+            sold[(cp_code, ln.instrument_id)] = sold.get((cp_code, ln.instrument_id), 0) + used
+    prev_date = (await s.execute(select(ShortPosition.trade_date).where(ShortPosition.trade_date < d)
+                                 .order_by(ShortPosition.trade_date.desc()).limit(1))).scalar()
+    prev = {} if prev_date is None else {
+        (p.cp_code, p.instrument_id): p.short_qty for p in (await s.execute(
+            select(ShortPosition).where(ShortPosition.trade_date == prev_date))).scalars()}
+    for key in sorted(set(prev) | set(sold)):
+        held = prev.get(key, 0)
+        covered = _lot(held * r.uniform(0.2, 1.0)) if held and r.random() < COVER_RATE else 0
+        new = sold.get(key, 0)
+        if held - covered + new or new or covered:
+            s.add(ShortPosition(trade_date=d, cp_code=key[0], instrument_id=key[1], short_qty=held - covered + new,
+                                sold_qty=new, covered_qty=covered))
+    s.add(DayClose(trade_date=d, closed_at=clock.now()))
+    await s.flush()
+    summary = {"tradeDate": d.isoformat(), "settlementDate": calendar.add_business_days(d, 1).isoformat(),
+               "locates": len(lines), "used": sum(1 for ln, _ in lines if ln.used_qty),
+               "shortSales": sum(sold.values())}
+    await ctx.events.emit(s, "stock_record", "stock_record", d.isoformat(), summary, topic="inbox")
+    return summary
+
+
+ctx.scheduler.every(60, "close", close_due)
+
+
+@app.get("/v1/stock-record", tags=["platform"], dependencies=[Depends(ctx.require("inbox:read"))])
+async def stock_record(date_: date | None = Query(None, alias="date",
+                                                  description="Trade date; default the latest close")) -> dict:
+    """Client short positions at a close (settling the next business day), and the short sales done that day
+    against each locate. A real prime broker reads this from its own books and records."""
+    async with ctx.session() as s:
+        q = select(DayClose).order_by(DayClose.trade_date.desc()).limit(1) if date_ is None else \
+            select(DayClose).where(DayClose.trade_date == date_)
+        dc = (await s.execute(q)).scalar()
+        if dc is None:
+            raise HTTPException(404, "no close yet" if date_ is None else f"{date_} has not closed")
+        d = dc.trade_date
+        positions = (await s.execute(select(ShortPosition).where(ShortPosition.trade_date == d)
+                                     .order_by(ShortPosition.cp_code, ShortPosition.instrument_id))).scalars().all()
+        sales = (await s.execute(select(ShortSale).where(ShortSale.trade_date == d)
+                                 .order_by(ShortSale.executed_at))).scalars().all()
+        usage = (await s.execute(select(LocateLine).where(LocateLine.used_on == d)
+                                 .order_by(LocateLine.id))).scalars().all()
+    by_id = {i.id: i for i in universe()}
+    return {
+        "tradeDate": d.isoformat(), "settlementDate": calendar.add_business_days(d, 1).isoformat(),
+        "closedAt": clock.iso(dc.closed_at),
+        "positions": [{"counterparty": p.cp_code, "instrumentId": p.instrument_id,
+                       "isin": by_id[p.instrument_id].isin if p.instrument_id in by_id else None,
+                       "shortQuantity": p.short_qty, "soldQuantity": p.sold_qty, "coveredQuantity": p.covered_qty}
+                      for p in positions],
+        "shortSales": [{"counterparty": x.cp_code, "instrumentId": x.instrument_id, "quantity": x.quantity,
+                        "locateId": x.locate_id, "lineNo": x.line_no, "executedAt": clock.iso(x.executed_at)}
+                       for x in sales],
+        "locateUsage": [{"locateId": x.locate_id, "lineNo": x.line_no, "approvedQuantity": x.approved_qty,
+                         "usedQuantity": x.used_qty, "feeBps": x.fee_bps, "maxFeeBps": x.max_fee_bps}
+                        for x in usage],
+    }
+
+
+@ctx.verb("close_day")
+async def verb_close_day(args: dict[str, Any]) -> dict:
+    """Run a close now, as if it had come: {date?} (default today). Locates expiring by it are used or not."""
+    d = date.fromisoformat(args["date"]) if args.get("date") else calendar.trade_date(clock.now())
+    async with ctx.session() as s:
+        summary = await close_day(s, d)
+        await s.commit()
+    return summary
 
 
 # -- simulated counterparty receivers -----------------------------------------------------------------
@@ -485,7 +629,10 @@ def _gen_lines(r, n: int, tier_counts: dict[str, int] | None = None) -> list[dic
                  "ticker": inst.composite}[style]
         qty = r.lognormvariate(math.log(_load["median_qty"]), 1.0)
         qty = max(int(round(qty / (5000 if qty > 50_000 else 1000))) * (5000 if qty > 50_000 else 1000), 1000)
-        out.append({"identifier": ident, "idType": ids.detect(ident) or "TICKER", "quantity": qty})
+        line = {"identifier": ident, "idType": ids.detect(ident) or "TICKER", "quantity": qty}
+        if not tier_counts and inst.tier != "GC" and r.random() < 0.4:  # a fund's limit on a harder name
+            line["maxFeeBps"] = round(market.fee_bps(inst, clock.now()) * r.uniform(0.85, 1.4), 1)
+        out.append(line)
     return out
 
 

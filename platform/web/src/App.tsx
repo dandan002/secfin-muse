@@ -11,10 +11,11 @@ import { Chat } from "./views/Chat";
 import { Locates } from "./views/Locates";
 import { Market } from "./views/Market";
 import { Paste } from "./views/Paste";
+import { ShortListView } from "./views/ShortList";
 import { Ticket } from "./views/Ticket";
 
 const SCREENS = { blotter: BlotterView, locates: Locates, ticket: Ticket, market: Market, agent: Agent, paste: Paste,
-  audit: Audit, chat: Chat };
+  audit: Audit, chat: Chat, shorts: ShortListView };
 
 export function App() {
   useStream();

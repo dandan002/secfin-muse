@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any, Literal
 
@@ -29,8 +30,10 @@ class OrderIn(BaseModel):
     quantity: int = Field(..., gt=0)
     feeBps: float = Field(..., ge=0)
     counterparty: str | None = Field(None, description="Our code (or venue code) of the contra; omit for best")
-    venue: Literal["AUTO", "VENUE_A", "VENUE_B"] = "AUTO"
+    venue: Literal["AUTO", "VENUE_A", "VENUE_B", "BILATERAL"] = Field(
+        "AUTO", description="BILATERAL: already agreed with the named counterparty (in chat): booked directly")
     type: Literal["AUTO", "BID", "OFFER", "FIRM_BID", "INTEREST_LIST"] = "AUTO"
+    externalRef: str | None = Field(None, description="The counterparty's reference for a bilateral trade")
     collateralType: Literal["CASH", "NONCASH"] | None = None
     collateralCcy: str | None = None
     marginPct: float | None = Field(None, ge=100, le=150)
@@ -90,7 +93,10 @@ async def preview(s: AsyncSession, req: OrderIn) -> dict[str, Any]:
     cp = await _cp(s, req.counterparty)
     lv = secmaster.live(inst.id)
     venue, vtype, reason = rules.route_order(side=req.side, tier=lv["tier"], qty=req.quantity)
-    if req.venue == "VENUE_B" or req.type == "INTEREST_LIST":
+    if req.venue == "BILATERAL":
+        venue, vtype = "BILATERAL", "AGREED"
+        reason = f"agreed bilaterally with {cp.code if cp else 'the counterparty'}: booked directly, no venue"
+    elif req.venue == "VENUE_B" or req.type == "INTEREST_LIST":
         venue, vtype, reason = "VENUE_B", "INTEREST_LIST", \
             "trader chose Venue B: an interest list the optimiser matches against dealer lists"
     elif req.type != "AUTO":
@@ -106,6 +112,8 @@ async def preview(s: AsyncSession, req: OrderIn) -> dict[str, Any]:
                                    fx_usd=rules.FX_USD.get(inst.ccy, 1.0))
     if cp and cp.kind != "AGENT_LENDER" and req.side == "BORROW":
         checks.append(rules.Check("contra is a lender", False, f"{cp.code} is a {cp.kind.lower().replace('_', ' ')}"))
+    if venue == "BILATERAL" and cp is None:
+        checks.append(rules.Check("bilateral contra", False, "a bilateral trade needs its counterparty", blocking=True))
     if cp and venue == "VENUE_B":
         checks.append(rules.Check("venue B is anonymous", False, "interest lists match against any dealer: "
                                   f"drop {cp.code} or route to Venue A"))
@@ -132,7 +140,7 @@ async def create(s: AsyncSession, req: OrderIn, *, by: str, action_id: str | Non
               margin_pct=t["marginPct"], term=req.term, term_end=req.termEndDate,
               settle_date=date.fromisoformat(t["settlementDate"]), legal_agreement=t["legalAgreement"],
               booking_entity=t["bookingEntity"], status="NEW", checks=p["checks"], created_by=by,
-              action_id=action_id, created_at=now, updated_at=now)
+              action_id=action_id, created_at=now, updated_at=now, venue_order_id=req.externalRef)
     s.add(o)
     await s.flush()
     events.record(s, "order", o.id, "created", order_json(o), actor=by)
@@ -151,6 +159,9 @@ async def send_to_venue(s: AsyncSession, o: Order, *, failover: bool = False) ->
     """Place the order on its venue. ``failover``: if Venue A is down, place it on Venue B and say so."""
     inst = await s.get(Instrument, o.instrument_id)
     before = order_json(o)
+    if o.venue == "BILATERAL":
+        await add_trade_bilateral(s, o, inst)
+        return o
     if o.venue == "VENUE_B":
         await _place_b(o, inst)
     else:
@@ -166,6 +177,29 @@ async def send_to_venue(s: AsyncSession, o: Order, *, failover: bool = False) ->
     events.record(s, "order", o.id, "sent" if o.venue_order_id else "send_failed", order_json(o, inst),
                   before=before, actor="system")
     return o
+
+
+async def add_trade_bilateral(s: AsyncSession, o: Order, inst: Instrument) -> Trade:
+    """A trade agreed directly with the counterparty (in chat) is done when approved: record it and book it, as a
+    venue fill would be. There's no venue to give a UTI, so we generate ours (our LEI + the order id)."""
+    o.venue_order_id = o.venue_order_id or o.id
+    terms = {"collateralType": o.collateral_type, "collateralCcy": o.collateral_ccy, "marginPct": o.margin_pct,
+             "legalAgreement": o.legal_agreement, "bookingEntity": o.booking_entity, "term": o.term,
+             "termEndDate": o.term_end.isoformat() if o.term_end else None, "ref": o.venue_order_id}
+    t = Trade(id=events.new_id("trd"), order_id=o.id, venue="BILATERAL", venue_trade_id=f"BIL-{o.id}",
+              uti=f"{OUR_FIRM['lei']}{o.id.replace('_', '').upper()}", side=o.side, instrument_id=inst.id,
+              cp_code=o.cp_code, qty=o.qty, fee_bps=o.fee_bps, price=float(secmaster.live(inst.id)["lastPx"]),
+              ccy=inst.ccy, settle_date=o.settle_date, venue_json=terms, executed_at=clock.now(),
+              open_qty=o.qty, loan_status="OPEN", lifecycle=[])
+    s.add(t)
+    o.status, o.filled_qty, o.updated_at = "EXECUTED", o.qty, clock.now()
+    await s.flush()
+    from .booking import trade_json
+
+    events.record(s, "order", o.id, "executed", order_json(o, inst), actor="system")
+    events.record(s, "trade", t.id, "executed", trade_json(t, inst), actor=f"bilateral:{o.cp_code}")
+    await _auto_book(s, t)
+    return t
 
 
 async def _place_b(o: Order, inst: Instrument) -> None:
@@ -381,8 +415,9 @@ async def propose_from_chat(s: AsyncSession, m: Any) -> list[str]:
         fee, why = ln.get("feeBps"), "the agreed fee"
         if fee is None:
             fee, why = round(secmaster.live(ln["instrumentId"])["feeBps"], 1), "no fee in chat (GC): market fee"
+        ref = re.search(r"\bref\W+([A-Za-z0-9-]+)", m.text or "", re.I)
         req = OrderIn(side=m.our_side, instrument=ln["instrumentId"], quantity=int(ln["quantity"]), feeBps=fee,
-                      counterparty=m.counterparty)
+                      counterparty=m.counterparty, venue="BILATERAL", externalRef=ref.group(1) if ref else None)
         try:
             p = await preview(s, req)
         except OrderError as e:
@@ -397,7 +432,7 @@ async def propose_from_chat(s: AsyncSession, m: Any) -> list[str]:
                 title=f"{m.our_side.lower()} {int(ln['quantity']):,} {name} @ {fee:g} bps with {m.counterparty} "
                       f"(agreed in chat)",
                 rationale=f"Agreed in Desk Chat with {m.counterparty}: \"{m.text[:120]}\". Priced at {why}; "
-                          f"{p['routeReason']}.",
+                          f"{p['routeReason']}: approving books it.",
                 risk_flags=[f"{'BLOCKED' if c['blocking'] else 'warning'}: {c['name']} ({c['detail']})"
                             for c in failed],
                 original={"message": m.id, "line": ln}, source_ref=m.id)
