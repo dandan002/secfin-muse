@@ -232,6 +232,19 @@ async def test_venue_a_down_fails_over_to_a_venue_b_list(client: httpx.AsyncClie
     assert (got["status"], got["filledQty"]) == ("EXECUTED", 40_000)
 
 
+async def test_a_bid_the_venue_rejects_on_placing_keeps_its_reason(client: httpx.AsyncClient,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rejected inside the place call, the order is never open, so never polled: the reason is read there."""
+    async def place(body: dict) -> dict:
+        return {"orderId": "NGT-O-REJ1", "status": "REJECTED", "rejectReason": "BELOW_FLOOR: firm bid below GC "
+                                                                              "floor 38.9bps"}
+
+    monkeypatch.setattr(systems().venue_a, "place", place)
+    o = (await client.post("/orders", json={"instrument": "NVDA US", "quantity": 1000, "feeBps": 30,
+                                            "venue": "VENUE_A", "override": True})).json()
+    assert (o["status"], o["rejectReason"]) == ("REJECTED", "BELOW_FLOOR: firm bid below GC floor 38.9bps")
+
+
 async def test_a_named_counterparty_never_fails_over(client: httpx.AsyncClient) -> None:
     o = (await client.post("/orders", json={"instrument": "NVDA US", "quantity": 1000, "feeBps": 30,
                                             "counterparty": "HARBORAL", "override": True})).json()

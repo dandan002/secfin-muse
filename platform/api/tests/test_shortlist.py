@@ -386,7 +386,7 @@ async def test_a_lenders_recall_comes_off_the_cover_gets_a_return_and_the_short_
     ln = await _line(client, "2026-10-30", z.id)
     assert (ln["excess"], len(ln["returning"])) == (30_000, 2)
     excess_cards = [r["actionId"] for r in ln["returning"]]
-    assert await _lendable(z.id) == 80_000
+    assert await _lendable(z.id) == 30_000  # 50k of the 80k went out on the clients' shorts
 
     async with db.session() as s:
         m = await chat.ingest(s, {"messageId": "m-recall-1", "streamId": "room-harbor-avails", "seq": 30_001,
@@ -396,12 +396,12 @@ async def test_a_lenders_recall_comes_off_the_cover_gets_a_return_and_the_short_
                                           f"Thanks!"})
         await s.commit()
     assert (m.intent, m.status) == ("RECALL", "ACTIONED"), m.note
-    assert await _lendable(z.id) == 40_000  # owed back: off the lendable box the moment the recall lands
+    assert await _lendable(z.id) == 0  # owed back: off the lendable box the moment the recall lands
     async with db.session() as s:  # and it stays off when the box is read again, until the shares go back
         await inventory.apply(s, [{"instrumentId": z.id, "side": "BORROW", "openQuantity": 80_000,
                                    "bookingEntity": "LOANDESK-US", "avgFeeBps": 21.0}])
         await s.commit()
-    assert await _lendable(z.id) == 40_000
+    assert await _lendable(z.id) == 0
     async with db.session() as s:
         t = await s.get(Trade, "trd_rcl_harbor")
         assert (t.recalled_qty, t.recall_due, t.recall_ref) == (40_000, date(2026, 10, 29), "HAR-777")
@@ -427,7 +427,7 @@ async def test_a_lenders_recall_comes_off_the_cover_gets_a_return_and_the_short_
         assert (tr["openQty"], tr["recalledQty"], tr["recallDue"], tr["recallStatus"]) == (
             20_000, 0, "2026-10-29", "RETURNING")
         assert tr["lifecycle"][-1]["againstRecall"] == 40_000
-        assert await _lendable(z.id) == 40_000  # not handed back to the box on the way out
+        assert await _lendable(z.id) == 0  # not handed back on the way out; what's left delivers the shorts
         async with db.session() as s:
             from loandesk.services import booking
 
@@ -657,3 +657,30 @@ async def test_a_recall_on_a_borrow_we_havent_received_warns_the_return_cant_set
     async with db.session() as s:
         card = (await s.execute(select(Action).where(Action.source_ref == "recall:SFP-R-000099"))).scalar()
     assert any("haven't reached us yet (our delivery is FAILING)" in f for f in card.risk_flags)
+
+
+async def test_a_cover_left_under_the_market_is_redrafted_at_todays_fee(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cover card waits at the gate overnight and the fee moves through it: approved, the firm bid would be
+    rejected under the venue's floor. The next draft supersedes it and drafts the name again at today's fee."""
+    [name] = (await _names("GC", 20))[19:]
+    _gateway(monkeypatch, {"tradeDate": "2026-11-04", "settlementDate": "2026-11-05",
+                           "closedAt": "2026-11-04T21:00:00Z", "shortSales": [], "locateUsage": [],
+                           "positions": [{"counterparty": "BASALTHF", "instrumentId": name.id, "shortQuantity": 25_000,
+                                          "soldQuantity": 25_000, "coveredQuantity": 0}]})
+    await sync.sync_stock_record()
+    [first] = (await _line(client, "2026-11-04", name.id))["drafted"]
+    async with db.session() as s:
+        old = await s.get(Action, first["actionId"])
+    assert (await client.post("/short-list/draft")).json()["drafted"] == []  # the fee hasn't moved: left alone
+
+    live = secmaster.live
+    monkeypatch.setattr(secmaster, "live", lambda iid: {**live(iid), "feeBps": live(iid)["feeBps"] * 1.5}
+                        if iid == name.id else live(iid))
+    out = (await client.post("/short-list/draft")).json()
+    async with db.session() as s:
+        assert (await s.get(Action, old.id)).status == "SUPERSEDED"
+        [new] = (await s.execute(select(Action).where(Action.source_ref == f"short:{name.id}",
+                                                      Action.status == "PENDING"))).scalars().all()
+    assert new.id in out["drafted"] and new.payload["feeBps"] > old.payload["feeBps"]
+    assert new.payload["feeBps"] >= secmaster.live(name.id)["feeBps"]

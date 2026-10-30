@@ -87,6 +87,8 @@ async def apply_stock_record(s: AsyncSession, rec: dict[str, Any]) -> bool:
     events.record(s, "short_list", d.isoformat(), "stock_record",
                   {"tradeDate": d.isoformat(), "positions": len(rec["positions"]), "locatesUsed": used},
                   actor="gateway:stock-record")
+    await s.flush()
+    await inventory.refresh(s)  # the clients' shorts are delivered out of the box: no longer ours to lend
     events.publish_later(s, "short_list", {"type": "stock_record", "tradeDate": d.isoformat()})
     return True
 
@@ -273,8 +275,9 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
     """A cover card for every name still uncovered. A name with a card already waiting gets no second one."""
     from .. import gate
 
-    sl = await build(s, trade_date)
     cfg = get_settings()
+    await _supersede_stale(s, by=by)  # their names are uncovered again: drafted afresh below, at today's fee
+    sl = await build(s, trade_date)
     bids = await chat_bids(s, [ln["instrumentId"] for ln in sl["lines"]])
     made, notes = [], []
     for ln in sl["lines"]:
@@ -382,6 +385,22 @@ async def _draft_returns(s: AsyncSession, sl: dict[str, Any], *, by: str, notes:
         if left >= 100:
             notes.append(f"{ln['composite']}: {left:,} excess isn't on a returnable borrow yet (unbooked or failing)")
     return made
+
+
+async def _supersede_stale(s: AsyncSession, *, by: str) -> int:
+    """A cover order drafted at an earlier fee that's now under the market (a card left from yesterday, say) would
+    be rejected under a venue's floor: supersede it, so the name is drafted again at today's fee."""
+    from .. import gate
+
+    n = 0
+    for a in (await s.execute(select(Action).where(Action.status == "PENDING", Action.kind == "order",
+                                                   Action.source_ref.like(f"{SOURCE}:%")))).scalars().all():
+        fee, market_bps = a.payload.get("feeBps"), secmaster.live(a.payload["instrument"])["feeBps"]
+        if fee is not None and market_bps and fee < market_bps:
+            await gate.reject(s, a, by, f"bid {fee:g} bps is under the market fee now ({market_bps:g}): redrafted",
+                              status="SUPERSEDED")
+            n += 1
+    return n
 
 
 def missed_closes(have: date | None, latest: date) -> list[date]:

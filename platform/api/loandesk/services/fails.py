@@ -28,6 +28,7 @@ from .. import clock, events
 from ..adapters import AdapterError, systems
 from ..models import Action, DeliveryFail, Instrument, Trade
 from ..settings import get_settings
+from . import inventory
 from .booking import open_qty
 
 MARKET_OPEN = time(9, 30)  # New York: regular trading hours start
@@ -64,6 +65,7 @@ async def ingest(s: AsyncSession, rows: list[dict[str, Any]]) -> list[DeliveryFa
         events.record(s, "fail", f.id, "failed_to_deliver", fail_json(f), actor="gateway:cns")
     if made:
         await s.flush()
+        await inventory.refresh(s)
         await _redraft(s, {f.instrument_id for f in made}, ", ".join(f.id for f in made))
         events.publish_later(s, "short_list", {"type": "fails", "fails": [f.id for f in made]})
     return made
