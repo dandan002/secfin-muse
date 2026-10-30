@@ -24,7 +24,7 @@ export function Locates() {
 function NewLocate() {
   const { data: cps } = useQuery<Counterparty[]>("/counterparties");
   const toast = useDesk((s) => s.toast);
-  const [cp, setCp] = useState("PBALPHA");
+  const [cp, setCp] = useState("KESTRELHF");
   const [id, setId] = useState("");
   const [q, setQ] = useState("");
   const submit = async () => {
@@ -43,7 +43,7 @@ function NewLocate() {
     <form className="ml-auto flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); submit(); }}>
       <span className="label mr-1">new locate</span>
       <select value={cp} onChange={(e) => setCp(e.target.value)} className="input w-32">
-        {cps?.filter((c) => c.kind !== "AGENT_LENDER").map((c) => <option key={c.code}>{c.code}</option>)}
+        {cps?.filter((c) => c.kind === "HEDGE_FUND").map((c) => <option key={c.code}>{c.code}</option>)}
       </select>
       <input value={id} onChange={(e) => setId(e.target.value)} placeholder="VOD LN / ISIN" className="input w-36" />
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="250k" className="input w-20 text-right" />

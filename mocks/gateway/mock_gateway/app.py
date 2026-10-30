@@ -596,7 +596,8 @@ _load: dict[str, Any] = {}
 def _load_defaults() -> dict[str, Any]:
     return {"on": False, "base_per_min": 2.0, "burst_mult": 8.0, "burst_start": "09:00", "burst_end": "09:45",
             "median_qty": 50_000, "tier_mix": {"GC": 0.7, "WARM": 0.2, "HOT": 0.1}, "generated": 0,
-            "counterparties": [c.code for c in counterparties() if c.kind in ("PRIME_BROKER", "HEDGE_FUND")]}
+            # We're a prime broker: our clients, the funds, are who ask us for locates.
+            "counterparties": [c.code for c in counterparties() if c.kind == "HEDGE_FUND"]}
 
 
 def _in_burst(ts: datetime) -> bool:

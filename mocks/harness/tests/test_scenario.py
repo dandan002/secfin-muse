@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from refdata.counterparties import counterparty_by_code
+
 SERVICES = ("ib", "gateway", "ngt", "wematch", "sfp", "custodian", "analytics")
 
 
@@ -39,11 +41,13 @@ def test_demo_scenario_inputs(mocks):
     assert "LOCATE" not in {x["label"]["intent"] for x in today if x["ts"] < "2026-10-27T13:10"}
     ph = {"authorization": f"Bearer {mocks.creds('gateway')['platformToken']}"}
     inbox = mocks.get("gateway", "/v1/inbox?limit=5000", headers=ph).json()
-    pba = [x for x in inbox if x["requestId"] == "PBALPHA-DEMO-0001"]
-    assert len(pba) == 1 and len(pba[0]["lines"]) == 40
+    big = [x for x in inbox if x["requestId"] == "BASALTHF-DEMO-0001"]
+    assert len(big) == 1 and len(big[0]["lines"]) == 40
     demo_batch = [x for x in inbox if x["requestId"] == "KESTRELHF-DEMO-0001"]
     assert len(demo_batch) == 1 and len(demo_batch[0]["lines"]) == 25
     assert len(inbox) > 100  # the 09:00-09:45 burst
+    # A prime broker's locates come from its clients, the funds.
+    assert {counterparty_by_code(x["counterparty"]).kind for x in inbox} == {"HEDGE_FUND"}
     assert mocks.get("sfp", "/_admin/flags").json()["force_break_next"] is True
 
 

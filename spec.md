@@ -17,7 +17,7 @@ LoanDesk AI is a securities-lending desk where a Muse Wonder agent runs the day 
 
 **Why it wins the hackathon:** incumbents digitised the screen but left the trader as the integration layer between chat, venue and books. Wematch's own agent, Oz, launched in February 2026, is limited to reporting and monitoring at launch ([SFT](https://www.securitiesfinancetimes.com/securitieslendingnews/article.php?article_id=228502)). LoanDesk AI acts: it negotiates, executes and books, with a human gate on every external side effect.
 
-**Demo promise:** in five minutes, a mock prime broker's API sends 40 locates while traders work borrows and two RFQs in an IB-style chat; the agent clears 34 locates automatically, escalates 6 with reasoning, quotes both RFQs, executes one on mock NGT after a one-click approval, and the booking appears in the mock processor ledger.
+**Demo promise:** in five minutes, a hedge-fund client's API sends 40 locates while traders work borrows and two RFQs in an IB-style chat; the agent clears 34 locates automatically, escalates 6 with reasoning, quotes both RFQs, executes one on mock NGT after a one-click approval, and the booking appears in the mock processor ledger.
 
 ## Landscape: what each incumbent does today
 
@@ -197,7 +197,7 @@ Deterministic parsers run first; Muse Spark handles only what they cannot map. T
 
 - Monospace numerals, tabular alignment, 13 px base, 28 px rows; dark theme default with a light theme.
 - Fee changes flash green/red for 600 ms; tier badges GC (grey), Warm (amber), Hot (red).
-- Command palette (`Ctrl+K`): "locate 500k VOD LN for PB-ALPHA", "show hot names over 80% util".
+- Command palette (`Ctrl+K`): "locate 500k VOD LN for KESTRELHF", "show hot names over 80% util".
 - Stack: React + TypeScript, AG Grid (or TanStack Table with virtualisation), WebSocket client, Tailwind.
 
 ## Mock ecosystem
@@ -316,14 +316,14 @@ Postgres holds the canonical state; every record is CDM-shaped JSON plus indexed
 
 ```json
 {
-  "requestId": "PBALPHA-20261027-0412",
-  "counterparty": "PBALPHA",
+  "requestId": "KESTRELHF-20261027-0412",
+  "counterparty": "KESTRELHF",
   "lines": [
     {"identifier": "B0YBKJ7", "idType": "SEDOL", "quantity": 250000},
     {"identifier": "US0000000017", "idType": "ISIN", "quantity": 75000}
   ],
   "settlementDate": "2026-10-28",
-  "callbackUrl": "https://pbalpha.mock/locates/cb"
+  "callbackUrl": "https://kestrelhf.mock/locates/cb"
 }
 ```
 
@@ -446,7 +446,7 @@ Ten async days is enough to ship the full spec plus a hosted demo and a recorded
 ### Five-minute demo script
 
 1. **09:00 open (sim clock):** market grid streams; short list for the day is already built.
-2. **Burst:** PB-ALPHA's API sends 40 locates and a hedge fund's API posts 25 more; 34 ETB lines auto-confirm on the API within seconds. Meanwhile in chat, PB-ALPHA's stock-loan trader bids for a borrow and PB-BRAVO sends a borrow list, read and queued for the desk.
+2. **Burst:** a hedge-fund client's API sends 40 locates and another fund's posts 25 more; 34 ETB lines auto-confirm on the API within seconds. Meanwhile in chat, PB-ALPHA's stock-loan trader bids for a borrow and PB-BRAVO sends a borrow list, read and queued for the desk.
 3. **Agent review:** 6 Warm names appear as cards with rationale; trader batch-approves 5, edits one to a partial.
 4. **RFQ:** a hedge fund asks for a quote on a Hot name. Agent pulls last fee, NGT bids and utilization, proposes 650 bps, drafts the chat reply; trader nudges to 700 and approves.
 5. **Execution:** client accepts; agent routes the borrow to mock NGT, gets a fill, books to mock SFP; the booking returns a break, and the agent drafts the fix.

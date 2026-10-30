@@ -17,7 +17,7 @@ const LOCATE = /^loc(?:ate)?\s+([\d.,]+[km]?)\s+(.+?)\s+for\s+([\w-]+)$/i;
 const TRADE = /^(borrow|lend|b|l)\s+([\d.,]+[km]?)\s+(.+?)(?:\s*@\s*([\d.]+)\s*(?:bps?)?)?(?:\s+(?:from|to)\s+([\w-]+))?$/i;
 const SHOW = /^(?:show\s+)?(hot|warm|gc)(?:\s+names?)?(?:\s+over\s+(\d+)%?\s*util)?$/i;
 
-/** Ctrl/⌘+K: "locate 500k VOD LN for PB-ALPHA", "borrow 100k AAPL @ 30", "show hot names", a view, or a name. */
+/** Ctrl/⌘+K: "locate 500k VOD LN for KESTRELHF", "borrow 100k AAPL @ 30", "show hot names", a view, or a name. */
 export function CommandPalette() {
   const open = useDesk((s) => s.paletteOpen);
   const setOpen = useDesk((s) => s.setPalette);
@@ -131,7 +131,7 @@ export function CommandPalette() {
               else if (e.key === "ArrowUp") { setSel((s) => Math.max(s - 1, 0)); e.preventDefault(); }
               else if (e.key === "Enter") run(cmds[sel]);
             }}
-            placeholder="locate 500k VOD LN for PB-ALPHA · borrow 100k AAPL @ 30 · show hot names"
+            placeholder="locate 500k VOD LN for KESTRELHF · borrow 100k AAPL @ 30 · show hot names"
             className="flex-1 bg-transparent text-sm focus:outline-none placeholder:text-faint"
           />
           <Kbd>esc</Kbd>

@@ -65,7 +65,7 @@ no sign-in)", and without the issuer the API stays open, as before. Set both for
 | Chat ingest | `ingest/chat.py`, `sync.sync_chat`: every Desk Chat room the bot is in, both sides (a room seen for the first time starts at its end). Chat is where traders work borrows and loans, and it leans on context ("Any of these? META 24000…" / our "Maybe these META 0.15%" / "Send"), so Spark (`LOANDESK_PARSER_EFFORT` low) reads every message with the room's conversation over `LOANDESK_CHAT_CONTEXT_HOURS` (10): the 40 most recent messages plus any older request still open, each with its time. It returns the intent (RFQ, OFFER, IOI, QUOTE, COUNTER, ACCEPT, DECLINE, RECALL, RETURN, INTERNAL_BORROW), the lines worked out from context (fees as % a year → bps, GC), the message it answers and which side we'd be on. Theirs wait **open**; a trade either side accepted is **agreed**, to book; ours are kept as context. Locates belong to sales and the API (ignored in chat); injections are flagged by rules before any model; with the model off the rules read what they can and hand replies like "Send" to the trader. Nothing trades or replies on its own | **Chat** (`8`): needs you / open / agreed / all, both sides, the reading line by line, dismiss |
 | Audit | `events.py`: append-only `events` table, pushed to the UI after commit | **Audit** (`7`) |
 
-`⌘K` / `ctrl+K` opens the command palette: `locate 500k VOD LN for PB-ALPHA`, `borrow 100k AAPL @ 30 from HARBORAL`,
+`⌘K` / `ctrl+K` opens the command palette: `locate 500k VOD LN for KESTRELHF`, `borrow 100k AAPL @ 30 from HARBORAL`,
 `show hot names`, or any name.
 
 ## Pricing and counterparty limits
