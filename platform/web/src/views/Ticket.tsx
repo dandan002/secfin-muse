@@ -17,6 +17,7 @@ export function Ticket() {
   const [fee, setFee] = useState("");
   const [cp, setCp] = useState("");
   const [type, setType] = useState("AUTO");
+  const [venue, setVenue] = useState<"AUTO" | "VENUE_A" | "VENUE_B">("AUTO");
   const [override, setOverride] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
@@ -33,7 +34,7 @@ export function Ticket() {
 
   const body = {
     side, instrument: ident, quantity: parseQty(q) ?? 0, feeBps: fee === "" ? 0 : parseFloat(fee),
-    counterparty: cp || null, type, override,
+    counterparty: cp || null, type: venue === "VENUE_B" ? "AUTO" : type, venue, override,
   };
   const key = useDebounced(JSON.stringify(body), 250);
 
@@ -103,9 +104,17 @@ export function Ticket() {
               {lenders?.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
             </select>
           </Field>
+          <Field label="venue">
+            <select value={venue} onChange={(e) => setVenue(e.target.value as typeof venue)} className="input">
+              <option value="AUTO">auto (fails over to B)</option>
+              <option value="VENUE_A">venue A</option>
+              <option value="VENUE_B">venue B · interest list</option>
+            </select>
+          </Field>
           <Field label="order type">
-            <select value={type} onChange={(e) => setType(e.target.value)} className="input">
-              {["AUTO", "FIRM_BID", "BID", "OFFER"].map((t) => <option key={t}>{t}</option>)}
+            <select value={venue === "VENUE_B" ? "INTEREST_LIST" : type} onChange={(e) => setType(e.target.value)}
+              className="input" disabled={venue === "VENUE_B"}>
+              {(venue === "VENUE_B" ? ["INTEREST_LIST"] : ["AUTO", "FIRM_BID", "BID", "OFFER"]).map((t) => <option key={t}>{t}</option>)}
             </select>
           </Field>
         </div>

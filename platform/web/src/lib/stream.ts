@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { API_URL } from "./api";
+import { sessionToken } from "./auth";
 import { useDesk } from "./store";
 
 /** One WebSocket to the desk's /stream; pushes bump topic versions so views refetch. Reconnects with backoff. */
@@ -11,8 +12,10 @@ export function useStream() {
     let closed = false;
     const { setClock, setConnected, bump } = useDesk.getState();
 
-    const connect = () => {
-      ws = new WebSocket(API_URL.replace(/^http/, "ws") + "/stream");
+    const connect = async () => {
+      const token = await sessionToken();
+      if (closed) return;
+      ws = new WebSocket(API_URL.replace(/^http/, "ws") + "/stream" + (token ? `?token=${encodeURIComponent(token)}` : ""));
       ws.onopen = () => {
         retry = 0;
         setConnected(true);

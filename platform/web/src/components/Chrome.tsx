@@ -1,4 +1,6 @@
+import { UserButton } from "@clerk/react";
 import { api } from "../lib/api";
+import { authEnabled } from "../lib/auth";
 import { time } from "../lib/format";
 import { useQuery } from "../lib/hooks";
 import { useDesk, VIEWS } from "../lib/store";
@@ -12,6 +14,7 @@ const SHORT: Record<string, string> = {
   venue_a: "VEN A",
   venue_b: "VEN B",
   processor: "PROC",
+  custodian: "CUST",
 };
 
 export function TopBar() {
@@ -71,6 +74,7 @@ export function TopBar() {
           command <Kbd>⌘K</Kbd>
         </button>
         <button onClick={toggleTheme} className="btn" title="Toggle theme">◐</button>
+        {authEnabled && <UserButton />}
       </div>
     </header>
   );

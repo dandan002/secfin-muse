@@ -50,12 +50,12 @@ export function BlotterView() {
   const c = data?.counts;
   return (
     <div className="h-full flex flex-col gap-3 min-h-0">
-      <div className="grid grid-cols-5 gap-3">
-        {[["open orders", c?.openOrders], ["fills", c?.fills], ["unbooked", c?.unbooked], ["breaks", c?.breaks],
-          ["open locates", c?.openLocates]].map(([k, v]) => (
+      <div className="grid grid-cols-6 gap-3">
+        {[["open orders", c?.openOrders], ["open loans", c?.openLoans], ["unbooked", c?.unbooked], ["breaks", c?.breaks],
+          ["settle fails", c?.unsettled], ["open locates", c?.openLocates]].map(([k, v]) => (
           <div key={k as string} className="panel px-3 py-2">
             <div className="label">{k}</div>
-            <div className={`text-lg ${k === "breaks" && (v as number) > 0 ? "text-hot" : ""}`}>{v ?? "—"}</div>
+            <div className={`text-lg ${(k === "breaks" || k === "settle fails") && (v as number) > 0 ? "text-hot" : ""}`}>{v ?? "—"}</div>
           </div>
         ))}
       </div>
@@ -101,43 +101,96 @@ export function BlotterView() {
 
 function Fills({ trades }: { trades: Trade[] }) {
   const toast = useDesk((s) => s.toast);
-  const run = async (t: Trade, c: "book" | "amend") => {
+  const [sel, setSel] = useState(0);
+  const cur = trades[sel];
+  const run = async (t: Trade, c: "book" | "amend" | "settle" | "return" | "recall" | "rerate" | "mark", body?: object) => {
     try {
-      const r = await api.post<Trade>(`/trades/${t.id}/${c}`);
-      toast(r.compareStatus === "MATCHED" ? "ok" : r.compareStatus === "UNMATCHED" ? "warn" : "info",
-        `${t.composite} ${c === "book" ? "booked" : "amended"}: ${r.compareStatus.toLowerCase()}${r.diffs.length ? ` (${r.diffs.map((d) => d.field).join(", ")})` : ""}`);
+      const r = await api.post<Trade & { mark?: { callAmount?: number; price?: number } }>(`/trades/${t.id}/${c}`, body);
+      const msg = c === "book" || c === "amend"
+        ? `${c === "book" ? "booked" : "amended"}: ${r.compareStatus.toLowerCase()}${r.diffs.length ? ` (${r.diffs.map((d) => d.field).join(", ")})` : ""}`
+        : c === "mark" ? `marked at ${r.mark?.price}: call ${money(r.mark?.callAmount ?? 0)} ${t.ccy}`
+        : c === "rerate" ? (r.pendingRerateBps !== null ? `re-rate to ${bps(r.pendingRerateBps)} asked of the counterparty` : `re-rated to ${bps(r.feeBps)}`)
+        : c === "settle" ? `settlement ${(r.settleStatus ?? "").toLowerCase()}`
+        : `${c}ed: ${qty(r.openQty)} still open`;
+      toast(r.compareStatus === "UNMATCHED" ? "warn" : "ok", `${t.composite} ${msg}`);
     } catch (e) {
       toast("err", (e as Error).message);
     }
   };
+  const close = (t: Trade) => {
+    const verb = t.side === "BORROW" ? "return" : "recall";
+    const v = prompt(`${verb} ${t.composite}: shares (open ${qty(t.openQty)})`, String(t.openQty));
+    if (v) run(t, verb, { quantity: parseInt(v.replace(/[,_]/g, ""), 10) });
+  };
+  const rerate = (t: Trade) => {
+    const v = prompt(`Re-rate ${t.composite} (now ${bps(t.feeBps)} bps)`, String(t.feeBps));
+    if (v) run(t, "rerate", { feeBps: parseFloat(v) });
+  };
+  const live = (t?: Trade) => !!t && !!t.contractId && t.loanStatus === "OPEN";
+
+  useKeys((e) => {
+    if (!e.shiftKey || !live(cur)) return;  // shift: the fills panel (plain keys belong to the orders above)
+    if (e.key === "R") rerate(cur);
+    else if (e.key === "C") close(cur);
+    else if (e.key === "M") run(cur, "mark");
+    else return;
+    e.preventDefault();
+  }, [cur]);
+
+  const runMarks = async () => {
+    try {
+      const r = await api.post<{ marked: number; marginCalls: number; ours: number }>("/marks/run");
+      toast("ok", `marked ${r.marked} contracts: ${r.marginCalls} margin calls (${r.ours} on our fills)`);
+    } catch (e) {
+      toast("err", (e as Error).message);
+    }
+  };
+
   return (
-    <Panel className="flex-[2]" bodyClass="overflow-auto" title={<>fills & bookings <span className="text-dim normal-case tracking-normal">{trades.length}</span></>}>
-      {!trades.length ? <Empty>Fills from the venues land here, ready to book to the processor.</Empty> : (
+    <Panel className="flex-[2]" bodyClass="overflow-auto" title={<>fills & loans <span className="text-dim normal-case tracking-normal">{trades.length}</span></>}
+      right={<>
+        <span className="text-2xs text-faint flex gap-3 mr-2"><span><Kbd>⇧C</Kbd> return / recall</span><span><Kbd>⇧R</Kbd> re-rate</span><span><Kbd>⇧M</Kbd> mark</span></span>
+        <button className="btn h-6" onClick={runMarks}>run marks</button>
+      </>}>
+      {!trades.length ? <Empty>Fills from both venues land here, book to the processor and settle at the custodian.</Empty> : (
         <table className="w-full text-xs">
-          <thead><tr>{["executed", "side", "name", "qty", "fee", "notional", "cp", "uti", "contract", "compare", ""].map((h) =>
-            <th key={h} className={`th ${["qty", "fee", "notional"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+          <thead><tr>{["executed", "side", "name", "venue", "qty", "open", "fee", "notional", "cp", "contract", "compare", "settle", "loan", ""].map((h) =>
+            <th key={h} className={`th ${["qty", "open", "fee", "notional"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
           <tbody>
-            {trades.map((t) => (
-              <tr key={t.id} className="row">
-                <td className="td text-faint">{time(t.executedAt)}</td>
-                <td className="td text-dim">{t.side.toLowerCase()}</td>
-                <td className="td">{t.composite}</td>
-                <td className="td text-right">{qty(t.quantity)}</td>
-                <td className="td text-right">{bps(t.feeBps)}</td>
-                <td className="td text-right text-dim">{money(t.notional)} {t.ccy}</td>
-                <td className="td text-dim">{t.counterparty}</td>
-                <td className="td text-faint max-w-[120px] truncate" title={t.uti ?? ""}>{t.uti?.slice(-12)}</td>
-                <td className="td text-faint">{t.contractId ?? ""}</td>
-                <td className="td">
-                  <State s={t.compareStatus} />
-                  {!!t.diffs.length && <span className="ml-2 text-faint">{t.diffs.map((d) => `${d.field} ${String(d.ours)}≠${String(d.processor)}`).join(" · ")}</span>}
-                </td>
-                <td className="td text-right">
-                  {(t.compareStatus === "UNBOOKED" || t.compareStatus === "FAILED") && <button className="btn-accent h-6" onClick={() => run(t, "book")}>book</button>}
-                  {t.compareStatus === "UNMATCHED" && <button className="btn h-6 text-warm" onClick={() => run(t, "amend")}>fix break</button>}
-                </td>
-              </tr>
-            ))}
+            {trades.map((t, i) => {
+              const last = t.lifecycle[t.lifecycle.length - 1];
+              return (
+                <tr key={t.id} onClick={() => setSel(i)} className={`row ${i === sel ? "row-sel" : ""}`}>
+                  <td className="td text-faint">{time(t.executedAt)}</td>
+                  <td className={`td ${t.side === "BORROW" ? "text-info" : "text-accent"}`}>{t.side.toLowerCase()}</td>
+                  <td className="td">{t.composite}</td>
+                  <td className="td text-faint">{t.venue.replace("VENUE_", "")}</td>
+                  <td className="td text-right">{qty(t.quantity)}</td>
+                  <td className="td text-right text-dim">{t.openQty !== t.quantity ? qty(t.openQty) : ""}</td>
+                  <td className="td text-right">{bps(t.feeBps)}{t.pendingRerateBps !== null && <span className="text-warm"> → {bps(t.pendingRerateBps)}?</span>}</td>
+                  <td className="td text-right text-dim">{money(t.notional)} {t.ccy}</td>
+                  <td className="td text-dim">{t.counterparty}</td>
+                  <td className="td text-faint" title={t.uti ? `UTI ${t.uti}` : ""}>{t.contractId ?? ""}</td>
+                  <td className="td">
+                    <State s={t.compareStatus} />
+                    {!!t.diffs.length && <span className="ml-2 text-faint">{t.diffs.map((d) => `${d.field} ${String(d.ours)}≠${String(d.processor)}`).join(" · ")}</span>}
+                  </td>
+                  <td className="td" title={t.settleRef ?? ""}><State s={t.settleStatus} /></td>
+                  <td className="td" title={last ? `${last.event.toLowerCase()} ${time(last.ts)} by ${actor(last.by)}${last.error ? `: ${last.error}` : ""}` : ""}>
+                    <State s={t.loanStatus} />{last && <span className="ml-2 text-faint">{last.event.toLowerCase().replace("_", " ")}</span>}
+                  </td>
+                  <td className="td text-right whitespace-nowrap space-x-1">
+                    {(t.compareStatus === "UNBOOKED" || t.compareStatus === "FAILED") && <button className="btn-accent h-6" onClick={() => run(t, "book")}>book</button>}
+                    {t.compareStatus === "UNMATCHED" && <button className="btn h-6 text-warm" onClick={() => run(t, "amend")}>fix break</button>}
+                    {t.compareStatus === "MATCHED" && (!t.settleRef) && <button className="btn h-6" onClick={() => run(t, "settle")}>settle</button>}
+                    {live(t) && <>
+                      <button className="btn h-6" onClick={() => close(t)}>{t.side === "BORROW" ? "return" : "recall"}</button>
+                      <button className="btn h-6" onClick={() => rerate(t)}>re-rate</button>
+                    </>}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

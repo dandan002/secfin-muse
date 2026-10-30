@@ -190,6 +190,15 @@ class Trade(Base):
     break_id: Mapped[str | None] = mapped_column(String(32))
     executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The loan after booking: returns and recalls reduce open_qty; OPEN | CLOSED.
+    open_qty: Mapped[int | None] = mapped_column(BigInteger)
+    loan_status: Mapped[str | None] = mapped_column(String(8), default="OPEN")
+    pending_rerate_bps: Mapped[float | None] = mapped_column(Float)  # asked of the venue, not yet agreed
+    lifecycle: Mapped[list[Any] | None] = mapped_column(default=list)  # [{ts, event, quantity, feeBps, by}]
+    reg_10c1a: Mapped[dict[str, Any] | None] = mapped_column()  # SEC Rule 10c-1a fields, captured at booking
+    # Settlement of the loan leg at the custodian: PENDING | MATCHED | UNMATCHED | FAILING | SETTLED | REJECTED
+    settle_status: Mapped[str | None] = mapped_column(String(12))
+    settle_ref: Mapped[str | None] = mapped_column(String(32))
 
 
 class Action(Base):

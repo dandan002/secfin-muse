@@ -11,10 +11,10 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import agent, db, secmaster
+from . import agent, auth, db, secmaster
 from .adapters import systems
 from .routes import chat, desk, reference, trading
 from .settings import get_settings
@@ -50,7 +50,7 @@ def create_app() -> FastAPI:
                   description="Securities-lending desk platform. Synthetic data only.")
     app.add_middleware(CORSMiddleware, allow_origins=cfg.cors_origins, allow_methods=["*"], allow_headers=["*"])
     for r in (reference.router, trading.router, chat.router, desk.router):
-        app.include_router(r)
+        app.include_router(r, dependencies=[Depends(auth.require_user)])
 
     @app.get("/health", tags=["audit"])
     async def health() -> dict:

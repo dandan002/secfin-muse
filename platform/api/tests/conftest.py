@@ -10,7 +10,7 @@ import pytest
 os.environ["LOANDESK_SYNC_ENABLED"] = "false"
 os.environ["LOANDESK_AGENT_MODE"] = "off"
 # Nothing listens here: adapter calls fail fast, the way a down vendor would.
-for name in ("CONTROL", "IB", "GATEWAY", "NGT", "WEMATCH", "SFP"):
+for name in ("CONTROL", "IB", "GATEWAY", "NGT", "WEMATCH", "SFP", "CUSTODIAN"):
     os.environ[f"LOANDESK_{name}_URL"] = "http://127.0.0.1:9"
 
 from loandesk import clock, db, secmaster  # noqa: E402

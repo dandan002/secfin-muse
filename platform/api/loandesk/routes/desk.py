@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import agent, clock, events, gate, sync
+from .. import agent, auth, clock, events, gate, sync
 from ..adapters import AdapterError, systems
 from ..agent.models import gateway
 from ..agent.tools import REGISTRY
@@ -231,7 +231,13 @@ async def status() -> dict:
 
 @router.websocket("/stream")
 async def stream(ws: WebSocket) -> None:
-    """Multiplexed pushes: locate, order, trade, break, action, market, clock."""
+    """Multiplexed pushes: locate, order, trade, break, action, market, clock. With sign-in on, ``?token=``."""
+    if auth.enabled():
+        try:
+            await auth.verify(ws.query_params.get("token") or "")
+        except auth.AuthError:
+            await ws.close(code=4401)
+            return
     await ws.accept()
     q = events.hub.subscribe()
 

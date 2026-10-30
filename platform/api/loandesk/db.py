@@ -32,6 +32,20 @@ async def create_all() -> None:
     assert _engine is not None
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_columns)
+
+
+def _add_missing_columns(conn: Any) -> None:
+    """``create_all`` never alters a table: add columns new to the models (all nullable) to an existing desk."""
+    from sqlalchemy import inspect
+
+    insp = inspect(conn)
+    for table in Base.metadata.sorted_tables:
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name not in have and col.nullable:
+                conn.exec_driver_sql(f"ALTER TABLE {table.name} ADD COLUMN {col.name} "
+                                     f"{col.type.compile(dialect=conn.dialect)}")
 
 
 async def dispose() -> None:

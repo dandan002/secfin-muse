@@ -137,6 +137,13 @@ export interface Trade {
   compareStatus: string;
   diffs: { field: string; ours: unknown; processor: unknown }[];
   breakId: string | null;
+  openQty: number;
+  loanStatus: "OPEN" | "CLOSED";
+  pendingRerateBps: number | null;
+  lifecycle: { ts: string; event: string; by: string; quantity?: number; fromBps?: number; toBps?: number; feeBps?: number; callAmount?: number; error?: string }[];
+  settleStatus: string | null;
+  settleRef: string | null;
+  reg10c1a: Record<string, unknown> | null;
   executedAt: string;
   bookedAt: string | null;
 }

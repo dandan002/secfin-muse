@@ -1,5 +1,5 @@
-"""Background sync with the outside world: clock, gateway inbox, Desk Chat, Venue A market data, our orders
-and the processor's positions (internal inventory).
+"""Background sync with the outside world: clock, gateway inbox, Desk Chat, Venue A market data, our orders on
+both venues, the processor's positions (internal inventory) and the custodian's settlements.
 
 Polling keeps the scaffold simple and restart-safe (cursors live in ``sync_cursors``). The venues
 also offer WebSocket streams; switching to them changes only this module.
@@ -19,8 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import clock, db, events
 from .adapters import AdapterError, systems
 from .ingest import chat
-from .models import Order, SyncCursor
-from .services import inventory, locates, market, orders
+from .models import Order, SyncCursor, Trade
+from .services import booking, inventory, lifecycle, locates, market, orders
 from .settings import get_settings
 
 log = logging.getLogger("loandesk.sync")
@@ -125,6 +125,41 @@ async def sync_orders() -> None:
         await s.commit()
 
 
+async def sync_venue_b() -> None:
+    """Follow our interest lists on Venue B (dealer counters), record every agreed loan as a trade, and pick up
+    re-rates the counterparty answered. Loans from lists sent outside an order (paste) are trades too."""
+    vb = systems().venue_b
+    matches = await vb.matches()
+    list_of = {m["matchId"]: m["listId"] for m in matches}
+    async with db.session() as s:
+        open_orders = (await s.execute(select(Order).where(Order.venue == "VENUE_B", Order.status.in_(orders.OPEN),
+                                                           Order.venue_order_id.is_not(None)))).scalars().all()
+        if open_orders:
+            lists = {x["listId"]: x for x in await vb.lists()}
+            for o in open_orders:
+                mine = [m for m in matches if m["listId"] == o.venue_order_id]
+                if await orders.accept_within_limit(s, o, mine):
+                    mine = await vb.matches(o.venue_order_id)
+                await orders.apply_venue_b(s, o, lists.get(o.venue_order_id), mine)
+        for loan in await vb.loans():
+            t = (await s.execute(select(Trade).where(Trade.venue_trade_id == loan["loanId"]))).scalar()
+            if t is None:
+                await orders.add_trade_b(s, loan, list_of.get(loan["matchId"]))
+            else:
+                await lifecycle.apply_loan(s, t, loan)
+        await s.commit()
+
+
+async def sync_settlement() -> None:
+    async with db.session() as s:
+        pending = (await s.execute(select(Trade.id).where(Trade.settle_ref.is_not(None),
+                                                          Trade.settle_status.not_in(booking.SETTLED)))).first()
+        if pending is None:
+            return
+        await booking.apply_settlement(s, await systems().custodian.instructions())
+        await s.commit()
+
+
 async def housekeeping() -> None:
     async with db.session() as s:
         if await locates.expire_due(s):
@@ -155,6 +190,7 @@ class Syncer:
         jobs = {"clock": (5.0, sync_clock), "inbox": (cfg.poll_s, sync_inbox),
                 **({"chat": (cfg.poll_s, sync_chat)} if cfg.chat_ingest else {}),
                 "market": (cfg.availability_every_s, sync_market), "orders": (cfg.poll_s, sync_orders),
+                "venue_b": (cfg.poll_s, sync_venue_b), "settlement": (cfg.poll_s * 2.5, sync_settlement),
                 "inventory": (cfg.inventory_every_s, sync_inventory),
                 "housekeeping": (30.0, housekeeping)}
         self.tasks = [asyncio.create_task(_every(n, sec, fn), name=f"sync-{n}") for n, (sec, fn) in jobs.items()]

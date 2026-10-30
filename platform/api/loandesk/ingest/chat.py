@@ -20,9 +20,11 @@ and comes back as an intent, the lines it is about (worked out from context for 
 answers, and which side of the trade we'd be on. The rules (the paste parser plus intent patterns) flag
 injections up front and stand in when the model is off.
 
-Statuses: **OPEN** (theirs, for the desk to answer), **AGREED** (a trade agreed in chat, to book), **OURS**
-(our side, kept as context), **FLAGGED** (tries to talk the desk past its rules), **UNSURE** (for the trader),
-**IGNORED** (chatter; locates, which belong to sales). Nothing here trades or replies on its own.
+Statuses: **OPEN** (theirs, for the desk to answer), **AGREED** (a trade agreed in chat: each line is drafted
+as an order card to that counterparty, see ``services.orders.propose_from_chat``), **OURS** (our side, kept as
+context), **FLAGGED** (tries to talk the desk past its rules), **UNSURE** (for the trader), **IGNORED** (chatter;
+locates, which belong to sales). Nothing here trades or replies on its own: an order goes out only when the
+trader approves its card.
 
 Counterparty text reaches a model only inside ``<untrusted>`` tags.
 """
@@ -275,6 +277,9 @@ async def ingest(s: AsyncSession, msg: dict[str, Any]) -> ChatMessage | None:
         m.status = "FLAGGED"
     elif reading.intent == "ACCEPT" and reading.confidence >= cfg.chat_confident:
         m.status = "AGREED"  # either side agreed: a trade to book
+        from ..services.orders import propose_from_chat
+
+        m.note = "; ".join(x for x in (m.note, *await propose_from_chat(s, m)) if x)
     elif side == "US":
         m.status = "OURS"
     elif reading.confidence < cfg.chat_confident:

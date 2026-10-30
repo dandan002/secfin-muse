@@ -150,8 +150,27 @@ async def _amend(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
     t = await s.get(Trade, a.payload["tradeId"])
     if t is None:
         raise GateError(f"no trade {a.payload['tradeId']}")
-    t = await booking.amend_to_fill(s, t, by=approver)
+    t = await booking.amend_to_fill(s, t, by=f"{a.proposed_by}+{approver}", fields=a.payload.get("fields"))
+    if t.compare_status != "MATCHED":
+        raise GateError(f"still {t.compare_status.lower()} after the amend: {t.compare_diffs}")
     return {"tradeId": t.id, "compareStatus": t.compare_status}
+
+
+@executor("lifecycle")
+async def _lifecycle(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
+    """RETURN / RECALL (``quantity``, all if omitted) or RERATE (``feeBps``) on a booked loan."""
+    from .services import lifecycle
+
+    p = a.payload
+    t = await s.get(Trade, p["tradeId"])
+    if t is None:
+        raise GateError(f"no trade {p['tradeId']}")
+    by = f"{a.proposed_by}+{approver}"
+    if p["event"] == "RERATE":
+        t = await lifecycle.rerate(s, t, float(p["feeBps"]), by=by)
+    else:
+        t = await lifecycle.close(s, t, p.get("quantity"), by=by)
+    return {"tradeId": t.id, "openQty": t.open_qty, "feeBps": t.fee_bps, "pendingRerateBps": t.pending_rerate_bps}
 
 
 @executor("chat_send")
