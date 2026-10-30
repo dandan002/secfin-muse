@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import clock, db, events
 from .adapters import AdapterError, systems
 from .ingest import chat
-from .models import Order, SyncCursor, Trade
+from .models import BuyIn, Order, SyncCursor, Trade
 from .services import booking, buyins, fails, inventory, lifecycle, locates, market, orders, recalls, shortlist
 from .settings import get_settings
 
@@ -236,6 +236,9 @@ async def sync_buy_ins() -> None:
 
 async def sync_settlement() -> None:
     async with db.session() as s:
+        if (await s.execute(select(BuyIn.id).where(BuyIn.cash_status == "INSTRUCTED").limit(1))).first():
+            await buyins.apply_payments(s, await systems().custodian.payments())
+            await s.commit()
         pending = (await s.execute(select(Trade.id).where(
             (Trade.settle_ref.is_not(None) & Trade.settle_status.not_in(booking.SETTLED))
             | (Trade.returns_settling > 0)).limit(1))).first()

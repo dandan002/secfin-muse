@@ -1,6 +1,45 @@
 {
   "components": {
     "schemas": {
+      "ChargeIn": {
+        "properties": {
+          "amount": {
+            "exclusiveMinimum": 0.0,
+            "title": "Amount",
+            "type": "number"
+          },
+          "ccy": {
+            "default": "USD",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Ccy",
+            "type": "string"
+          },
+          "counterparty": {
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Your reference; the same ref returns the same charge",
+            "maxLength": 64,
+            "title": "Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "counterparty",
+          "amount",
+          "reason",
+          "ref"
+        ],
+        "title": "ChargeIn",
+        "type": "object"
+      },
       "ClockPush": {
         "properties": {
           "rev": {
@@ -1610,6 +1649,102 @@
         ]
       }
     },
+    "/v1/charges": {
+      "get": {
+        "operationId": "charges_v1_charges_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "counterparty",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Counterparty"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Charges V1 Charges Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Charges",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "description": "Post a charge to a client's account. Idempotent on ``ref``.",
+        "operationId": "post_charge_v1_charges_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChargeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Charge V1 Charges Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Charge",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
     "/v1/decisions": {
       "post": {
         "operationId": "decide_v1_decisions_post",
@@ -2040,6 +2175,33 @@
           }
         },
         "summary": "Get Locate",
+        "tags": [
+          "counterparty"
+        ]
+      }
+    },
+    "/v1/my/charges": {
+      "get": {
+        "description": "What the prime broker has charged your account.",
+        "operationId": "my_charges_v1_my_charges_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response My Charges V1 My Charges Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "My Charges",
         "tags": [
           "counterparty"
         ]

@@ -31,5 +31,11 @@ class Gateway(Client):
         """CNS buy-ins on fails we didn't deliver (``after``: the last ``seq`` seen)."""
         return await self.get("/v1/buy-ins", params={"after": after})
 
+    async def charge(self, counterparty: str, amount: float, reason: str, ref: str, ccy: str = "USD"
+                     ) -> dict[str, Any]:
+        """Post a charge to a client's account; idempotent on ``ref``."""
+        return await self.post("/v1/charges", json={"counterparty": counterparty, "amount": amount, "ccy": ccy,
+                                                    "reason": reason, "ref": ref})
+
     async def deliver_fail(self, fail_id: str, quantity: int, ref: str | None = None) -> dict[str, Any]:
         return await self.post(f"/v1/fails/{fail_id}/deliver", json={"quantity": quantity, "ref": ref})

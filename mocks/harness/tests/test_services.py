@@ -471,6 +471,30 @@ def test_gateway_shorts_that_fail_at_cns_stay_open_until_delivered(mocks):
         assert (p["shortQuantity"] if p else 0) <= max(before[x["instrumentId"]] - x["quantity"], 0)
 
 
+def test_custodian_payments_settle_on_the_value_date_and_gateway_charges_reach_the_client(mocks):
+    h = {"x-api-key": mocks.creds("custodian")["apiKey"]}
+    body = {"txId": "BI-PAY-1", "direction": "PAY", "amount": 35_624.0, "ccy": "USD",
+            "counterpartyBic": "MKPEUS33XXX", "reference": "buy-in SFP-B-000001"}
+    p = mocks.post("custodian", "/payments", headers=h, json=body).json()
+    assert (p["status"], p["valueDate"]) == ("ACCEPTED", "2026-10-28")
+    assert mocks.post("custodian", "/payments", headers=h, json=body).status_code == 409
+    mocks.post("control", "/clock/advance", json={"to": "2026-10-28T10:01:00-04:00"}).raise_for_status()
+    [got] = mocks.get("custodian", "/payments", headers=h).json()
+    assert got["status"] == "SETTLED" and got["history"][-1]["event"] == "SETTLED"
+
+    cred = mocks.creds("gateway")
+    ph = {"authorization": f"Bearer {cred['platformToken']}"}
+    charge = {"counterparty": "BASALTHF", "amount": 31_500.0, "reason": "CNS buy-in CNS-B-000001", "ref": "CNS-B-1"}
+    c = mocks.post("gateway", "/v1/charges", headers=ph, json=charge).json()
+    again = mocks.post("gateway", "/v1/charges", headers=ph, json=charge).json()
+    assert again["duplicate"] and again["chargeId"] == c["chargeId"]
+    key = next(x["apiKey"] for x in cred["counterparties"] if x["code"] == "BASALTHF")
+    mine = mocks.get("gateway", "/v1/my/charges", headers={"authorization": f"Bearer {key}"}).json()
+    assert [x["chargeId"] for x in mine] == [c["chargeId"]] and mine[0]["amount"] == 31_500.0
+    other = next(x["apiKey"] for x in cred["counterparties"] if x["code"] == "KESTRELHF")
+    assert mocks.get("gateway", "/v1/my/charges", headers={"authorization": f"Bearer {other}"}).json() == []
+
+
 # -- mock-analytics -----------------------------------------------------------------------------------
 def test_analytics_auth_limits_and_exchange_cycle(mocks):
     h = {"x-api-key": mocks.creds("analytics")["apiKey"]}

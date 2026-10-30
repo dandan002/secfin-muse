@@ -145,6 +145,20 @@ class CnsFail(Base):
     bought_in_qty: Mapped[int | None] = mapped_column(BigInteger)
 
 
+class ClientCharge(Base):
+    """A charge the prime broker posts to a client's account (a CNS buy-in's cost under Rule 204(d), say)."""
+
+    __tablename__ = "client_charges"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    charge_id: Mapped[str] = mapped_column(String(32), unique=True)
+    ref: Mapped[str] = mapped_column(String(64), unique=True)  # the platform's reference: one charge per ref
+    cp_code: Mapped[str] = mapped_column(String(32), index=True)
+    amount: Mapped[float] = mapped_column(Float)
+    ccy: Mapped[str] = mapped_column(String(3))
+    reason: Mapped[str] = mapped_column(Text)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class CnsBuyIn(Base):
     """The buyer bought in shares a fail never delivered: we pay the difference over the sale price, charged on to
     the client (Rule 204(d)), and the bought-in shares cover the client's short at the next close."""

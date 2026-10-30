@@ -254,13 +254,20 @@ function FailsPanel({ fails, onDone }: { fails: DeliveryFail[]; onDone: () => vo
 
 /** Shares bought in against us, newest first: what each cost, and who bears it. */
 function BuyInsPanel({ rows }: { rows: BuyIn[] }) {
-  const total = rows.reduce((a, b) => a + b.amountDueUsd, 0);
+  const setView = useDesk((s) => s.setView);
+  const open = rows.filter((b) => ["TO_PAY", "TO_RECEIVE", "INSTRUCTED"].includes(b.cashStatus ?? ""))
+    .reduce((a, b) => a + b.amountDueUsd, 0);
+  const toCharge = rows.filter((b) => b.chargeStatus === "TO_CHARGE").reduce((a, b) => a + b.amountDueUsd, 0);
+  const cards = rows.some((b) => b.cashStatus === "TO_PAY" || b.cashStatus === "TO_RECEIVE" || b.chargeStatus === "TO_CHARGE");
   return (
-    <Panel title={<>bought in <span className="text-dim normal-case tracking-normal">{rows.length} · {money(total)} due</span></>}
-      right={<span className="text-2xs text-faint">a lender's on a recall not returned in time; the buyer's at CNS on a client fail, charged to the client</span>}
+    <Panel title={<>bought in <span className="text-dim normal-case tracking-normal">{rows.length} · {money(open)} to settle · {money(toCharge)} to charge clients</span></>}
+      right={<div className="flex items-center gap-2 text-2xs text-faint">
+        <span>a lender's on a recall not returned in time; the buyer's at CNS on a client fail, charged to the client</span>
+        {cards && <button className="btn-accent h-6" onClick={() => setView("agent")}>review cards</button>}
+      </div>}
       bodyClass="overflow-auto max-h-32">
       <table className="w-full text-xs">
-        <thead><tr>{["id", "kind", "from", "name", "qty", "price", "due", "when"].map((h) =>
+        <thead><tr>{["id", "kind", "from", "name", "qty", "price", "due", "cash", "client", "when"].map((h) =>
           <th key={h} className={`th ${["qty", "price", "due"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
         <tbody>
           {rows.map((b) => (
@@ -272,6 +279,8 @@ function BuyInsPanel({ rows }: { rows: BuyIn[] }) {
               <td className="td text-right">{full(b.quantity)}</td>
               <td className="td text-right text-dim">{b.price.toFixed(2)}</td>
               <td className={`td text-right ${b.amountDue > 0 ? "text-down" : "text-up"}`}>{money(b.amountDueUsd)}</td>
+              <td className="td" title={b.cashStatus === "CNS" ? "NSCC's money settlement takes it" : b.cashRef ?? ""}><State s={b.cashStatus} /></td>
+              <td className="td" title={b.chargeRef ?? ""}>{b.kind === "CNS" ? <State s={b.chargeStatus} /> : <span className="text-faint">—</span>}</td>
               <td className="td text-dim">{when(b.boughtInAt)}</td>
             </tr>
           ))}

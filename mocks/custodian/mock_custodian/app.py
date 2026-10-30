@@ -5,6 +5,9 @@ matching against the simulated counterparty's instruction (sese.024 MACH, or NMA
 seeded few) -> settlement on the settlement date at 10:00 New York: sese.025 confirmation,
 or sese.024 pending/failing (LACK of securities, retried next business day, up to 3 tries).
 
+Cash payments (``POST /payments``): a free payment to, or an expected receipt from, a counterparty (a buy-in's
+cost, say), settled on its value date at the settlement time.
+
 A sese.020 cancellation request is answered with a sese.027 (accepted / rejected) and, when
 accepted, a sese.024 CAND. Outbound messages go to an outbox (``GET /iso/outbox``) and the
 ``/stream`` WebSocket. Full reference: ../API.md.
@@ -62,6 +65,24 @@ class Instr(Base):
     history: Mapped[list[Any]] = mapped_column(default=list)
 
 
+class Payment(Base):
+    """A cash movement on our account, not against securities: we pay a counterparty, or expect it to pay us."""
+
+    __tablename__ = "payments"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    payment_id: Mapped[str] = mapped_column(String(32), unique=True)
+    tx_id: Mapped[str] = mapped_column(String(35), unique=True)
+    direction: Mapped[str] = mapped_column(String(8))  # PAY | RECEIVE
+    amount: Mapped[float]
+    ccy: Mapped[str] = mapped_column(String(3))
+    counterparty_bic: Mapped[str] = mapped_column(String(11))
+    value_date: Mapped[date] = mapped_column(Date)
+    reference: Mapped[str | None] = mapped_column(String(140))
+    status: Mapped[str] = mapped_column(String(16))  # ACCEPTED | SETTLED | CANCELLED
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    history: Mapped[list[Any]] = mapped_column(default=list)
+
+
 class OutMsg(Base):
     __tablename__ = "outbox"
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -76,6 +97,8 @@ SCOPES = {
     "instructions:write": "Send settlement instructions (sese.023 XML or JSON) and cancel them",
     "instructions:read": "Instruction status",
     "outbox:read": "Outbound sese.024/sese.025 messages (REST and stream)",
+    "payments:write": "Send cash payments and expected receipts",
+    "payments:read": "Payment status",
 }
 spec = ServiceSpec(
     name="mock-custodian",
@@ -359,6 +382,64 @@ async def stream(ws: WebSocket) -> None:
     if await ctx.gate.websocket(ws, "outbox:read") is None:
         return
     await ctx.ws_stream(ws, ["outbox"])
+
+
+# -- cash payments --------------------------------------------------------------------------------
+class PaymentIn(BaseModel):
+    txId: str = Field(..., max_length=35, description="Your reference; unique (409 on reuse)")
+    direction: Literal["PAY", "RECEIVE"]
+    amount: float = Field(..., gt=0)
+    ccy: str = Field("USD", min_length=3, max_length=3)
+    counterpartyBic: str
+    valueDate: date | None = Field(None, description="Default the next business day")
+    reference: str | None = Field(None, max_length=140)
+
+
+def payment_json(p: Payment) -> dict[str, Any]:
+    return {"paymentId": p.payment_id, "txId": p.tx_id, "direction": p.direction, "amount": p.amount, "ccy": p.ccy,
+            "counterpartyBic": p.counterparty_bic, "valueDate": p.value_date.isoformat(), "reference": p.reference,
+            "status": p.status, "receivedAt": clock.iso(p.received_at), "history": p.history}
+
+
+async def pay_job(payment_id: str) -> None:
+    async with ctx.session() as s:
+        p = (await s.execute(select(Payment).where(Payment.payment_id == payment_id).with_for_update())).scalar()
+        if p is None or p.status != "ACCEPTED":
+            return
+        p.status = "SETTLED"
+        p.history = [*p.history, {"ts": clock.iso(clock.now()), "event": "SETTLED"}]
+        await ctx.events.emit(s, "payment_settled", "payment", p.payment_id, payment_json(p), topic="outbox")
+        await s.commit()
+
+
+@app.post("/payments", tags=["payments"], status_code=202)
+async def create_payment(body: PaymentIn, who: str = Depends(client("payments:write"))) -> dict:
+    """Pay a counterparty, or expect it to pay us: settled on the value date at the settlement time."""
+    async with ctx.session() as s:
+        if (await s.execute(select(Payment).where(Payment.tx_id == body.txId))).scalar():
+            raise HTTPException(409, f"duplicate TxId {body.txId}")
+        vd = body.valueDate or calendar.add_business_days(calendar.trade_date(clock.now()), 1)
+        p = Payment(payment_id="pending", tx_id=body.txId, direction=body.direction, amount=round(body.amount, 2),
+                    ccy=body.ccy.upper(), counterparty_bic=body.counterpartyBic, value_date=vd,
+                    reference=body.reference, status="ACCEPTED", received_at=clock.now(),
+                    history=[{"ts": clock.iso(clock.now()), "event": "ACCEPTED"}])
+        s.add(p)
+        await s.flush()
+        p.payment_id = f"CUS-P-{p.id:06d}"
+        await ctx.events.emit(s, "payment_accepted", "payment", p.payment_id, payment_json(p), topic="outbox")
+        await s.commit()
+    ctx.scheduler.at(max(_settle_at(vd), clock.now() + timedelta(seconds=30)), f"pay:{p.payment_id}", pay_job,
+                     p.payment_id)
+    return payment_json(p)
+
+
+@app.get("/payments", tags=["payments"])
+async def list_payments(status: str | None = None, who: str = Depends(client("payments:read"))) -> list[dict]:
+    async with ctx.session() as s:
+        q = select(Payment).order_by(Payment.id)
+        if status:
+            q = q.where(Payment.status == status.upper())
+        return [payment_json(p) for p in (await s.execute(q)).scalars()]
 
 
 @app.get("/_admin/credentials", tags=["admin"])

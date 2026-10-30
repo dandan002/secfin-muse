@@ -282,6 +282,73 @@
         "title": "KeyIn",
         "type": "object"
       },
+      "PaymentIn": {
+        "properties": {
+          "amount": {
+            "exclusiveMinimum": 0.0,
+            "title": "Amount",
+            "type": "number"
+          },
+          "ccy": {
+            "default": "USD",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Ccy",
+            "type": "string"
+          },
+          "counterpartyBic": {
+            "title": "Counterpartybic",
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "PAY",
+              "RECEIVE"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "maxLength": 140,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "txId": {
+            "description": "Your reference; unique (409 on reuse)",
+            "maxLength": 35,
+            "title": "Txid",
+            "type": "string"
+          },
+          "valueDate": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Default the next business day",
+            "title": "Valuedate"
+          }
+        },
+        "required": [
+          "txId",
+          "direction",
+          "amount",
+          "counterpartyBic"
+        ],
+        "title": "PaymentIn",
+        "type": "object"
+      },
       "PlanIn": {
         "properties": {
           "burst": {
@@ -1504,6 +1571,102 @@
         "summary": "Receive",
         "tags": [
           "iso20022"
+        ]
+      }
+    },
+    "/payments": {
+      "get": {
+        "operationId": "list_payments_payments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Payments Payments Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Payments",
+        "tags": [
+          "payments"
+        ]
+      },
+      "post": {
+        "description": "Pay a counterparty, or expect it to pay us: settled on the value date at the settlement time.",
+        "operationId": "create_payment_payments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Payment Payments Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Payment",
+        "tags": [
+          "payments"
         ]
       }
     },

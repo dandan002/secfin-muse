@@ -43,6 +43,7 @@ from refdata.universe import resolve, universe
 
 from .models import (
     Base,
+    ClientCharge,
     CnsBuyIn,
     CnsFail,
     CpOrder,
@@ -739,6 +740,55 @@ async def buy_ins(after: int = 0, limit: int = Query(500, le=5000)) -> list[dict
     async with ctx.session() as s:
         q = select(CnsBuyIn).where(CnsBuyIn.id > after).order_by(CnsBuyIn.id).limit(limit)
         return [{**buy_in_json(b), "seq": b.id} for b in (await s.execute(q)).scalars()]
+
+
+class ChargeIn(BaseModel):
+    counterparty: str
+    amount: float = Field(..., gt=0)
+    ccy: str = Field("USD", min_length=3, max_length=3)
+    reason: str = Field(..., max_length=500)
+    ref: str = Field(..., max_length=64, description="Your reference; the same ref returns the same charge")
+
+
+def charge_json(c: ClientCharge) -> dict[str, Any]:
+    return {"chargeId": c.charge_id, "ref": c.ref, "counterparty": c.cp_code, "amount": c.amount, "ccy": c.ccy,
+            "reason": c.reason, "postedAt": clock.iso(c.ts)}
+
+
+@app.post("/v1/charges", tags=["platform"], dependencies=[Depends(ctx.require("decisions:write"))])
+async def post_charge(body: ChargeIn) -> dict:
+    """Post a charge to a client's account. Idempotent on ``ref``."""
+    if counterparty_by_code(body.counterparty.upper()) is None:
+        raise HTTPException(404, f"no counterparty {body.counterparty}")
+    async with ctx.session() as s:
+        have = (await s.execute(select(ClientCharge).where(ClientCharge.ref == body.ref))).scalar()
+        if have is not None:
+            return {**charge_json(have), "duplicate": True}
+        c = ClientCharge(charge_id="pending", ref=body.ref, cp_code=body.counterparty.upper(),
+                         amount=round(body.amount, 2), ccy=body.ccy.upper(), reason=body.reason, ts=clock.now())
+        s.add(c)
+        await s.flush()
+        c.charge_id = f"GW-C-{c.id:06d}"
+        await ctx.events.emit(s, "client_charged", "charge", c.charge_id, charge_json(c), topic="inbox")
+        await s.commit()
+        return charge_json(c)
+
+
+@app.get("/v1/charges", tags=["platform"], dependencies=[Depends(ctx.require("inbox:read"))])
+async def charges(counterparty: str | None = None) -> list[dict]:
+    async with ctx.session() as s:
+        q = select(ClientCharge).order_by(ClientCharge.id)
+        if counterparty:
+            q = q.where(ClientCharge.cp_code == counterparty.upper())
+        return [charge_json(c) for c in (await s.execute(q)).scalars()]
+
+
+@app.get("/v1/my/charges", tags=["counterparty"])
+async def my_charges(cp: Counterparty = Depends(counterparty("locates:read"))) -> list[dict]:
+    """What the prime broker has charged your account."""
+    async with ctx.session() as s:
+        return [charge_json(c) for c in (await s.execute(
+            select(ClientCharge).where(ClientCharge.cp_code == cp.code).order_by(ClientCharge.id))).scalars()]
 
 
 @ctx.verb("cns_buy_in")

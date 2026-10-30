@@ -129,6 +129,11 @@ class GatewayPlatformClient:
         """CNS buy-ins on fails we didn't deliver, oldest first (``after``: the last ``seq`` seen)."""
         return await self._h.json("GET", "/v1/buy-ins", params={"after": after})
 
+    async def charge(self, counterparty: str, amount: float, reason: str, ref: str, ccy: str = "USD") -> dict[str, Any]:
+        """Post a charge to a client's account; idempotent on ``ref``."""
+        return await self._h.json("POST", "/v1/charges", json={"counterparty": counterparty, "amount": amount,
+                                                              "ccy": ccy, "reason": reason, "ref": ref})
+
     async def deliver_fail(self, fail_id: str, quantity: int, ref: str | None = None) -> dict[str, Any]:
         """Deliver shares against a fail; it closes when nothing is outstanding."""
         return await self._h.json("POST", f"/v1/fails/{fail_id}/deliver", json={"quantity": quantity, "ref": ref})

@@ -71,6 +71,12 @@ const STATE: Record<string, string> = {
   CLOSED_OUT: "text-warm",
   DELIVERED: "text-up",
   BOUGHT_IN: "text-down",
+  TO_PAY: "text-warm",
+  TO_RECEIVE: "text-warm",
+  TO_CHARGE: "text-warm",
+  INSTRUCTED: "text-info",
+  CHARGED: "text-up",
+  CNS: "text-dim",
 };
 
 export function State({ s }: { s: string | null | undefined }) {
