@@ -231,6 +231,7 @@ async def _place_a(s: AsyncSession, o: Order, inst: Instrument) -> None:
     try:
         v = await systems().venue_a.place(body)
         o.venue_order_id, o.status = v["orderId"], VENUE_STATUS.get(v["status"], "SENT")
+        o.reject_reason = v.get("rejectReason") or o.reject_reason  # rejected in the place call: never polled again
     except AdapterError as e:
         o.status, o.reject_reason = ("FAILED" if _down(e) else "REJECTED"), str(e)
 

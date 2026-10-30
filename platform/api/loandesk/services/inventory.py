@@ -3,7 +3,9 @@
 Every open contract is a position on one of our books (the processor's booking entity): a BORROW puts
 shares in the box, a LEND takes them out. Netting borrowed less lent across all books gives what the
 firm holds and can lend again without going to the street. Less what lenders have recalled: those shares are
-owed back, so they come off the moment the recall lands (``take``). That net long becomes the ``INTERNAL``
+owed back, so they come off the moment the recall lands (``take``). And less the clients' shorts on the latest
+stock record (or the CNS fails in the name, if more): those shares went out to the street on their sales, so
+only what's left over is ours to lend again. That net long becomes the ``INTERNAL``
 availability row, which locates cross against first (``market.cross``): it is firm, where venue
 supply is only indicative. A book that is net short elsewhere still nets against it; a name that is
 net short overall has no internal supply.
@@ -15,11 +17,11 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import clock, events
-from ..models import Availability, InternalPosition, SyncCursor, Trade
+from ..models import Availability, ClientShort, DeliveryFail, InternalPosition, SyncCursor, Trade
 from .market import INTERNAL
 
 AS_OF = "inventory_as_of"
@@ -66,6 +68,9 @@ async def apply(s: AsyncSession, positions: list[dict[str, Any]], as_of: datetim
             Trade.sfp_contract_id.is_not(None)))).all():
         if iid in flat:
             flat[iid]["net"] -= q  # owed back on a recall: not ours to lend
+    for iid, q in (await owed(s)).items():
+        if iid in flat:
+            flat[iid]["net"] -= q  # delivered on the clients' shorts
     long = {iid: n for iid, n in flat.items() if n["net"] > 0}
     for iid, a in have.items():  # names we no longer hold go to zero, so the ledger never lends what's gone
         if iid not in long:
@@ -80,6 +85,37 @@ async def apply(s: AsyncSession, positions: list[dict[str, Any]], as_of: datetim
             1 for b in n["books"].values() if b["borrowed"] > b["lent"]), n["costBps"], as_of
     events.publish_later(s, "market", {"type": "inventory", "instruments": len(long)})
     return len(long)
+
+
+async def refresh(s: AsyncSession) -> int:
+    """What's ours to lend changed without a new read of the box (a stock record, a CNS fail): net it again from
+    the positions we last read, keeping when that was."""
+    rows = (await s.execute(select(InternalPosition))).scalars().all()
+    cur = await s.get(SyncCursor, AS_OF)
+    if cur is None:
+        return 0
+    positions = [p for r in rows for p in (
+        {"instrumentId": r.instrument_id, "side": "BORROW", "openQuantity": r.borrowed, "bookingEntity": r.book,
+         "avgFeeBps": r.avg_borrow_fee_bps},
+        {"instrumentId": r.instrument_id, "side": "LEND", "openQuantity": r.lent, "bookingEntity": r.book}) if
+        p["openQuantity"]]
+    return await apply(s, positions, clock.parse_ts(cur.value))
+
+
+async def owed(s: AsyncSession) -> dict[str, int]:
+    """Per name, the shares the box delivers for clients: their shorts at the latest close, or the name's CNS
+    fails not delivered yet if those are more (as the short list counts its need)."""
+    latest = (await s.execute(select(func.max(ClientShort.trade_date)))).scalar()
+    out: dict[str, int] = defaultdict(int)
+    if latest is not None:
+        for iid, q in (await s.execute(select(ClientShort.instrument_id, func.sum(ClientShort.short_qty)).where(
+                ClientShort.trade_date == latest, ClientShort.counterparty != "-")
+                .group_by(ClientShort.instrument_id))).all():
+            out[iid] = int(q or 0)
+    for iid, q in (await s.execute(select(DeliveryFail.instrument_id, func.sum(DeliveryFail.open_qty)).where(
+            DeliveryFail.status.in_(("OPEN", "CLOSED_OUT"))).group_by(DeliveryFail.instrument_id))).all():
+        out[iid] = max(out[iid], int(q or 0))
+    return out
 
 
 async def take(s: AsyncSession, instrument_id: str, qty: int) -> None:

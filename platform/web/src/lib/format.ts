@@ -47,6 +47,21 @@ export function time(iso: string | null | undefined): string {
   return iso ? NY.format(new Date(iso)) : "—";
 }
 
+const NY_DAY = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+/** A deadline a day or so out, New York time: "Wed, Nov 4, 09:30". */
+export function when(iso: string | null | undefined): string {
+  return iso ? NY_DAY.format(new Date(iso)) : "—";
+}
+
 /** "250k" | "1.2m" | "50,000" → shares. */
 export function parseQty(s: string): number | null {
   const m = s.trim().replace(/,/g, "").match(/^(\d+(?:\.\d+)?)\s*(k|m|mm)?$/i);

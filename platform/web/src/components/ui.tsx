@@ -68,6 +68,8 @@ const STATE: Record<string, string> = {
   WORKING: "text-warm",
   COVERED: "text-up",
   EXCESS: "text-warm",
+  CLOSED_OUT: "text-warm",
+  DELIVERED: "text-up",
 };
 
 export function State({ s }: { s: string | null | undefined }) {
@@ -76,6 +78,16 @@ export function State({ s }: { s: string | null | undefined }) {
     <span className={`inline-flex items-center gap-1.5 text-xs ${STATE[s] ?? "text-dim"}`}>
       <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80" />
       {s.toLowerCase().replace("_", " ")}
+    </span>
+  );
+}
+
+/** Rule 204(b): a CNS fail in the name missed its close-out, so a short needs the shares borrowed first. */
+export function PreBorrowTag() {
+  return (
+    <span className="text-2xs text-hot border border-line rounded px-1"
+      title="Rule 204(b): a client's fail at CNS wasn't closed out by the open. Until it delivers, a locate needs shares we hold, not street supply.">
+      pre-borrow
     </span>
   );
 }

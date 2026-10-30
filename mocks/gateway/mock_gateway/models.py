@@ -125,3 +125,20 @@ class DayClose(Base):
     __tablename__ = "day_closes"
     trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CnsFail(Base):
+    """A fail to deliver at CNS: a client's short sale that settled short, owed to the street until we deliver."""
+
+    __tablename__ = "cns_fails"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    fail_id: Mapped[str] = mapped_column(String(32), unique=True)
+    settle_date: Mapped[date] = mapped_column(Date, index=True)
+    cp_code: Mapped[str] = mapped_column(String(32))  # the client whose short it is (Rule 204(d) allocation)
+    instrument_id: Mapped[str] = mapped_column(String(16))
+    qty: Mapped[int] = mapped_column(BigInteger)
+    outstanding: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(8))  # OPEN | CLOSED
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deliveries: Mapped[list[Any]] = mapped_column(default=list)

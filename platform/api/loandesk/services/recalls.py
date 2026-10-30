@@ -117,7 +117,9 @@ async def _recall(s: AsyncSession, t: Trade, qty: int, due: Any, ref: str | None
         proposed_by=f"rules:{SOURCE}", title=f"recall from {t.cp_code}: return {qty:,} {name} by {due.isoformat()}",
         rationale=f"{why}. Returning {qty:,} of the {open_qty(t):,} open on {t.id} @ {t.fee_bps:g} bps; not back "
                   f"by then, the lender can buy the shares in at our cost.",
-        risk_flags=["warning: due back today"] if due <= clock.local_date() else [],
+        risk_flags=(["warning: due back today"] if due <= clock.local_date() else [])
+        + ([f"warning: the shares haven't reached us yet (our delivery is {t.settle_status or 'not instructed'}): "
+            "the return can't settle before they do"] if t.settle_status != "SETTLED" else []),
         source_ref=f"{SOURCE}:{key}", original=original)
     notes.append(f"{name}: recalled {qty:,} on {t.id}, return card {a.id}")
     return a

@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import clock, events, sync
 from ..db import get_session
-from ..models import Locate, Order, Trade
-from ..services import booking, lifecycle, locates, orders, shortlist
+from ..models import DeliveryFail, Locate, Order, Trade
+from ..services import booking, fails, lifecycle, locates, orders, shortlist
 from .deps import trader
 
 router = APIRouter()
@@ -130,6 +130,34 @@ async def draft_covers(who: str = Depends(trader), s: AsyncSession = Depends(get
     out = await shortlist.draft(s, by=who)
     await s.commit()
     return out
+
+
+@router.get("/fails", tags=["short list"])
+async def list_fails(all_: bool = Query(False, alias="all", description="Delivered ones too"),
+                     s: AsyncSession = Depends(get_session)) -> list[dict]:
+    """Client shorts that failed to deliver at CNS, with the Rule 204 close-out deadline and whether it was missed
+    (the name is then pre-borrow until the shares deliver)."""
+    return await fails.listing(s, everything=all_)
+
+
+class DeliverIn(BaseModel):
+    quantity: int | None = Field(None, gt=0, description="Default: all of it")
+
+
+@router.post("/fails/{fail_id}/deliver", tags=["short list"])
+async def deliver_fail(fail_id: str, body: DeliverIn, who: str = Depends(trader),
+                       s: AsyncSession = Depends(get_session)) -> dict:
+    """Deliver shares we hold against a fail (with the CNS-DELIVER policy off, or ahead of it)."""
+    f = await s.get(DeliveryFail, fail_id)
+    if f is None:
+        raise HTTPException(404, "no such fail")
+    qty = body.quantity or f.open_qty
+    if f.status not in fails.ACTIVE or qty > f.open_qty:
+        raise HTTPException(409, f"{fail_id} has {f.open_qty:,} to deliver ({f.status})")
+    if (err := await fails.deliver(s, f, qty, by=who)) is not None:
+        raise HTTPException(502, err)
+    await s.commit()
+    return fails.fail_json(f)
 
 
 @router.post("/short-list/refresh", tags=["short list"])

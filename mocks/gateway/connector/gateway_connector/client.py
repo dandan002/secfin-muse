@@ -121,6 +121,14 @@ class GatewayPlatformClient:
         params = {"date": trade_date.isoformat()} if trade_date else {}
         return await self._h.json("GET", "/v1/stock-record", params=params)
 
+    async def fails(self, after: int = 0, status: str | None = None) -> list[dict[str, Any]]:
+        """Client shorts that failed to deliver at CNS, oldest first (``after``: the last ``seq`` seen)."""
+        return await self._h.json("GET", "/v1/fails", params={"after": after, **({"status": status} if status else {})})
+
+    async def deliver_fail(self, fail_id: str, quantity: int, ref: str | None = None) -> dict[str, Any]:
+        """Deliver shares against a fail; it closes when nothing is outstanding."""
+        return await self._h.json("POST", f"/v1/fails/{fail_id}/deliver", json={"quantity": quantity, "ref": ref})
+
 
 class CounterpartyClient:
     """The counterparty side. Every submission carries an ``Idempotency-Key`` (generated unless you

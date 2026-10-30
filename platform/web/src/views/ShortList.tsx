@@ -1,9 +1,9 @@
 import { api } from "../lib/api";
-import { actor, bps, full, money, qty } from "../lib/format";
+import { actor, bps, full, money, qty, when } from "../lib/format";
 import { useKeys, useQuery, useSelection } from "../lib/hooks";
 import { useDesk } from "../lib/store";
-import type { ShortList, ShortListLine } from "../lib/types";
-import { Empty, Kbd, Panel, Stat, State, TierBadge } from "../components/ui";
+import type { DeliveryFail, ShortList, ShortListLine } from "../lib/types";
+import { Empty, Kbd, Panel, PreBorrowTag, Stat, State, TierBadge } from "../components/ui";
 
 const TOPICS = ["short_list", "order", "trade", "action", "market"];
 
@@ -11,6 +11,7 @@ const TOPICS = ["short_list", "order", "trade", "action", "market"];
  *  and what it holds that nobody needs any more, to return. */
 export function ShortListView() {
   const { data, error, reload } = useQuery<ShortList>("/short-list", TOPICS);
+  const { data: fails, reload: reloadFails } = useQuery<DeliveryFail[]>("/fails", TOPICS);
   const toast = useDesk((s) => s.toast);
   const openTicket = useDesk((s) => s.openTicket);
   const rows = data?.lines ?? [];
@@ -48,7 +49,7 @@ export function ShortListView() {
 
   return (
     <div className="h-full flex flex-col gap-3 min-h-0">
-      <div className="grid grid-cols-3 md:grid-cols-7 gap-3">
+      <div className="grid grid-cols-3 md:grid-cols-8 gap-3">
         <Stat label="stock record" value={data?.tradeDate ?? "—"} />
         <Stat label="settles" value={data?.settlementDate ?? "—"} />
         <Stat label="names short" value={full(sum.short)} tone={sum.short ? "text-hot" : ""} />
@@ -57,7 +58,10 @@ export function ShortListView() {
         <Stat label="to borrow" value={money(sum.uncoveredNotional)} tone={sum.uncoveredNotional ? "text-hot" : ""} />
         <Stat label="excess · $/day" value={sum.excess ? `${money(sum.excessNotional)} · ${money(sum.excessCostUsd)}` : "—"}
           tone={sum.excess ? "text-warm" : ""} />
+        <Stat label="rule 204 · pre-borrow" value={sum.cnsFails ? `${full(sum.closeOut)} · ${full(sum.preBorrow)}` : "—"}
+          tone={sum.preBorrow ? "text-down" : sum.closeOut ? "text-hot" : ""} />
       </div>
+      {!!fails?.length && <FailsPanel fails={fails} onDone={() => { reload(); reloadFails(); }} />}
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-3">
         <Panel
           title={<>short list <span className="text-dim normal-case tracking-normal">{rows.length}</span></>}
@@ -75,7 +79,7 @@ export function ShortListView() {
             <table className="w-full text-xs">
               <thead>
                 <tr>
-                  {["name", "tier", "clients", "client short", "sold", "box", "fails", "recalled", "short by", "working", "to borrow", "excess", "status"].map((h) => (
+                  {["name", "tier", "clients", "client short", "sold", "box", "fail in", "fail out", "recalled", "short by", "working", "to borrow", "excess", "status"].map((h) => (
                     <th key={h} className={`th ${["name", "tier", "status"].includes(h) ? "" : "text-right"}`}>{h}</th>
                   ))}
                 </tr>
@@ -85,6 +89,7 @@ export function ShortListView() {
                   <tr key={l.instrumentId} onClick={() => setSel(i)} className={`row cursor-default ${i === sel ? "row-sel" : ""}`}>
                     <td className="td">
                       <span className="text-ink">{l.composite}</span>
+                      {l.preBorrow && <span className="ml-2"><PreBorrowTag /></span>}
                       <span className="text-faint ml-2 hidden 2xl:inline">{l.name?.slice(0, 22)}</span>
                     </td>
                     <td className="td"><TierBadge tier={l.tier} /></td>
@@ -94,7 +99,10 @@ export function ShortListView() {
                     <td className="td text-right text-dim">{l.soldToday ? qty(l.soldToday) : "—"}</td>
                     <td className="td text-right text-dim" title={l.unbooked ? `incl. ${full(l.unbooked)} not booked at the processor yet` : ""}>
                       {qty(Math.max(l.box, 0) + l.unbooked)}</td>
-                    <td className={`td text-right ${l.fails ? "text-hot" : "text-faint"}`}>{l.fails ? qty(l.fails) : "—"}</td>
+                    <td className={`td text-right ${l.fails ? "text-hot" : "text-faint"}`} title="our borrows failing to arrive">{l.fails ? qty(l.fails) : "—"}</td>
+                    <td className={`td text-right ${l.closeOutBy ? "text-hot" : l.cnsFails ? "text-warm" : "text-faint"}`}
+                      title={l.closeOutBy ? `failed at CNS: Rule 204 close-out by ${when(l.closeOutBy)} New York` : l.cnsFails ? "closed out: delivers once the shares settle" : ""}>
+                      {l.cnsFails ? qty(l.cnsFails) : "—"}</td>
                     <td className={`td text-right ${l.recalled ? "text-warm" : "text-faint"}`}>{l.recalled ? qty(l.recalled) : "—"}</td>
                     <td className="td text-right">{l.shortfall ? qty(l.shortfall) : "—"}</td>
                     <td className="td text-right text-warm">{l.working || l.drafted.length ? qty(l.shortfall - l.uncovered) : "—"}</td>
@@ -133,6 +141,7 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
         <Stat label="box" value={full(l.box)} />
         <Stat label="unbooked" value={full(l.unbooked)} />
         <Stat label="failing in" value={full(l.fails)} tone={l.fails ? "text-hot" : ""} />
+        <Stat label="failed at CNS" value={full(l.cnsFails)} tone={l.closeOutBy ? "text-hot" : l.cnsFails ? "text-warm" : ""} />
         <Stat label="recalled" value={full(l.recalled)} tone={l.recalled ? "text-warm" : ""} />
         <Stat label="short by" value={full(l.shortfall)} tone={l.shortfall ? "text-hot" : "text-up"} />
         <Stat label="market bps" value={bps(l.feeBps)} />
@@ -154,6 +163,14 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
           </tbody>
         </table>
       </div>
+      {(!!l.cnsFails || l.preBorrow) && (
+        <div className="border-t rule pt-3">
+          <div className="label mb-1.5">rule 204</div>
+          {l.closeOutBy && <div className="text-xs text-hot">· {full(l.cnsFails)} failed to deliver at CNS: close out by {when(l.closeOutBy)} New York, by borrowing or buying the shares</div>}
+          {!l.closeOutBy && !!l.cnsFails && <div className="text-xs text-dim">· {full(l.cnsFails)} closed out; delivered against the fail once the shares settle</div>}
+          {l.preBorrow && <div className="text-xs text-down">· a close-out was missed: pre-borrow (Rule 204(b)) until the fail delivers. A locate in the name needs shares we hold</div>}
+        </div>
+      )}
       <div className="border-t rule pt-3">
         <div className="label mb-1.5">covers</div>
         {!l.drafted.length && !l.working && <div className="text-xs text-faint">{l.shortfall ? "none working" : "none needed"}</div>}
@@ -177,6 +194,58 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
         {!!(l.drafted.length || l.returning.length) && <button className="btn-accent" onClick={() => setView("agent")}>review cards</button>}
         {!!l.uncovered && <button className="btn" onClick={() => onBorrow(l)}>borrow {qty(l.uncovered)} by hand</button>}
       </div>
+    </Panel>
+  );
+}
+
+/** Time to a deadline in the sim's clock: "2h 10m", or "missed". */
+function left(deadline: string, now: string | undefined): string {
+  if (!now) return "";
+  const m = Math.round((Date.parse(deadline) - Date.parse(now)) / 60_000);
+  if (m <= 0) return "missed";
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+}
+
+/** Client shorts that failed to deliver at CNS: Rule 204 wants each closed out by the next open. */
+function FailsPanel({ fails, onDone }: { fails: DeliveryFail[]; onDone: () => void }) {
+  const toast = useDesk((s) => s.toast);
+  const now = useDesk((s) => s.clock?.now);
+  const deliver = async (f: DeliveryFail) => {
+    try {
+      await api.post(`/fails/${f.id}/deliver`, {});
+      toast("ok", `delivered ${qty(f.openQty)} ${f.composite} against ${f.id}`);
+      onDone();
+    } catch (e) {
+      toast("err", (e as Error).message);
+    }
+  };
+  return (
+    <Panel title={<>failed at CNS · rule 204 <span className="text-dim normal-case tracking-normal">{fails.length}</span></>}
+      right={<span className="text-2xs text-faint">closed out by borrowing or buying before the open; delivered once the shares settle</span>}
+      bodyClass="overflow-auto max-h-40">
+      <table className="w-full text-xs">
+        <thead><tr>{["fail", "client", "name", "failed", "open", "close out by", "left", "status", ""].map((h) =>
+          <th key={h} className={`th ${["open"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+        <tbody>
+          {fails.map((f) => {
+            const due = f.status === "OPEN" ? left(f.deadline, now) : "";
+            return (
+              <tr key={f.id} className="row">
+                <td className="td text-faint">{f.id}</td>
+                <td className="td text-dim">{f.counterparty}</td>
+                <td className="td">{f.composite ?? f.instrumentId}{f.preBorrow && <span className="ml-2"><PreBorrowTag /></span>}</td>
+                <td className="td text-dim">{f.settlementDate}</td>
+                <td className="td text-right">{full(f.openQty)}</td>
+                <td className="td text-dim">{when(f.deadline)}</td>
+                <td className={`td ${f.missed ? "text-down" : due ? "text-hot" : "text-faint"}`}>{f.missed ? "missed" : due || "—"}</td>
+                <td className="td"><State s={f.status} /></td>
+                <td className="td text-right"><button className="btn h-6" onClick={() => deliver(f)}
+                  title="Deliver shares we hold against the fail (the CNS-DELIVER policy does this once they settle)">deliver</button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </Panel>
   );
 }

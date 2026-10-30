@@ -366,6 +366,42 @@ def test_gateway_close_uses_locates_and_writes_the_stock_record(mocks):
     assert mocks.get("gateway", "/v1/stock-record?date=2026-10-27", headers=ph).json()["shortSales"] == sales
 
 
+def test_gateway_shorts_that_fail_at_cns_stay_open_until_delivered(mocks):
+    """Shorts sold at one close settle at the next; some fail to deliver at CNS (here all the US ones), and each
+    stays open, for the desk to close out under Rule 204, until it delivers the shares against it."""
+    from refdata.universe import instrument_by_id
+
+    cred = mocks.creds("gateway")
+    key = next(c["apiKey"] for c in cred["counterparties"] if c["code"] == "BASALTHF")
+    ph = {"authorization": f"Bearer {cred['platformToken']}"}
+    lines = [{"identifier": _isin_of(mocks, f"I{n:05d}"), "quantity": 50_000} for n in range(1, 21)]
+    loc = mocks.post("gateway", "/v1/locates", headers={"authorization": f"Bearer {key}"},
+                     json={"requestId": "BHF-F1", "lines": lines}).json()
+    mocks.post("gateway", "/v1/decisions", headers=ph, json={"locateId": loc["locateId"], "lines": [
+        {"lineNo": n, "decision": "APPROVED", "feeBps": 30, "regShoBasis": "ETB"} for n in range(1, 21)]})
+    mocks.post("control", "/clock/advance", json={"to": "2026-10-27T16:02:00-04:00"}).raise_for_status()
+    sold = {p["instrumentId"]: p["soldQuantity"] for p in mocks.get(
+        "gateway", "/v1/stock-record", headers=ph).json()["positions"]}
+    assert mocks.get("gateway", "/v1/fails", headers=ph).json() == []  # nothing has settled yet
+    assert mocks.verb("gateway", "fail_rate", rate=1.0) == {"rate": 1.0}
+    mocks.post("control", "/clock/advance", json={"to": "2026-10-28T16:02:00-04:00"}).raise_for_status()
+    fails = mocks.get("gateway", "/v1/fails", headers=ph).json()
+    us = {iid for iid in sold if instrument_by_id(iid).country == "US"}
+    assert us and {f["instrumentId"] for f in fails} == us
+    assert all(f["settlementDate"] == "2026-10-28" and f["status"] == "OPEN" and f["counterparty"] == "BASALTHF"
+               and 100 <= f["quantity"] <= sold[f["instrumentId"]] for f in fails)
+    f = fails[0]
+    path = f"/v1/fails/{f['failId']}/deliver"
+    assert mocks.post("gateway", path, headers=ph, json={"quantity": f["quantity"] + 100}).status_code == 409
+    got = mocks.post("gateway", path, headers=ph, json={"quantity": f["quantity"], "ref": "trd_1"}).json()
+    assert (got["status"], got["outstanding"], got["deliveries"][0]["ref"]) == ("CLOSED", 0, "trd_1")
+    assert [x["failId"] for x in mocks.get("gateway", "/v1/fails?status=OPEN", headers=ph).json()] == [
+        x["failId"] for x in fails[1:]]
+    assert mocks.get("gateway", f"/v1/fails?after={fails[-1]['seq']}", headers=ph).json() == []
+    made = mocks.verb("gateway", "fail", counterparty="BASALTHF", quantity=1_000)
+    assert made["status"] == "OPEN" and made["quantity"] == 1_000
+
+
 # -- mock-analytics -----------------------------------------------------------------------------------
 def test_analytics_auth_limits_and_exchange_cycle(mocks):
     h = {"x-api-key": mocks.creds("analytics")["apiKey"]}

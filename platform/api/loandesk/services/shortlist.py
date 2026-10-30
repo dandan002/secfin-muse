@@ -43,6 +43,7 @@ from ..models import (
     Trade,
 )
 from ..settings import get_settings
+from . import fails as cns
 from . import inventory
 from .booking import open_qty
 from .orders import OPEN as OPEN_ORDERS
@@ -86,6 +87,8 @@ async def apply_stock_record(s: AsyncSession, rec: dict[str, Any]) -> bool:
     events.record(s, "short_list", d.isoformat(), "stock_record",
                   {"tradeDate": d.isoformat(), "positions": len(rec["positions"]), "locatesUsed": used},
                   actor="gateway:stock-record")
+    await s.flush()
+    await inventory.refresh(s)  # the clients' shorts are delivered out of the box: no longer ours to lend
     events.publish_later(s, "short_list", {"type": "stock_record", "tradeDate": d.isoformat()})
     return True
 
@@ -106,7 +109,8 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
         .group_by(InternalPosition.instrument_id))).all() if (n or 0) > 0}
     held |= set((await s.execute(select(Trade.instrument_id).where(Trade.side == "BORROW",
                                                                    Trade.loan_status == "OPEN"))).scalars())
-    iids = [*by_name, *sorted(held - by_name.keys())]
+    failing = await cns.active(s)  # and every name with a client short that failed at CNS
+    iids = [*by_name, *sorted((held | set(failing)) - by_name.keys())]
     insts = {i.id: i for i in (await s.execute(select(Instrument).where(Instrument.id.in_(iids)))).scalars()}
     box: dict[str, int] = defaultdict(int)
     for p in (await s.execute(select(InternalPosition).where(InternalPosition.instrument_id.in_(iids)))).scalars():
@@ -166,7 +170,8 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
         rows = by_name.get(iid, [])
         inst = insts.get(iid)
         lv = secmaster.live(iid)
-        need = sum(c.short_qty for c in rows)
+        # A short that failed at CNS is owed even if the stock record no longer shows it (bought back since).
+        need = max(sum(c.short_qty for c in rows), sum(f.open_qty for f in failing.get(iid, [])))
         cover = max(box[iid] - since[iid], 0) + unbooked[iid] - fails[iid] - recalled[iid]
         shortfall = max(need - cover, 0)
         pending = working[iid] + sum(int(a.payload.get("quantity") or (a.original or {}).get("quantity") or 0)
@@ -175,13 +180,14 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
         px = lv["lastPx"] or 0.0
         fx = rules.FX_USD.get(inst.ccy if inst else "USD", 1.0)
         excess = max(cover - need, 0)
+        open_fails = [f for f in failing.get(iid, []) if f.status == "OPEN"]
         to_return = max(excess - sum(q for _, q in returning[iid]), 0)
         lines.append({
             "instrumentId": iid, "composite": inst.composite if inst else iid, "name": inst.name if inst else None,
             "ccy": inst.ccy if inst else None, "tier": lv["tier"],
             "etb": bool(inst and secmaster.is_etb(inst, lv["tier"])),
             "feeBps": lv["feeBps"], "lastPx": px,
-            "clientShort": need, "soldToday": sum(c.sold_qty for c in rows),
+            "clientShort": sum(c.short_qty for c in rows), "need": need, "soldToday": sum(c.sold_qty for c in rows),
             "coveredToday": sum(c.covered_qty for c in rows),
             "clients": sorted(({"counterparty": c.counterparty, "short": c.short_qty, "sold": c.sold_qty,
                                 "covered": c.covered_qty} for c in rows), key=lambda x: -x["short"]),
@@ -195,10 +201,16 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
             "excessCostUsd": round(excess * px * fx * (lv["feeBps"] or 0.0) / 10_000 / 360, 2),
             "returning": [{"actionId": a.id, "title": a.title, "quantity": q} for a, q in returning[iid]],
             "toReturn": to_return,
+            # Shorts that failed at CNS and aren't delivered yet; the Rule 204 close-out for those still open.
+            "cnsFails": sum(f.open_qty for f in failing.get(iid, [])),
+            "closeOutBy": clock.iso(min(f.deadline for f in open_fails)) if open_fails else None,
+            "preBorrow": any(f.missed for f in failing.get(iid, [])),
             "status": ("EXCESS" if excess else "COVERED") if shortfall == 0
             else ("WORKING" if uncovered == 0 else "SHORT"),
         })
-    lines.sort(key=lambda x: (-x["uncoveredNotional"], -x["shortfall"], -x["excessNotional"], x["composite"]))
+    # A Rule 204 close-out first (soonest deadline), then the biggest uncovered notional.
+    lines.sort(key=lambda x: (x["closeOutBy"] is None, x["closeOutBy"] or "", -x["uncoveredNotional"], -x["shortfall"],
+                              -x["excessNotional"], x["composite"]))
     short = [x for x in lines if x["status"] != "COVERED"]
     return {
         "tradeDate": d.isoformat(), "settlementDate": calendar.add_business_days(d, 1).isoformat(),
@@ -210,6 +222,9 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
                     "excessNotional": round(sum(x["excessNotional"] for x in lines), 2),
                     "excessCostUsd": round(sum(x["excessCostUsd"] for x in lines), 2),
                     "toReturn": sum(x["toReturn"] for x in lines),
+                    "cnsFails": sum(x["cnsFails"] for x in lines),
+                    "closeOut": sum(1 for x in lines if x["closeOutBy"]),
+                    "preBorrow": sum(1 for x in lines if x["preBorrow"]),
                     "clientShort": sum(x["clientShort"] for x in lines),
                     "shortfall": sum(x["shortfall"] for x in short),
                     "uncovered": sum(x["uncovered"] for x in short),
@@ -260,8 +275,9 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
     """A cover card for every name still uncovered. A name with a card already waiting gets no second one."""
     from .. import gate
 
-    sl = await build(s, trade_date)
     cfg = get_settings()
+    await _supersede_stale(s, by=by)  # their names are uncovered again: drafted afresh below, at today's fee
+    sl = await build(s, trade_date)
     bids = await chat_bids(s, [ln["instrumentId"] for ln in sl["lines"]])
     made, notes = [], []
     for ln in sl["lines"]:
@@ -274,6 +290,13 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
                + (f", failing {ln['fails']:,}" if ln["fails"] else "")
                + (f", recalled {ln['recalled']:,}" if ln["recalled"] else "")
                + (f", working {ln['working']:,}" if ln["working"] else "") + f": {ln['uncovered']:,} to borrow")
+        flags = []
+        if ln["closeOutBy"]:  # a short failed at CNS: Rule 204 wants it closed out by the open
+            by_when = clock.parse_ts(ln["closeOutBy"]).astimezone(clock.NEW_YORK).strftime("%H:%M ET on %a %d %b")
+            why += f"; {ln['cnsFails']:,} failed to deliver at CNS: Rule 204 close-out by {by_when}"
+            flags.append(f"warning: Rule 204 close-out due by {by_when}")
+        if ln["preBorrow"]:
+            flags.append("warning: missed a Rule 204 close-out: the name is pre-borrow until the shares deliver")
         ref = f"{SOURCE}:{ln['instrumentId']}"
         # A hot name is asked for in chat, once: if the lender countered or passed, the next cover goes to a venue.
         asked = bids.get(ln["instrumentId"])
@@ -288,7 +311,7 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
                                                                              f" @ {fee:g}bps open?"},
                     proposed_by=by, title=f"cover short: bid {qty:,} {ln['composite']} @ {fee:g} bps to {cp} in chat",
                     rationale=f"{why}. Hot name: asked in chat of {cp}, an agent lender we deal with; their "
-                              f"\"done\" drafts the borrow.", source_ref=ref,
+                              f"\"done\" drafts the borrow.", risk_flags=flags, source_ref=ref,
                     original={"shortList": sl["tradeDate"], "line": ln["instrumentId"], "quantity": qty})
             else:
                 req = OrderIn(side="BORROW", instrument=ln["instrumentId"], quantity=qty, feeBps=fee)
@@ -299,8 +322,8 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
                     s, kind="order", payload=req.model_dump(mode="json"), proposed_by=by,
                     title=f"cover short: borrow {qty:,} {ln['composite']} @ {fee:g} bps",
                     rationale=f"{why}. {p['routeReason']}.",
-                    risk_flags=[f"{'BLOCKED' if c['blocking'] else 'warning'}: {c['name']} ({c['detail']})"
-                                for c in failed],
+                    risk_flags=flags + [f"{'BLOCKED' if c['blocking'] else 'warning'}: {c['name']} ({c['detail']})"
+                                        for c in failed],
                     source_ref=ref, original={"shortList": sl["tradeDate"], "line": ln["instrumentId"]})
             made.append(a.id)
         except (OrderError, gate.GateError) as e:
@@ -362,6 +385,22 @@ async def _draft_returns(s: AsyncSession, sl: dict[str, Any], *, by: str, notes:
         if left >= 100:
             notes.append(f"{ln['composite']}: {left:,} excess isn't on a returnable borrow yet (unbooked or failing)")
     return made
+
+
+async def _supersede_stale(s: AsyncSession, *, by: str) -> int:
+    """A cover order drafted at an earlier fee that's now under the market (a card left from yesterday, say) would
+    be rejected under a venue's floor: supersede it, so the name is drafted again at today's fee."""
+    from .. import gate
+
+    n = 0
+    for a in (await s.execute(select(Action).where(Action.status == "PENDING", Action.kind == "order",
+                                                   Action.source_ref.like(f"{SOURCE}:%")))).scalars().all():
+        fee, market_bps = a.payload.get("feeBps"), secmaster.live(a.payload["instrument"])["feeBps"]
+        if fee is not None and market_bps and fee < market_bps:
+            await gate.reject(s, a, by, f"bid {fee:g} bps is under the market fee now ({market_bps:g}): redrafted",
+                              status="SUPERSEDED")
+            n += 1
+    return n
 
 
 def missed_closes(have: date | None, latest: date) -> list[date]:

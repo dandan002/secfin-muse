@@ -85,6 +85,7 @@ export interface Locate {
   availableBy?: { internal: number; street: number };
   suggestedQty?: number;
   feeFloorBps?: number;
+  preBorrow?: boolean; // Rule 204(b): only shares we hold can be set aside
   counterpartyRoom?: { code: string; kind: string; creditLimitUsd: number; tradesUsd: number; locatesUsd: number;
     inThisName: number; maxQty: number; failing: string[] };
 }
@@ -298,7 +299,28 @@ export interface ShortListLine {
   excessCostUsd: number;
   returning: { actionId: string; title: string; quantity: number }[];
   toReturn: number;
+  need: number; // client shorts, or the CNS fails if they're more (bought back since)
+  cnsFails: number; // client shorts failed at CNS, not delivered yet
+  closeOutBy: string | null; // Rule 204: the soonest close-out still open (UTC)
+  preBorrow: boolean; // a close-out was missed: Rule 204(b) until the shares deliver
   status: "SHORT" | "WORKING" | "COVERED" | "EXCESS";
+}
+
+/** A client's short that failed to deliver at CNS, and where its Rule 204 close-out stands. */
+export interface DeliveryFail {
+  id: string;
+  counterparty: string;
+  instrumentId: string;
+  composite: string | null;
+  settlementDate: string;
+  quantity: number;
+  openQty: number;
+  status: "OPEN" | "CLOSED_OUT" | "DELIVERED";
+  missed: boolean;
+  preBorrow: boolean;
+  deadline: string;
+  closedOutAt: string | null;
+  deliveredAt: string | null;
 }
 
 export interface ShortList {
@@ -307,5 +329,5 @@ export interface ShortList {
   lines: ShortListLine[];
   summary: { names?: number; short?: number; working?: number; covered?: number; clientShort?: number;
     shortfall?: number; uncovered?: number; uncoveredNotional?: number; excess?: number; excessNotional?: number;
-    excessCostUsd?: number; toReturn?: number };
+    excessCostUsd?: number; toReturn?: number; cnsFails?: number; closeOut?: number; preBorrow?: number };
 }
