@@ -10,6 +10,11 @@ for them at the gate is superseded (one for what's still recalled is drafted aga
 The buyer's at CNS: a client's short that failed and stayed open. The buyer buys the shares in; we owe the purchase
 price over the sale price, charged on to the client (Rule 204(d)), and the shares cover the client's short, so the
 fail is closed (``BOUGHT_IN``) and the name leaves the penalty box.
+
+The cash. A lender's buy-in gets a ``payment`` card at the gate: approved, the custodian pays the lender what's
+due, or expects the lender to pay back what the collateral it kept came to over its cost; the buy-in follows the
+payment to SETTLED. A CNS buy-in's cost needs no instruction (NSCC's money settlement takes it), but charging it on
+to the client does: a ``charge`` card, approved, posts it to the client's account at the gateway.
 """
 
 from __future__ import annotations
@@ -24,12 +29,17 @@ from refdata import calendar
 
 from .. import clock, events, rules
 from ..adapters import AdapterError, systems
-from ..models import Action, BuyIn, DeliveryFail, Instrument, Trade
+from ..models import Action, BuyIn, Counterparty, DeliveryFail, Instrument, Trade
 from ..settings import get_settings
 from . import inventory
 from .booking import open_qty, trade_json
 
 SOURCE = "recall"  # return cards for recalls carry source_ref "recall:<key>"
+CASH = "buyin"  # payment and charge cards carry source_ref "buyin:<buy-in id>"
+
+
+class BuyInError(ValueError):
+    pass
 
 
 def buy_in_json(b: BuyIn, inst: Instrument | None = None) -> dict[str, Any]:
@@ -37,7 +47,9 @@ def buy_in_json(b: BuyIn, inst: Instrument | None = None) -> dict[str, Any]:
             "counterparty": b.counterparty, "instrumentId": b.instrument_id,
             "composite": inst.composite if inst else None, "quantity": b.qty, "price": b.price, "ccy": b.ccy,
             "amountDue": b.amount_due, "amountDueUsd": round(b.amount_due * rules.FX_USD.get(b.ccy, 1.0), 2),
-            "boughtInAt": clock.iso(b.bought_in_at), "receivedAt": clock.iso(b.received_at)}
+            "boughtInAt": clock.iso(b.bought_in_at), "receivedAt": clock.iso(b.received_at),
+            "cashStatus": b.cash_status, "cashRef": b.cash_ref, "chargeStatus": b.charge_status,
+            "chargeRef": b.charge_ref}
 
 
 async def on_recall(s: AsyncSession, t: Trade, r: dict[str, Any], *, origin: str) -> BuyIn | None:
@@ -67,6 +79,7 @@ async def on_recall(s: AsyncSession, t: Trade, r: dict[str, Any], *, origin: str
     t.lifecycle = [*(t.lifecycle or []), {"ts": clock.iso(clock.now()), "event": "BOUGHT_IN", "by": origin, **entry}]
     events.record(s, "trade", t.id, "bought_in", trade_json(t), before=before, actor=f"{origin}:{t.cp_code}")
     events.record(s, "buy_in", b.id, "received", buy_in_json(b), actor=f"{origin}:{t.cp_code}")
+    await _propose_payment(s, b)
     await _redraft_returns(s, t, b)
     events.publish_later(s, "trade", {"type": "bought_in", "tradeId": t.id})
     return b
@@ -122,6 +135,8 @@ async def on_cns(s: AsyncSession, r: dict[str, Any]) -> BuyIn | None:
                                                 "by": "cns:buy-in", "buyInId": b.id, "price": b.price}]
         events.record(s, "fail", f.id, "bought_in", fail_json(f), before=before, actor="cns")
     events.record(s, "buy_in", b.id, "received", buy_in_json(b, inst), actor="cns")
+    b.cash_status = "CNS"  # NSCC's money settlement takes the cost: nothing to instruct
+    await _propose_charge(s, b, inst)
     await s.flush()
     await inventory.refresh(s)
     if get_settings().draft_covers:  # the shares cover the client's short: a cover drafted for it isn't needed
@@ -130,6 +145,100 @@ async def on_cns(s: AsyncSession, r: dict[str, Any]) -> BuyIn | None:
         await shortlist.draft(s, by="rules:buy-in")
     events.publish_later(s, "short_list", {"type": "bought_in", "buyIn": b.id})
     return b
+
+
+def _money(amount: float, ccy: str) -> str:
+    return f"${amount:,.0f}" if ccy == "USD" else f"{ccy} {amount:,.0f}"
+
+
+async def _propose_payment(s: AsyncSession, b: BuyIn) -> None:
+    """The cash with the lender: we pay what's due, or the lender pays back what its collateral came to over cost."""
+    from .. import gate
+
+    if round(b.amount_due, 2) == 0:
+        b.cash_status = "NONE"
+        return
+    pay = b.amount_due > 0
+    b.cash_status = "TO_PAY" if pay else "TO_RECEIVE"
+    amount = round(abs(b.amount_due), 2)
+    await gate.propose(
+        s, kind="payment", payload={"buyInId": b.id, "direction": "PAY" if pay else "RECEIVE", "amount": amount,
+                                    "ccy": b.ccy, "counterparty": b.counterparty},
+        proposed_by="rules:buy-in",
+        title=(f"pay {b.counterparty} {_money(amount, b.ccy)} for buy-in {b.id}" if pay
+               else f"claim {_money(amount, b.ccy)} from {b.counterparty} on buy-in {b.id}"),
+        rationale=f"{b.counterparty} bought in {b.qty:,} at {b.price:g} ({_money(b.qty * b.price, b.ccy)}) on our "
+                  f"overdue recall and kept {_money(float(b.detail.get('collateralKept') or 0), b.ccy)} of our "
+                  f"collateral: " + (f"{_money(amount, b.ccy)} is still ours to pay." if pay else
+                                    f"that's {_money(amount, b.ccy)} more than the cost, owed back to us."),
+        source_ref=f"{CASH}:{b.id}", original={"buyIn": buy_in_json(b)})
+
+
+async def _propose_charge(s: AsyncSession, b: BuyIn, inst: Instrument | None) -> None:
+    """A CNS buy-in's cost is the client's: charge it on (Rule 204(d)). Bought in under the sale price, nothing is."""
+    from .. import gate
+
+    if b.amount_due <= 0:
+        b.charge_status = "NONE"
+        return
+    b.charge_status = "TO_CHARGE"
+    name = inst.composite if inst else b.instrument_id
+    sale = b.detail.get("salePrice")
+    await gate.propose(
+        s, kind="charge", payload={"buyInId": b.id, "counterparty": b.counterparty, "amount": round(b.amount_due, 2),
+                                   "ccy": b.ccy},
+        proposed_by="rules:buy-in",
+        title=f"charge {b.counterparty} {_money(b.amount_due, b.ccy)} for the CNS buy-in {b.id}",
+        rationale=f"{b.counterparty}'s short of {b.qty:,} {name} failed at CNS ({b.fail_id}) and was bought in at "
+                  f"{b.price:g}" + (f" against a sale at {sale:g}" if sale else "") + ". NSCC's money settlement "
+                  "takes the difference from us; under Rule 204(d) it's the client's to bear.",
+        source_ref=f"{CASH}:{b.id}", original={"buyIn": buy_in_json(b, inst)})
+
+
+async def pay(s: AsyncSession, b: BuyIn, *, by: str) -> BuyIn:
+    """Instruct the buy-in's cash at the custodian: a payment to the lender, or a receipt expected from it."""
+    if b.cash_status not in ("TO_PAY", "TO_RECEIVE"):
+        raise BuyInError(f"{b.id}'s cash is {b.cash_status}")
+    cp = await s.get(Counterparty, b.counterparty)
+    if cp is None or not cp.bic:
+        raise BuyInError(f"no BIC for {b.counterparty}")
+    before = buy_in_json(b)
+    r = await systems().custodian.pay({
+        "txId": f"BI-{b.id}"[:35], "direction": "PAY" if b.cash_status == "TO_PAY" else "RECEIVE",
+        "amount": round(abs(b.amount_due), 2), "ccy": b.ccy, "counterpartyBic": cp.bic,
+        "reference": f"buy-in {b.id} on {b.trade_id}"[:140]})
+    b.cash_status, b.cash_ref = "INSTRUCTED", r["paymentId"]
+    events.record(s, "buy_in", b.id, "cash_instructed", buy_in_json(b), before=before, actor=by)
+    return b
+
+
+async def charge(s: AsyncSession, b: BuyIn, *, by: str) -> BuyIn:
+    """Post a CNS buy-in's cost to the client's account at the gateway."""
+    if b.charge_status != "TO_CHARGE":
+        raise BuyInError(f"{b.id}'s charge is {b.charge_status}")
+    before = buy_in_json(b)
+    r = await systems().gateway.charge(b.counterparty, round(b.amount_due, 2),
+                                       f"CNS buy-in {b.id} on fail {b.fail_id}: {b.qty:,} at {b.price:g} (Rule 204(d))",
+                                       ref=b.id, ccy=b.ccy)
+    b.charge_status, b.charge_ref = "CHARGED", r["chargeId"]
+    events.record(s, "buy_in", b.id, "charged", buy_in_json(b), before=before, actor=by)
+    return b
+
+
+async def apply_payments(s: AsyncSession, payments: list[dict[str, Any]]) -> int:
+    """Follow instructed buy-in cash to SETTLED at the custodian."""
+    by_ref = {p["paymentId"]: p for p in payments}
+    n = 0
+    for b in (await s.execute(select(BuyIn).where(BuyIn.cash_status == "INSTRUCTED"))).scalars().all():
+        p = by_ref.get(b.cash_ref or "")
+        if p is not None and p["status"] == "SETTLED":
+            before = buy_in_json(b)
+            b.cash_status = "SETTLED"
+            events.record(s, "buy_in", b.id, "cash_settled", buy_in_json(b), before=before, actor="custodian")
+            n += 1
+    if n:
+        events.publish_later(s, "short_list", {"type": "buy_in_cash"})
+    return n
 
 
 async def covered_since(s: AsyncSession, trade_date: date | None) -> dict[str, int]:

@@ -323,6 +323,11 @@ export interface BuyIn {
   amountDue: number; // what we owe (negative: owed to us)
   amountDueUsd: number;
   boughtInAt: string;
+  // TO_PAY / TO_RECEIVE (a card at the gate), INSTRUCTED, SETTLED at the custodian; NONE; CNS (NSCC takes it)
+  cashStatus: "TO_PAY" | "TO_RECEIVE" | "INSTRUCTED" | "SETTLED" | "NONE" | "CNS" | null;
+  cashRef: string | null;
+  chargeStatus: "TO_CHARGE" | "CHARGED" | "NONE" | null; // a CNS buy-in's cost, charged on to the client
+  chargeRef: string | null;
 }
 
 /** A client's short that failed to deliver at CNS, and where its Rule 204 close-out stands. */

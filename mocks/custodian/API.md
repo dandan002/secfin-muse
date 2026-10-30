@@ -34,6 +34,20 @@ async with CustodianClient("https://custodian.mocks.example.com", api_key=key, o
 `cust.outbox(after=last_id)` polls the same messages. Every advice parses to `StatusAdvice`
 (`msg_type`, `status`, `tx_id`, `custodian_ref`, `reason`, `detail`, `settled_quantity`, `settled_at`, `xml`).
 
+## Cash payments
+
+A cash movement on our account, not against securities: a buy-in's cost to a lender, or what a lender owes us
+back when the collateral it kept was more. JSON only (scopes `payments:write` / `payments:read`).
+
+| Method | Path | |
+| --- | --- | --- |
+| POST | `/payments` | `{txId, direction: PAY \| RECEIVE, amount, ccy, counterpartyBic, valueDate?, reference?}` → 202; 409 on a reused `txId`. `valueDate` defaults to the next business day |
+| GET | `/payments?status=` | `paymentId` (`CUS-P-…`), `txId`, `direction`, `amount`, `ccy`, `counterpartyBic`, `valueDate`, `reference`, `status` (ACCEPTED / SETTLED), `history` |
+
+A payment settles on its value date at the settlement time (10:00 New York), or 30 s after it arrives if that
+has passed; a RECEIVE settles when the counterparty pays, which here is the same. `payment_accepted` and
+`payment_settled` go out on the `outbox` topic.
+
 ## Messages
 
 | Direction | Message | Endpoint | Meaning |

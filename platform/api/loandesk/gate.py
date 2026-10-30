@@ -191,3 +191,35 @@ async def _cancel(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
         raise GateError(f"no order {a.payload['orderId']}")
     o = await orders.venue_command(s, o, "cancel", by=approver)
     return {"orderId": o.id, "status": o.status}
+
+
+@executor("payment")
+async def _payment(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
+    """A buy-in's cash with the lender, at the custodian."""
+    from .models import BuyIn
+    from .services import buyins
+
+    b = await s.get(BuyIn, a.payload["buyInId"])
+    if b is None:
+        raise GateError(f"no buy-in {a.payload['buyInId']}")
+    try:
+        b = await buyins.pay(s, b, by=f"{a.proposed_by}+{approver}")
+    except buyins.BuyInError as e:
+        raise GateError(str(e)) from e
+    return {"buyInId": b.id, "cashStatus": b.cash_status, "paymentId": b.cash_ref}
+
+
+@executor("charge")
+async def _charge(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
+    """A CNS buy-in's cost, posted to the client's account at the gateway."""
+    from .models import BuyIn
+    from .services import buyins
+
+    b = await s.get(BuyIn, a.payload["buyInId"])
+    if b is None:
+        raise GateError(f"no buy-in {a.payload['buyInId']}")
+    try:
+        b = await buyins.charge(s, b, by=f"{a.proposed_by}+{approver}")
+    except buyins.BuyInError as e:
+        raise GateError(str(e)) from e
+    return {"buyInId": b.id, "chargeStatus": b.charge_status, "chargeId": b.charge_ref}

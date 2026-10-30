@@ -51,6 +51,7 @@ ok = webhooks.verify(secret, raw_body, request.headers["X-Mock-Signature"])   # 
 | POST | `/v1/locates` | Submit one request of up to 5,000 lines: CDM JSON, flat JSON or `text/csv` |
 | GET | `/v1/locates/{locateId}` | The request and every line's decision |
 | GET | `/v1/locates?limit=` | Your recent requests |
+| GET | `/v1/my/charges` | What the prime broker has charged your account (a CNS buy-in's cost, say) |
 | POST | `/v1/orders` | `{clientOrderId, side (BORROW/LOAN/RETURN/RECALL), identifier, quantity, feeBps?, term?, settlementDate?}` |
 
 **Idempotency.** Send `Idempotency-Key` on submissions. The same key with the same body replays
@@ -96,6 +97,8 @@ when one digit is off, and the rest proceed. Response (202):
 | GET | `/v1/stock-record?date=` | The stock record at a close (default the latest; 404 before the first) |
 | GET | `/v1/fails?status=&after=&limit=` | Client shorts that failed to deliver at CNS, oldest first, each with `seq` |
 | GET | `/v1/buy-ins?after=&limit=` | CNS buy-ins on fails we didn't deliver, oldest first, each with `seq` |
+| POST | `/v1/charges` | `{counterparty, amount, ccy, reason, ref}`: post a charge to a client's account (scope `decisions:write`); idempotent on `ref` |
+| GET | `/v1/charges?counterparty=` | Charges posted: `chargeId` (`GW-C-…`), `ref`, `counterparty`, `amount`, `ccy`, `reason`, `postedAt` |
 | POST | `/v1/fails/{failId}/deliver` | `{quantity, ref?}`: deliver against a fail (scope `decisions:write`); 409 over what's outstanding |
 
 `Decision`: `lineNo`, `decision` (APPROVED / PARTIAL / REJECTED), `approvedQuantity` (0 with

@@ -342,6 +342,10 @@ async def test_a_venue_b_buy_in_closes_the_loan_and_is_booked_at_the_processor(
         assert (await s.get(Action, card.id)).status == "SUPERSEDED"
     [b] = [x for x in (await client.get("/buy-ins")).json() if x["tradeId"] == t["id"]]
     assert (b["kind"], b["origin"], b["counterparty"], b["amountDue"]) == ("RECALL", "venue_b", "HARBORAL", -1_200.0)
+    async with db.session() as s:  # the collateral kept was more than the cost: the lender owes us the rest
+        [claim] = (await s.execute(select(Action).where(Action.source_ref == f"buyin:{b['id']}"))).scalars().all()
+    assert (claim.payload["direction"], claim.payload["amount"]) == ("RECEIVE", 1_200.0)
+    assert claim.title.startswith("claim $1,200 from HARBORAL") and b["cashStatus"] == "TO_RECEIVE"
 
 
 # -- chat -------------------------------------------------------------------------------------------------

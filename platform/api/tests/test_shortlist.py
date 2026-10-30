@@ -738,7 +738,34 @@ async def test_a_lender_buys_in_part_of_an_overdue_recall_and_the_rest_is_redraf
     assert rest.payload == {"tradeId": "trd_bi_1", "event": "RETURN", "quantity": 10_000}
     assert "bought in 20,000" in rest.rationale and "after a buy-in" in rest.title
     [b] = [x for x in (await client.get("/buy-ins")).json() if x["id"] == "SFP-B-000004"]
-    assert (b["quantity"], b["amountDue"], b["origin"]) == (20_000, 8_000.0, "processor")
+    assert (b["quantity"], b["amountDue"], b["origin"], b["cashStatus"]) == (20_000, 8_000.0, "processor", "TO_PAY")
+
+    # The cash: a card to pay the lender what its cost came to over the collateral it kept.
+    async with db.session() as s:
+        [pay] = (await s.execute(select(Action).where(Action.source_ref == "buyin:SFP-B-000004"))).scalars().all()
+    assert (pay.kind, pay.payload["direction"], pay.payload["amount"]) == ("payment", "PAY", 8_000.0)
+    assert pay.title == "pay MERIDIAL $8,000 for buy-in SFP-B-000004"
+    sent: list[dict[str, Any]] = []
+
+    async def custodian_pay(body: dict[str, Any]) -> dict[str, Any]:
+        sent.append(body)
+        return {"paymentId": "CUS-P-000001", "status": "ACCEPTED"}
+
+    async def payments(status: str | None = None) -> list[dict[str, Any]]:
+        return [{"paymentId": "CUS-P-000001", "status": "SETTLED"}]
+
+    async def instructions(status: str | None = None) -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setattr(systems().custodian, "pay", custodian_pay)
+    monkeypatch.setattr(systems().custodian, "payments", payments)
+    monkeypatch.setattr(systems().custodian, "instructions", instructions)
+    r = (await client.post(f"/actions/{pay.id}/approve", headers={"x-trader": "sam"})).json()
+    assert r["status"] == "EXECUTED" and r["result"]["cashStatus"] == "INSTRUCTED"
+    assert (sent[0]["direction"], sent[0]["amount"], sent[0]["txId"]) == ("PAY", 8_000.0, "BI-SFP-B-000004")
+    await sync.sync_settlement()
+    [b] = [x for x in (await client.get("/buy-ins")).json() if x["id"] == "SFP-B-000004"]
+    assert (b["cashStatus"], b["cashRef"]) == ("SETTLED", "CUS-P-000001")
 
 
 async def test_a_cns_buy_in_closes_the_fail_lifts_pre_borrow_and_is_charged_to_the_client(
@@ -789,6 +816,25 @@ async def test_a_cns_buy_in_closes_the_fail_lifts_pre_borrow_and_is_charged_to_t
         [b] = [x for x in (await client.get("/buy-ins")).json() if x["id"] == "CNS-B-000009"]
         assert (b["kind"], b["counterparty"], b["amountDue"], b["failId"]) == ("CNS", "BASALTHF", 31_500.0,
                                                                                "CNS-F-000003")
+        assert (b["cashStatus"], b["chargeStatus"]) == ("CNS", "TO_CHARGE")  # NSCC takes it; the client bears it
+
+        async with db.session() as s:
+            [card] = (await s.execute(select(Action).where(Action.source_ref == "buyin:CNS-B-000009"))
+                      ).scalars().all()
+        assert (card.kind, card.payload["counterparty"], card.payload["amount"]) == ("charge", "BASALTHF", 31_500.0)
+        assert "Rule 204(d)" in card.rationale
+        posted: list[tuple[Any, ...]] = []
+
+        async def gateway_charge(counterparty: str, amount: float, reason: str, ref: str, ccy: str = "USD"
+                                 ) -> dict[str, Any]:
+            posted.append((counterparty, amount, ref))
+            return {"chargeId": "GW-C-000001"}
+
+        monkeypatch.setattr(systems().gateway, "charge", gateway_charge)
+        r = (await client.post(f"/actions/{card.id}/approve", headers={"x-trader": "sam"})).json()
+        assert r["status"] == "EXECUTED" and posted == [("BASALTHF", 31_500.0, "CNS-B-000009")]
+        [b] = [x for x in (await client.get("/buy-ins")).json() if x["id"] == "CNS-B-000009"]
+        assert (b["chargeStatus"], b["chargeRef"]) == ("CHARGED", "GW-C-000001")
     finally:
         clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
 

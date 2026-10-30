@@ -1,4 +1,5 @@
-"""Custodian: settlement of loan and return legs. The JSON form; the custodian builds the ISO 20022 sese.023."""
+"""Custodian: settlement of loan and return legs (the JSON form; the custodian builds the ISO 20022 sese.023), and
+cash payments not against securities (a buy-in's cost)."""
 
 from __future__ import annotations
 
@@ -21,3 +22,10 @@ class Custodian(Client):
 
     async def instructions(self, status: str | None = None) -> list[dict[str, Any]]:
         return await self.get("/instructions", params={"status": status} if status else None)
+
+    async def pay(self, payment: dict[str, Any]) -> dict[str, Any]:
+        """``{txId, direction: PAY | RECEIVE, amount, ccy, counterpartyBic, valueDate?, reference?}``."""
+        return await self.post("/payments", json=payment)
+
+    async def payments(self, status: str | None = None) -> list[dict[str, Any]]:
+        return await self.get("/payments", params={"status": status} if status else None)

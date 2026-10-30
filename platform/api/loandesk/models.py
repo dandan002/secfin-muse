@@ -333,6 +333,13 @@ class BuyIn(Base):
     detail: Mapped[dict[str, Any]] = mapped_column(default=dict)  # the source's record as received
     bought_in_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # The cash: TO_PAY | TO_RECEIVE (a card at the gate) | INSTRUCTED | SETTLED at the custodian; NONE (nothing
+    # owed either way); CNS (NSCC's money settlement takes it, with no instruction from us).
+    cash_status: Mapped[str | None] = mapped_column(String(12))
+    cash_ref: Mapped[str | None] = mapped_column(String(32))
+    # A CNS buy-in's cost, charged on to the client (Rule 204(d)): TO_CHARGE (a card at the gate) | CHARGED | NONE.
+    charge_status: Mapped[str | None] = mapped_column(String(12))
+    charge_ref: Mapped[str | None] = mapped_column(String(32))
 
 
 class DeliveryFail(Base):
