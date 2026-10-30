@@ -490,3 +490,170 @@ async def test_a_recall_from_the_processor_is_put_on_the_borrow_once(client: htt
         [card] = (await s.execute(select(Action).where(Action.source_ref == "recall:SFP-R-000007"))).scalars().all()
     assert card.payload == {"tradeId": "trd_prc_1", "event": "RETURN", "quantity": 20_000}
     assert "at the processor" in card.rationale and "buy the shares in" in card.rationale
+
+
+def _cns(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    """The gateway's CNS fails feed, and a record of what we delivered against them."""
+    delivered: list[tuple[str, int]] = []
+
+    async def fails(after: int = 0, status: str | None = None) -> list[dict[str, Any]]:
+        return [r for r in rows if r["seq"] > after]
+
+    async def deliver_fail(fail_id: str, quantity: int, ref: str | None = None) -> dict[str, Any]:
+        delivered.append((fail_id, quantity))
+        return {"failId": fail_id}
+
+    monkeypatch.setattr(systems().gateway, "fails", fails)
+    monkeypatch.setattr(systems().gateway, "deliver_fail", deliver_fail)
+    return delivered
+
+
+def _fail(seq: int, fail_id: str, cp: str, iid: str, settle: str, qty: int) -> dict[str, Any]:
+    return {"seq": seq, "failId": fail_id, "counterparty": cp, "instrumentId": iid, "settlementDate": settle,
+            "quantity": qty, "outstanding": qty, "status": "OPEN"}
+
+
+async def test_a_short_that_fails_at_cns_is_closed_out_by_the_open_and_delivered_once_the_shares_settle(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rule 204(a): a client's short fails to deliver on its settlement date; we close it out before regular trading
+    opens the next business day. The cover card says so; a borrow closes it out; once the shares settle into our
+    account, they're delivered against the fail."""
+    from datetime import UTC, date, datetime
+
+    from loandesk import clock
+    from loandesk.models import DeliveryFail, Trade
+
+    [name] = (await _names("GC", 16))[14:15]
+    delivered = _cns(monkeypatch, [_fail(1, "CNS-F-000001", "BASALTHF", name.id, "2026-11-03", 30_000)])
+    clock.pin(datetime(2026, 11, 3, 21, 30, tzinfo=UTC))  # 16:30 New York, after the fail
+    try:
+        async with db.session() as s:
+            await inventory.apply(s, [])  # nothing in the box
+            await s.commit()
+        _gateway(monkeypatch, {"tradeDate": "2026-11-02", "settlementDate": "2026-11-03",
+                               "closedAt": "2026-11-02T21:00:00Z", "shortSales": [], "locateUsage": [],
+                               "positions": [{"counterparty": "BASALTHF", "instrumentId": name.id,
+                                              "shortQuantity": 30_000, "soldQuantity": 30_000, "coveredQuantity": 0}]})
+        await sync.sync_stock_record()  # the cover is drafted before the fail is known
+        await sync.sync_fails()
+        await sync.sync_fails()  # the cursor: the same fail isn't taken twice
+        async with db.session() as s:
+            [old] = (await s.execute(select(Action).where(Action.source_ref == f"short:{name.id}",
+                                                          Action.status == "SUPERSEDED"))).scalars().all()
+        sl = (await client.get("/short-list")).json()
+        assert sl["lines"][0]["instrumentId"] == name.id  # a close-out due comes first
+        ln = sl["lines"][0]
+        assert (ln["cnsFails"], ln["closeOutBy"], ln["preBorrow"], ln["shortfall"]) == (
+            30_000, "2026-11-04T14:30:00.000Z", False, 30_000)  # 09:30 New York the next morning
+        async with db.session() as s:
+            card = (await s.execute(select(Action).where(Action.source_ref == f"short:{name.id}",
+                                                         Action.status == "PENDING"))).scalar()
+        assert "Rule 204 close-out by 09:30 ET on Wed 04 Nov" in card.rationale
+        assert "warning: Rule 204 close-out due by 09:30 ET on Wed 04 Nov" in card.risk_flags
+
+        # The borrow fills overnight: closed out in time, but the shares haven't settled to deliver.
+        clock.pin(datetime(2026, 11, 4, 13, 0, tzinfo=UTC))
+        async with db.session() as s:
+            s.add(Trade(id="trd_cns_1", venue="VENUE_A", venue_trade_id="NGT-T-CNS1", uti="UTICNS1", side="BORROW",
+                        instrument_id=name.id, cp_code="HARBORAL", qty=30_000, open_qty=30_000, fee_bps=20.0,
+                        price=50.0, ccy="USD", settle_date=date(2026, 11, 4), venue_json={}, executed_at=clock.now(),
+                        loan_status="OPEN", settle_status="PENDING", lifecycle=[]))
+            await s.commit()
+        await sync.sync_fails()
+        [f] = (await client.get("/fails")).json()
+        assert (f["status"], f["missed"], f["openQty"]) == ("CLOSED_OUT", False, 30_000) and delivered == []
+        assert (await _line(client, "2026-11-02", name.id))["closeOutBy"] is None
+
+        clock.pin(datetime(2026, 11, 4, 15, 0, tzinfo=UTC))  # past the open: closed out already, so not missed
+        async with db.session() as s:
+            (await s.get(Trade, "trd_cns_1")).settle_status = "SETTLED"
+            await s.commit()
+        await sync.sync_fails()
+        assert delivered == [("CNS-F-000001", 30_000)]
+        async with db.session() as s:
+            f = await s.get(DeliveryFail, "CNS-F-000001")
+            assert (f.status, f.open_qty, f.missed) == ("DELIVERED", 0, False)
+        assert (await client.get("/fails")).json() == []
+        await sync.sync_fails()
+        assert len(delivered) == 1
+    finally:
+        clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+
+
+async def test_a_fail_not_closed_out_by_the_open_puts_the_name_on_pre_borrow_until_it_delivers(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rule 204(b): missed, no short in the name without the shares borrowed first. Its locates wait for the trader
+    and only shares we hold can be set aside for them, until the fail is delivered."""
+    from datetime import UTC, datetime
+
+    from loandesk import clock
+    from loandesk.models import DeliveryFail
+
+    [name] = (await _names("GC", 16))[15:16]
+    _cns(monkeypatch, [_fail(2, "CNS-F-000002", "KESTRELHF", name.id, "2026-11-04", 20_000)])
+    clock.pin(datetime(2026, 11, 5, 15, 0, tzinfo=UTC))  # 10:00 New York: the open has passed
+    try:
+        _gateway(monkeypatch, {"tradeDate": "2026-11-03", "settlementDate": "2026-11-04",
+                               "closedAt": "2026-11-03T21:00:00Z", "shortSales": [], "locateUsage": [],
+                               "positions": [{"counterparty": "KESTRELHF", "instrumentId": name.id,
+                                              "shortQuantity": 20_000, "soldQuantity": 20_000, "coveredQuantity": 0}]})
+        await sync.sync_stock_record()
+        await sync.sync_fails()
+        [f] = (await client.get("/fails")).json()
+        assert (f["status"], f["missed"], f["preBorrow"]) == ("OPEN", True, True)
+        assert (await _line(client, "2026-11-03", name.id))["preBorrow"] is True
+
+        await _supply(name.id, 5_000_000)  # plenty on the street: doesn't count now
+        async with db.session() as s:
+            [loc] = await locates.intake(s, counterparty="BASALTHF", channel="API", request_ref="GW-PB-1",
+                                         lines=[locates.LineIn(name.isin, 10_000, line_no=1)])
+            assert loc.status == "RECEIVED" and loc.route == "HOLD"
+            assert any("pre-borrow (Rule 204(b))" in r for r in loc.route_reasons)
+            with pytest.raises(locates.DecisionError, match="only 0 of ours"):
+                await locates.decide(s, loc, "APPROVED", 10_000, by="trader:sam", reply=False, override_floor=True)
+            await market.upsert_availability(s, "INTERNAL", [{"instrumentId": name.id, "quantity": 25_000,
+                                                             "lenders": 1, "asOf": "2026-11-05T14:00:00Z"}])
+            await locates.decide(s, loc, "APPROVED", 10_000, by="trader:sam", reply=False, override_floor=True)
+            assert loc.reg_sho_basis.startswith("PRE_BORROW_RULE_204B + INTERNAL_INVENTORY")
+            await s.commit()
+        [row] = [x for x in (await client.get("/locates")).json() if x["id"] == loc.id]
+        assert row["preBorrow"] is True
+
+        r = await client.post("/fails/CNS-F-000002/deliver", json={}, headers={"x-trader": "sam"})
+        assert r.status_code == 200 and r.json()["status"] == "DELIVERED" and r.json()["preBorrow"] is False
+        async with db.session() as s:
+            assert (await s.get(DeliveryFail, "CNS-F-000002")).missed is True  # the record keeps it
+            [again] = await locates.intake(s, counterparty="BASALTHF", channel="API", request_ref="GW-PB-2",
+                                           lines=[locates.LineIn(name.isin, 10_000, line_no=1)])
+            assert not any("pre-borrow" in r for r in again.route_reasons)
+            await s.rollback()
+    finally:
+        clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+
+
+async def test_a_recall_on_a_borrow_we_havent_received_warns_the_return_cant_settle_first(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import UTC, date, datetime
+
+    from loandesk.models import Trade
+
+    [v] = (await _names("GC", 18))[17:]
+    at = datetime(2026, 10, 27, 13, 0, tzinfo=UTC)
+    async with db.session() as s:
+        s.add(Trade(id="trd_prc_2", venue="VENUE_A", venue_trade_id="NGT-T-PRC2", uti="UTIPRC2", side="BORROW",
+                    instrument_id=v.id, cp_code="MERIDIAL", qty=40_000, open_qty=40_000, fee_bps=18.0, price=40.0,
+                    ccy="USD", settle_date=date(2026, 10, 28), venue_json={}, executed_at=at,
+                    sfp_contract_id="SFP-C-PRC2", booked_at=at, loan_status="OPEN", settle_status="FAILING",
+                    lifecycle=[]))
+        await s.commit()
+
+    async def recalls(after: int = 0) -> list[dict[str, Any]]:
+        return [{"seq": 99, "recallId": "SFP-R-000099", "contractId": "SFP-C-PRC2", "counterparty": "MERIDIAL",
+                 "status": "OPEN", "quantity": 40_000, "outstanding": 40_000, "dueDate": "2026-10-28"}][:1 if
+                                                                                                      after < 99 else 0]
+
+    monkeypatch.setattr(systems().processor, "recalls", recalls)
+    await sync.sync_recalls()
+    async with db.session() as s:
+        card = (await s.execute(select(Action).where(Action.source_ref == "recall:SFP-R-000099"))).scalar()
+    assert any("haven't reached us yet (our delivery is FAILING)" in f for f in card.risk_flags)

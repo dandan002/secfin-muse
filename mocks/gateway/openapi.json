@@ -42,6 +42,31 @@
         "title": "DecisionIn",
         "type": "object"
       },
+      "DeliverIn": {
+        "properties": {
+          "quantity": {
+            "exclusiveMinimum": 0.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          }
+        },
+        "required": [
+          "quantity"
+        ],
+        "title": "DeliverIn",
+        "type": "object"
+      },
       "FaultConfig": {
         "properties": {
           "drop_pct": {
@@ -1617,6 +1642,137 @@
           }
         },
         "summary": "Deliveries",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/v1/fails": {
+      "get": {
+        "description": "Fails to deliver at CNS on client short sales, oldest first (``after``: the last ``seq`` you've seen). One\nstays OPEN until we deliver the shares against it.",
+        "operationId": "fails_v1_fails_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 5000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Fails V1 Fails Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fails",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/v1/fails/{fail_id}/deliver": {
+      "post": {
+        "description": "Deliver shares against a fail (in CNS, the night cycle takes them from our account). Closed when none is\nleft outstanding.",
+        "operationId": "deliver_fail_v1_fails__fail_id__deliver_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fail_id",
+            "required": true,
+            "schema": {
+              "title": "Fail Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliverIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Deliver Fail V1 Fails  Fail Id  Deliver Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deliver Fail",
         "tags": [
           "platform"
         ]

@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     auto_book: bool = True
     auto_settle: bool = True
     settlement_account: str = "LOANDESK-SAFE-01"
+    # A client's short failed at CNS: once the shares are in our account, deliver them against it
+    # (policy:CNS-DELIVER). Off, the trader delivers from the short list.
+    auto_deliver_fails: bool = True
     # Venue A down (unreachable or 5xx): an AUTO-routed order with no named counterparty goes to Venue B as
     # an interest list instead, and the order says so.
     failover_to_venue_b: bool = True

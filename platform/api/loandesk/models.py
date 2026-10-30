@@ -312,6 +312,28 @@ class ClientShort(Base):
     settle_date: Mapped[date] = mapped_column(Date)
 
 
+class DeliveryFail(Base):
+    """A client's short that failed to deliver at CNS (from the gateway's books). Reg SHO Rule 204: we close it out,
+    by borrowing or buying the shares, before regular trading opens the business day after it failed. Missed, the
+    name is pre-borrow (204(b)) until the shares are delivered: no short in it without borrowing first."""
+
+    __tablename__ = "delivery_fails"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # the gateway's fail id
+    counterparty: Mapped[str] = mapped_column(String(16))  # the client whose short failed (204(d) allocation)
+    instrument_id: Mapped[str] = mapped_column(String(16), index=True)
+    settle_date: Mapped[date] = mapped_column(Date)
+    qty: Mapped[int] = mapped_column(BigInteger)
+    open_qty: Mapped[int] = mapped_column(BigInteger)  # not delivered yet
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # the close-out, by the open
+    # OPEN | CLOSED_OUT (borrowed in time, the shares not delivered yet) | DELIVERED
+    status: Mapped[str] = mapped_column(String(12), default="OPEN")
+    missed: Mapped[bool] = mapped_column(Boolean, default=False)  # not closed out by the deadline: pre-borrow
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    closed_out_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deliveries: Mapped[list[Any]] = mapped_column(default=list)  # [{ts, quantity, by}]
+
+
 class SyncCursor(Base):
     """Where each poller left off (gateway inbox seq, venue trade time...)."""
 

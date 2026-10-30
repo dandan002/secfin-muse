@@ -94,6 +94,8 @@ when one digit is off, and the rest proceed. Response (202):
 | POST | `/v1/decisions` | `{locateId, lines: [Decision]}` → `{status: DECIDED or PARTIALLY_DECIDED, lines}` |
 | GET | `/v1/deliveries?locateId=` | Webhook attempts: `url`, `attempt`, `statusCode`, `ok`, `error` |
 | GET | `/v1/stock-record?date=` | The stock record at a close (default the latest; 404 before the first) |
+| GET | `/v1/fails?status=&after=&limit=` | Client shorts that failed to deliver at CNS, oldest first, each with `seq` |
+| POST | `/v1/fails/{failId}/deliver` | `{quantity, ref?}`: deliver against a fail (scope `decisions:write`); 409 over what's outstanding |
 
 `Decision`: `lineNo`, `decision` (APPROVED / PARTIAL / REJECTED), `approvedQuantity` (0 with
 APPROVED means the full quantity), `feeBps` (the agreed fee; `indicativeFeeBps` is still read),
@@ -113,12 +115,24 @@ order if the gateway was down), every approved locate expiring by then is settle
 * **Buy-backs.** A quarter of existing short positions are partly or fully covered.
 * **The record.** Each client's short position per name is written for that trade date; it settles
   the next business day. Draws are seeded per date, so a replay closes the same way.
+* **Fails at CNS.** The shorts sold at the previous close settle at this one. Each new US short fails
+  to deliver with a set chance (3%; verb `fail_rate {rate}`), for a quarter to all of it: a fail is
+  recorded per client and name (`CNS-F-000001`), OPEN until the platform delivers the shares against
+  it. Verb `fail {counterparty?, instrument?, quantity?, date?}` makes one on a client's short (default
+  the largest in the latest record). The desk has until regular trading opens the next business day to
+  close it out (Reg SHO Rule 204).
 
 `GET /v1/stock-record` (platform token; scope `inbox:read`):
 `{tradeDate, settlementDate, closedAt, positions: [{counterparty, instrumentId, isin, shortQuantity,
 soldQuantity, coveredQuantity}], shortSales: [{counterparty, instrumentId, quantity, locateId, lineNo,
 executedAt}], locateUsage: [{locateId, lineNo, approvedQuantity, usedQuantity, feeBps, maxFeeBps}]}`.
-A `stock_record` event goes out on the `inbox` topic when a close is written. A real prime broker
+A `stock_record` event goes out on the `inbox` topic when a close is written; `fail_to_deliver` and
+`fail_delivered` when a fail is recorded or delivered against.
+
+`GET /v1/fails` (scope `inbox:read`): `[{seq, failId, settlementDate, counterparty, instrumentId, isin,
+quantity, outstanding, status (OPEN | CLOSED), failedAt, closedAt, deliveries: [{ts, quantity, ref}]}]`.
+In CNS the night cycle takes the shares from the participant's account; here the platform says when it
+has them by posting the delivery. A real prime broker
 reads this from its own books and records; here the gateway, which already plays the clients, writes it.
 
 **Push instead of pull.** With `MOCK_GATEWAY_DOWNSTREAM_URL` set, the gateway POSTs each request

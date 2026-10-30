@@ -22,3 +22,10 @@ class Gateway(Client):
     async def stock_record(self, trade_date: str | None = None) -> dict[str, Any]:
         """Client short positions at a close (default the latest) and how much of each locate was used."""
         return await self.get("/v1/stock-record", params={"date": trade_date} if trade_date else None)
+
+    async def fails(self, after: int = 0, status: str | None = None) -> list[dict[str, Any]]:
+        """Client shorts that failed to deliver at CNS (``after``: the last ``seq`` seen)."""
+        return await self.get("/v1/fails", params={"after": after, **({"status": status} if status else {})})
+
+    async def deliver_fail(self, fail_id: str, quantity: int, ref: str | None = None) -> dict[str, Any]:
+        return await self.post(f"/v1/fails/{fail_id}/deliver", json={"quantity": quantity, "ref": ref})

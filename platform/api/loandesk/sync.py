@@ -1,5 +1,5 @@
-"""Background sync with the outside world: clock, gateway inbox and stock record, Desk Chat, Venue A market data,
-our orders on both venues, the processor's positions (internal inventory) and the custodian's settlements.
+"""Background sync with the outside world: clock, gateway inbox, stock record and CNS fails, Desk Chat, Venue A
+market data, our orders on both venues, the processor's positions (internal inventory) and the custodian's settlements.
 
 Polling keeps the scaffold simple and restart-safe (cursors live in ``sync_cursors``). The venues
 also offer WebSocket streams; switching to them changes only this module.
@@ -21,7 +21,7 @@ from . import clock, db, events
 from .adapters import AdapterError, systems
 from .ingest import chat
 from .models import Order, SyncCursor, Trade
-from .services import booking, inventory, lifecycle, locates, market, orders, recalls, shortlist
+from .services import booking, fails, inventory, lifecycle, locates, market, orders, recalls, shortlist
 from .settings import get_settings
 
 log = logging.getLogger("loandesk.sync")
@@ -86,6 +86,20 @@ async def sync_stock_record() -> None:
             await shortlist.apply_stock_record(s, rec)
         if get_settings().draft_covers:
             await shortlist.draft(s)
+        await s.commit()
+
+
+async def sync_fails() -> None:
+    """Client shorts that failed to deliver at CNS: new ones from the gateway, then the Rule 204 pass over every one
+    not delivered yet (closed out, delivered, or the deadline missed)."""
+    async with db.session() as s:
+        after = int(await _cursor(s, "gateway_fails"))
+        rows = await systems().gateway.fails(after=after)
+        if rows:
+            await fails.ingest(s, rows)
+            await _set_cursor(s, "gateway_fails", str(max(int(r["seq"]) for r in rows)))
+        for note in await fails.assess(s):
+            log.info("rule 204: %s", note)
         await s.commit()
 
 
@@ -242,7 +256,7 @@ class Syncer:
                 "market": (cfg.availability_every_s, sync_market), "orders": (cfg.poll_s, sync_orders),
                 "venue_b": (cfg.poll_s, sync_venue_b), "settlement": (cfg.poll_s * 2.5, sync_settlement),
                 "inventory": (cfg.inventory_every_s, sync_inventory), "recalls": (cfg.poll_s * 2, sync_recalls),
-                "stock_record": (cfg.poll_s * 5, sync_stock_record),
+                "stock_record": (cfg.poll_s * 5, sync_stock_record), "fails": (cfg.poll_s * 2, sync_fails),
                 "housekeeping": (30.0, housekeeping)}
         self.tasks = [asyncio.create_task(_every(n, sec, fn), name=f"sync-{n}") for n, (sec, fn) in jobs.items()]
 

@@ -4,6 +4,8 @@ A granted locate is a quantity at an agreed fee, entered at a time and good unti
 by default). Every approval decrements the live availability ledger (``market.held``) and records the
 basis the desk relied on under Reg SHO 203(b). Lines the rules engine can't clear wait for a trader or
 the agent. After the close the stock record says how much of each locate the client used (``apply_usage``).
+A name in the Rule 204(b) penalty box (a CNS fail not closed out in time, see ``fails``) is pre-borrow: its
+locates wait for a trader and can only be granted against shares we hold, not street supply.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from .. import clock, events, rules, secmaster
 from ..adapters import AdapterError, systems
 from ..models import Counterparty, Instrument, Locate
 from ..settings import get_settings
-from . import limits, market
+from . import fails, limits, market
 
 Decision = Literal["APPROVED", "PARTIAL", "REJECTED"]
 GRANTED = ("APPROVED", "PARTIAL", "USED", "EXPIRED", "RELEASED")  # was granted: has an entry time
@@ -53,7 +55,7 @@ class LineIn:
 
 def locate_json(loc: Locate, inst: Instrument | None = None, available: int | None = None,
                 by_kind: dict[str, int] | None = None, floor: dict[str, Any] | None = None,
-                cp_room: dict[str, Any] | None = None) -> dict[str, Any]:
+                cp_room: dict[str, Any] | None = None, pre_borrow: bool | None = None) -> dict[str, Any]:
     out = {"id": loc.id, "requestRef": loc.request_ref, "lineNo": loc.line_no, "counterparty": loc.requester_cp,
            "identifier": loc.identifier, "instrumentId": loc.instrument_id, "qtyRequested": loc.qty_req,
            "qtyApproved": loc.qty_approved, "qtyUsed": loc.qty_used, "status": loc.status, "route": loc.route,
@@ -76,6 +78,8 @@ def locate_json(loc: Locate, inst: Instrument | None = None, available: int | No
         out["suggestedQty"] = min(loc.qty_req, available // 1000 * 1000 if available >= 1000 else available)
     if floor is not None:
         out["feeFloorBps"] = floor["floorBps"]
+    if pre_borrow is not None:
+        out["preBorrow"] = pre_borrow
     if cp_room is not None:
         out["counterpartyRoom"] = cp_room
         if "suggestedQty" in out:
@@ -128,6 +132,8 @@ async def intake(s: AsyncSession, *, counterparty: str, lines: list[LineIn], cha
                 loc.route = "HOLD"
                 loc.route_reasons = [f"client's limit {ln.max_fee_bps:g} bps is under our floor {loc.fee_bps:g}"]
             hits = await filters(s, inst, available=avail, fresh=fresh)
+            if (pb := await fails.pre_borrow(s, inst.id)) is not None:
+                hits.append(("hold", _pre_borrow_reason(inst, pb)))
             if cp is not None:
                 failing = [c for c in (await limits.for_line(s, cp, inst, ln.quantity))[0] if not c.ok]
                 hits += [("reject" if c.name == "counterparty blocked" else "hold", f"{c.name}: {c.detail}")
@@ -150,6 +156,11 @@ async def intake(s: AsyncSession, *, counterparty: str, lines: list[LineIn], cha
     await s.flush()
     await flush_auto_replies(s, out)
     return out
+
+
+def _pre_borrow_reason(inst: Instrument, pb: Any) -> str:
+    return (f"pre-borrow (Rule 204(b)): {pb.id} in {inst.composite} wasn't closed out by the open; a short needs "
+            f"shares we hold until it delivers")
 
 
 async def filters(s: AsyncSession, inst: Instrument, *, available: int | None = None,
@@ -203,6 +214,11 @@ async def decide(s: AsyncSession, loc: Locate, decision: Decision, qty: int | No
         cs, max_qty = await limits.for_line(s, cp, inst, qty)
         if failing := [f"{c.name} ({c.detail})" for c in cs if not c.ok]:
             raise DecisionError(f"over counterparty limits: {'; '.join(failing)}; at most {max_qty:,} fits")
+        if (pb := await fails.pre_borrow(s, inst.id)) is not None:
+            held_here = (await market.split(s, inst.id))["internal"]
+            if qty > held_here:
+                raise DecisionError(f"{_pre_borrow_reason(inst, pb)}: only {held_here:,} of ours to set aside; "
+                                    f"borrow the rest first")
         floor = (await pricing(s, inst, cp))["floorBps"]
         if fee_bps is None:  # the quote from intake, re-quoted if the market has moved through it
             fee_bps = max(loc.fee_bps or 0.0, floor)
@@ -225,6 +241,8 @@ async def decide(s: AsyncSession, loc: Locate, decision: Decision, qty: int | No
             loc.rationale = rationale
     if decision != "REJECTED":
         loc.reg_sho_basis = await reg_sho_basis(s, loc, crossed)
+        if loc.instrument_id and await fails.pre_borrow(s, loc.instrument_id) is not None:
+            loc.reg_sho_basis = f"PRE_BORROW_RULE_204B + {loc.reg_sho_basis}"
     events.record(s, "locate", loc.id, decision.lower(), locate_json(loc), before=before, actor=by)
     if reply:
         await send_reply(s, [loc])
@@ -291,6 +309,7 @@ async def listing(s: AsyncSession, *, status: list[str] | None = None, route: st
     codes = list({x.requester_cp for x in locs})
     cps = {c.code: c for c in (await s.execute(select(Counterparty).where(Counterparty.code.in_(codes)))).scalars()}
     usage = await limits.books(s, codes)
+    boxed = await fails.pre_borrow_names(s)
     out = []
     for x in locs:
         inst = insts.get(x.instrument_id or "")
@@ -301,5 +320,5 @@ async def listing(s: AsyncSession, *, status: list[str] | None = None, route: st
         room = limits.summary(cp, inst, x.qty_req, usage.get(x.requester_cp, limits.Book())) \
             if x.status == "RECEIVED" else None
         out.append(locate_json(x, inst, max(sum(a.qty for a in rows) - h, 0), market.cross(rows, h),
-                               price_floor(inst, cp, rows, h), room))
+                               price_floor(inst, cp, rows, h), room, inst.id in boxed))
     return out

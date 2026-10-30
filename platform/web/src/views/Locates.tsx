@@ -4,7 +4,7 @@ import { actor, bps, full, parseQty, pct, qty, time } from "../lib/format";
 import { useKeys, useQuery, useSelection } from "../lib/hooks";
 import { useDesk } from "../lib/store";
 import type { Counterparty, Locate } from "../lib/types";
-import { Empty, Kbd, Panel, Stat, State, Tabs, TierBadge } from "../components/ui";
+import { Empty, Kbd, Panel, PreBorrowTag, Stat, State, Tabs, TierBadge } from "../components/ui";
 
 type Tab = "inbox" | "actioned";
 
@@ -128,6 +128,7 @@ function Inbox() {
                     <td className="td text-faint">{time(l.receivedAt)}</td>
                     <td className="td">
                       <span className="text-ink">{l.instrument?.composite ?? l.identifier}</span>
+                      {l.preBorrow && <span className="ml-2"><PreBorrowTag /></span>}
                       <span className="text-faint ml-2 hidden xl:inline">{l.instrument?.name.slice(0, 22)}</span>
                     </td>
                     <td className="td"><TierBadge tier={l.instrument?.tier ?? l.tier} /></td>
@@ -194,6 +195,7 @@ function LocateDetail({ l, onDecide }: {
           <span className="text-sm">{l.instrument?.composite ?? l.identifier}</span>
           <TierBadge tier={l.instrument?.tier} />
           {l.instrument?.etb && <span className="text-2xs text-gc border border-line rounded px-1">ETB</span>}
+          {l.preBorrow && <PreBorrowTag />}
         </div>
         <div className="text-xs text-faint truncate">{l.instrument?.name} · {l.instrument?.isin}</div>
       </div>

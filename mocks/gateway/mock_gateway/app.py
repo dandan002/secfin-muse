@@ -12,7 +12,8 @@ Simulated counterparties: ``/cp/{code}/callback`` receivers record what they get
 generator produces Poisson arrivals with a 09:00-09:45 New York burst.
 The clients' trading: at each close, every locate expiring then is used by its client or not (a short
 sale against it), clients buy back some of their shorts, and ``GET /v1/stock-record`` publishes the
-day's client short positions as the prime broker's stock record would.
+day's client short positions as the prime broker's stock record would. Some of the shorts settling at a close
+fail to deliver at CNS: ``GET /v1/fails`` lists them, and ``POST /v1/fails/{id}/deliver`` delivers against one.
 """
 
 from __future__ import annotations
@@ -40,7 +41,18 @@ from refdata import identifiers as ids
 from refdata.counterparties import Counterparty, counterparties, counterparty_by_code
 from refdata.universe import resolve, universe
 
-from .models import Base, CpOrder, CpReceived, DayClose, Delivery, LocateLine, LocateRequest, ShortPosition, ShortSale
+from .models import (
+    Base,
+    CnsFail,
+    CpOrder,
+    CpReceived,
+    DayClose,
+    Delivery,
+    LocateLine,
+    LocateRequest,
+    ShortPosition,
+    ShortSale,
+)
 
 MAX_LINES = 5000
 DOWNSTREAM = os.environ.get("MOCK_GATEWAY_DOWNSTREAM_URL", "")
@@ -440,6 +452,8 @@ async def deliveries(locateId: str | None = None) -> list[dict]:
 # requesters shop several desks and use fewer.
 USE_RATE = {"HEDGE_FUND": 0.7, "PRIME_BROKER": 0.4, "BROKER_DEALER": 0.3}
 COVER_RATE = 0.25  # chance a client buys back some of a short at a close
+FAIL_RATE = 0.03  # chance a new US short settling at a close fails to deliver at CNS (verb ``fail_rate``)
+_fails = {"rate": FAIL_RATE}
 
 
 def _lot(q: float) -> int:
@@ -509,12 +523,51 @@ async def close_day(s, d: date) -> dict[str, Any]:
             s.add(ShortPosition(trade_date=d, cp_code=key[0], instrument_id=key[1], short_qty=held - covered + new,
                                 sold_qty=new, covered_qty=covered))
     s.add(DayClose(trade_date=d, closed_at=clock.now()))
+    failed = await _settle_fails(s, d, prev_date)
     await s.flush()
     summary = {"tradeDate": d.isoformat(), "settlementDate": calendar.add_business_days(d, 1).isoformat(),
                "locates": len(lines), "used": sum(1 for ln, _ in lines if ln.used_qty),
-               "shortSales": sum(sold.values())}
+               "shortSales": sum(sold.values()), "failsToDeliver": failed}
     await ctx.events.emit(s, "stock_record", "stock_record", d.isoformat(), summary, topic="inbox")
     return summary
+
+
+async def _settle_fails(s, d: date, prev_date: date | None) -> int:
+    """The shorts sold at the last close settle today: some of the US ones fail to deliver at CNS (a seeded
+    share of each, for the desk to close out under Reg SHO Rule 204)."""
+    if prev_date is None or calendar.add_business_days(prev_date, 1) != d or _fails["rate"] <= 0:
+        return 0
+    r = rng.stream("gateway", f"fails:{d.isoformat()}")
+    by_id = {i.id: i for i in universe()}
+    n = 0
+    for p in (await s.execute(select(ShortPosition).where(ShortPosition.trade_date == prev_date,
+                                                          ShortPosition.sold_qty > 0)
+                              .order_by(ShortPosition.cp_code, ShortPosition.instrument_id))).scalars().all():
+        inst = by_id.get(p.instrument_id)
+        if inst is None or inst.country != "US" or r.random() >= _fails["rate"]:
+            continue
+        await _add_fail(s, d, p.cp_code, p.instrument_id, max(_lot(p.sold_qty * r.uniform(0.25, 1.0)), 100),
+                        at=calendar.close_at(d))
+        n += 1
+    return n
+
+
+async def _add_fail(s, d: date, cp_code: str, instrument_id: str, qty: int, *, at: datetime) -> CnsFail:
+    f = CnsFail(fail_id="pending", settle_date=d, cp_code=cp_code, instrument_id=instrument_id, qty=qty,
+                outstanding=qty, status="OPEN", ts=at, deliveries=[])
+    s.add(f)
+    await s.flush()
+    f.fail_id = f"CNS-F-{f.id:06d}"
+    await ctx.events.emit(s, "fail_to_deliver", "fail", f.fail_id, fail_json(f), topic="inbox")
+    return f
+
+
+def fail_json(f: CnsFail) -> dict[str, Any]:
+    inst = next((i for i in universe() if i.id == f.instrument_id), None)
+    return {"failId": f.fail_id, "settlementDate": f.settle_date.isoformat(), "counterparty": f.cp_code,
+            "instrumentId": f.instrument_id, "isin": inst.isin if inst else None, "quantity": f.qty,
+            "outstanding": f.outstanding, "status": f.status, "failedAt": clock.iso(f.ts),
+            "closedAt": clock.iso(f.closed_at) if f.closed_at else None, "deliveries": f.deliveries or []}
 
 
 ctx.scheduler.every(60, "close", close_due)
@@ -563,6 +616,72 @@ async def verb_close_day(args: dict[str, Any]) -> dict:
         summary = await close_day(s, d)
         await s.commit()
     return summary
+
+
+# -- fails to deliver at CNS ------------------------------------------------------------------------
+class DeliverIn(BaseModel):
+    quantity: int = Field(..., gt=0)
+    ref: str | None = None  # the desk's own reference for the delivery
+
+
+@app.get("/v1/fails", tags=["platform"], dependencies=[Depends(ctx.require("inbox:read"))])
+async def fails(status: str | None = None, after: int = 0, limit: int = Query(500, le=5000)) -> list[dict]:
+    """Fails to deliver at CNS on client short sales, oldest first (``after``: the last ``seq`` you've seen). One
+    stays OPEN until we deliver the shares against it."""
+    async with ctx.session() as s:
+        q = select(CnsFail).where(CnsFail.id > after).order_by(CnsFail.id).limit(limit)
+        if status:
+            q = q.where(CnsFail.status == status.upper())
+        return [{**fail_json(f), "seq": f.id} for f in (await s.execute(q)).scalars()]
+
+
+@app.post("/v1/fails/{fail_id}/deliver", tags=["platform"], dependencies=[Depends(ctx.require("decisions:write"))])
+async def deliver_fail(fail_id: str, body: DeliverIn) -> dict:
+    """Deliver shares against a fail (in CNS, the night cycle takes them from our account). Closed when none is
+    left outstanding."""
+    async with ctx.session() as s:
+        f = (await s.execute(select(CnsFail).where(CnsFail.fail_id == fail_id))).scalar()
+        if f is None:
+            raise HTTPException(404, f"no fail {fail_id}")
+        if f.status != "OPEN" or body.quantity > f.outstanding:
+            raise HTTPException(409, f"{fail_id} has {f.outstanding:,} outstanding ({f.status})")
+        f.outstanding -= body.quantity
+        f.deliveries = [*(f.deliveries or []), {"ts": clock.iso(clock.now()), "quantity": body.quantity,
+                                                "ref": body.ref}]
+        if f.outstanding == 0:
+            f.status, f.closed_at = "CLOSED", clock.now()
+        await ctx.events.emit(s, "fail_delivered", "fail", f.fail_id, fail_json(f), topic="inbox")
+        await s.commit()
+        return fail_json(f)
+
+
+@ctx.verb("fail")
+async def verb_fail(args: dict[str, Any]) -> dict:
+    """A client's short fails to deliver at CNS: {counterparty?, instrument?, quantity?, date? (today)}. Without a
+    name, the largest short in the latest stock record."""
+    async with ctx.session() as s:
+        q = select(ShortPosition).where(ShortPosition.short_qty > 0).order_by(
+            ShortPosition.trade_date.desc(), ShortPosition.short_qty.desc(), ShortPosition.id)
+        if args.get("counterparty"):
+            q = q.where(ShortPosition.cp_code == str(args["counterparty"]).upper())
+        if args.get("instrument"):
+            inst = resolve(str(args["instrument"]))
+            q = q.where(ShortPosition.instrument_id == (inst.id if inst else "?"))
+        p = (await s.execute(q.limit(1))).scalar()
+        if p is None:
+            raise HTTPException(404, "no client short matches")
+        d = date.fromisoformat(args["date"]) if args.get("date") else calendar.trade_date(clock.now())
+        f = await _add_fail(s, d, p.cp_code, p.instrument_id, min(int(args.get("quantity") or p.short_qty),
+                                                                     p.short_qty), at=clock.now())
+        await s.commit()
+        return fail_json(f)
+
+
+@ctx.verb("fail_rate")
+async def verb_fail_rate(args: dict[str, Any]) -> dict:
+    """How often a new US short settling at a close fails at CNS: {rate} (0 to 1; default 0.03)."""
+    _fails["rate"] = max(0.0, min(float(args.get("rate", FAIL_RATE)), 1.0))
+    return dict(_fails)
 
 
 # -- simulated counterparty receivers -----------------------------------------------------------------
@@ -720,6 +839,7 @@ async def set_limits(rate_per_s: float = Query(..., gt=0), burst: float = Query(
 
 
 async def on_reset(c: ServiceContext) -> None:
+    _fails["rate"] = FAIL_RATE
     _load.clear()
     _load.update(_load_defaults())
     ctx.gate.reset_plans()
