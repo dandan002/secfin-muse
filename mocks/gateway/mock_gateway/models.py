@@ -42,6 +42,7 @@ class LocateLine(Base):
     isin: Mapped[str | None] = mapped_column(String(12))
     tier: Mapped[str | None] = mapped_column(String(8))
     quantity: Mapped[int] = mapped_column(BigInteger)
+    max_fee_bps: Mapped[float | None] = mapped_column(Float)  # the client's limit, if it sent one
     status: Mapped[str] = mapped_column(String(16))  # RECEIVED | INVALID | APPROVED | PARTIAL | REJECTED
     approved_qty: Mapped[int | None] = mapped_column(BigInteger)
     fee_bps: Mapped[float | None] = mapped_column(Float)
@@ -50,6 +51,9 @@ class LocateLine(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+    # Set at the close the locate expires into: how much of it the client shorted (0: unused or went elsewhere).
+    used_qty: Mapped[int | None] = mapped_column(BigInteger)
+    used_on: Mapped[date | None] = mapped_column(Date)  # the trade date of that close
 
 
 class Delivery(Base):
@@ -84,3 +88,40 @@ class CpOrder(Base):
     body: Mapped[dict[str, Any]] = mapped_column()
     status: Mapped[str] = mapped_column(String(16))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+# -- the clients' trading (the prime broker's stock record) ---------------------------------------------
+class ShortSale(Base):
+    """A client's short sale, done against one of its locates."""
+
+    __tablename__ = "short_sales"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    cp_code: Mapped[str] = mapped_column(String(32))
+    instrument_id: Mapped[str] = mapped_column(String(16))
+    quantity: Mapped[int] = mapped_column(BigInteger)
+    locate_id: Mapped[str] = mapped_column(String(32))
+    line_no: Mapped[int] = mapped_column(Integer)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ShortPosition(Base):
+    """A client's short position in one name at a close (the stock record), settling the next business day."""
+
+    __tablename__ = "short_positions"
+    __table_args__ = (Index("ix_pos_date_cp_inst", "trade_date", "cp_code", "instrument_id", unique=True),)
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date)
+    cp_code: Mapped[str] = mapped_column(String(32))
+    instrument_id: Mapped[str] = mapped_column(String(16))
+    short_qty: Mapped[int] = mapped_column(BigInteger)
+    sold_qty: Mapped[int] = mapped_column(BigInteger)  # new shorts that day
+    covered_qty: Mapped[int] = mapped_column(BigInteger)  # bought back that day
+
+
+class DayClose(Base):
+    """A business day whose close has been run: locates used or not, covers, the stock record written."""
+
+    __tablename__ = "day_closes"
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

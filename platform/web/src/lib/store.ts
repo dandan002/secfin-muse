@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type View = "blotter" | "locates" | "ticket" | "market" | "agent" | "paste" | "audit" | "chat";
+export type View = "blotter" | "locates" | "ticket" | "market" | "agent" | "paste" | "audit" | "chat" | "shorts";
 
 export const VIEWS: { id: View; label: string; key: string }[] = [
   { id: "blotter", label: "Blotter", key: "1" },
@@ -11,6 +11,7 @@ export const VIEWS: { id: View; label: string; key: string }[] = [
   { id: "paste", label: "Paste", key: "6" },
   { id: "audit", label: "Audit", key: "7" },
   { id: "chat", label: "Chat", key: "8" },
+  { id: "shorts", label: "Shorts", key: "9" },
 ];
 
 export interface TicketPrefill {

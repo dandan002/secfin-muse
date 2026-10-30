@@ -325,6 +325,47 @@ def test_gateway_rate_limit_and_loadgen(mocks):
     assert 150 < n < 500, n
 
 
+def test_gateway_close_uses_locates_and_writes_the_stock_record(mocks):
+    """A fund's locates: agreed fee, entry and expiry at the close; at the close it shorts against some of them
+    (never one priced over its limit), and the stock record carries the positions settling the next day."""
+    cred = mocks.creds("gateway")
+    key = next(c["apiKey"] for c in cred["counterparties"] if c["code"] == "KESTRELHF")
+    lines = [{"identifier": _isin_of(mocks, f"I{n:05d}"), "quantity": 20_000 * n} for n in range(1, 11)]
+    lines[1]["maxFeeBps"] = 10  # we'll price it at 30: the fund goes elsewhere
+    loc = mocks.post("gateway", "/v1/locates", headers={"authorization": f"Bearer {key}"},
+                     json={"requestId": "KHF-1", "lines": lines}).json()
+    ph = {"authorization": f"Bearer {cred['platformToken']}"}
+    inbox = mocks.get("gateway", "/v1/inbox", headers=ph).json()
+    assert inbox[0]["lines"][1]["maxFeeBps"] == 10
+    d = mocks.post("gateway", "/v1/decisions", headers=ph, json={"locateId": loc["locateId"], "lines": [
+        {"lineNo": n, "decision": "APPROVED", "feeBps": 30, "regShoBasis": "ETB"} for n in range(1, 11)]}).json()
+    line = d["lines"][0]
+    assert line["feeBps"] == 30 and line["enteredAt"] and line["expiresAt"] == "2026-10-27T20:00:00.000Z"  # 16:00 NY
+    assert mocks.get("gateway", "/v1/stock-record", headers=ph).status_code == 404  # no close yet
+
+    mocks.post("control", "/clock/advance", json={"to": "2026-10-27T16:02:00-04:00"}).raise_for_status()
+    rec = mocks.get("gateway", "/v1/stock-record", headers=ph).json()
+    assert rec["tradeDate"] == "2026-10-27" and rec["settlementDate"] == "2026-10-28"
+    usage = {u["lineNo"]: u for u in rec["locateUsage"]}
+    assert len(usage) == 10 and usage[2]["usedQuantity"] == 0  # over the fund's limit
+    sales = rec["shortSales"]
+    assert sales and all(x["locateId"] == loc["locateId"] and x["counterparty"] == "KESTRELHF" for x in sales)
+    assert all(0 < x["quantity"] <= usage[x["lineNo"]]["approvedQuantity"] for x in sales)
+    assert all(line["enteredAt"] <= x["executedAt"] <= line["expiresAt"] for x in sales)
+    assert sum(p["shortQuantity"] for p in rec["positions"]) == sum(x["quantity"] for x in sales)
+    got = mocks.get("gateway", f"/v1/locates/{loc['locateId']}", headers={"authorization": f"Bearer {key}"}).json()
+    assert {ln["lineNo"]: ln["usedQuantity"] for ln in got["lines"]} == {n: u["usedQuantity"] for n, u in usage.items()}
+
+    # The next close carries the positions forward (less what the fund bought back).
+    mocks.post("control", "/clock/advance", json={"to": "2026-10-28T16:02:00-04:00"}).raise_for_status()
+    nxt = mocks.get("gateway", "/v1/stock-record", headers=ph).json()
+    assert nxt["tradeDate"] == "2026-10-28" and not nxt["shortSales"]
+    before = {(p["counterparty"], p["instrumentId"]): p["shortQuantity"] for p in rec["positions"]}
+    for p in nxt["positions"]:
+        assert p["shortQuantity"] == before[(p["counterparty"], p["instrumentId"])] - p["coveredQuantity"]
+    assert mocks.get("gateway", "/v1/stock-record?date=2026-10-27", headers=ph).json()["shortSales"] == sales
+
+
 # -- mock-analytics -----------------------------------------------------------------------------------
 def test_analytics_auth_limits_and_exchange_cycle(mocks):
     h = {"x-api-key": mocks.creds("analytics")["apiKey"]}

@@ -214,9 +214,10 @@
                 "type": "null"
               }
             ],
+            "description": "Default: today's close (16:00 New York), or the next business day's if decided after it",
             "title": "Expiresat"
           },
-          "indicativeFeeBps": {
+          "feeBps": {
             "anyOf": [
               {
                 "type": "number"
@@ -225,7 +226,8 @@
                 "type": "null"
               }
             ],
-            "title": "Indicativefeebps"
+            "description": "The agreed fee the client pays on what it shorts against this locate",
+            "title": "Feebps"
           },
           "lineNo": {
             "title": "Lineno",
@@ -1885,6 +1887,61 @@
         "summary": "Post Order",
         "tags": [
           "counterparty"
+        ]
+      }
+    },
+    "/v1/stock-record": {
+      "get": {
+        "description": "Client short positions at a close (settling the next business day), and the short sales done that day\nagainst each locate. A real prime broker reads this from its own books and records.",
+        "operationId": "stock_record_v1_stock_record_get",
+        "parameters": [
+          {
+            "description": "Trade date; default the latest close",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Trade date; default the latest close",
+              "title": "Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stock Record V1 Stock Record Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stock Record",
+        "tags": [
+          "platform"
         ]
       }
     },

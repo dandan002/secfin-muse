@@ -18,3 +18,7 @@ class Gateway(Client):
 
     async def decide(self, locate_id: str, lines: list[dict[str, Any]]) -> dict[str, Any]:
         return await self.post("/v1/decisions", json={"locateId": locate_id, "lines": lines})
+
+    async def stock_record(self, trade_date: str | None = None) -> dict[str, Any]:
+        """Client short positions at a close (default the latest) and how much of each locate was used."""
+        return await self.get("/v1/stock-record", params={"date": trade_date} if trade_date else None)

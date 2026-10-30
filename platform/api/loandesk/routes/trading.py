@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,10 +10,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import clock, events
+from .. import clock, events, sync
 from ..db import get_session
 from ..models import Locate, Order, Trade
-from ..services import booking, lifecycle, locates, orders
+from ..services import booking, lifecycle, locates, orders, shortlist
 from .deps import trader
 
 router = APIRouter()
@@ -22,6 +23,7 @@ router = APIRouter()
 class LocateLineIn(BaseModel):
     identifier: str
     quantity: int = Field(..., gt=0)
+    maxFeeBps: float | None = Field(None, ge=0, description="The most the client will pay")
 
 
 class LocatesIn(BaseModel):
@@ -37,6 +39,7 @@ class DecisionIn(BaseModel):
     feeBps: float | None = None
     rationale: str | None = None
     overrideFeeFloor: bool = Field(False, description="Lend under the desk's floor (trader only; recorded)")
+    expiresAt: datetime | None = Field(None, description="Default: today's close, or the next business day's")
 
 
 class BatchDecisionIn(DecisionIn):
@@ -47,7 +50,8 @@ class BatchDecisionIn(DecisionIn):
 async def create_locates(body: LocatesIn, who: str = Depends(trader), s: AsyncSession = Depends(get_session)) -> list:
     ref = body.requestRef or events.new_id("req")
     locs = await locates.intake(s, counterparty=body.counterparty, channel=body.channel, request_ref=ref, actor=who,
-                                lines=[locates.LineIn(x.identifier, x.quantity) for x in body.lines])
+                                lines=[locates.LineIn(x.identifier, x.quantity, max_fee_bps=x.maxFeeBps)
+                                       for x in body.lines])
     await s.commit()
     return [locates.locate_json(x) for x in locs]
 
@@ -64,7 +68,8 @@ async def _decide(s: AsyncSession, loc_id: str, body: DecisionIn, who: str) -> L
         raise HTTPException(404, "no such locate")
     try:
         return await locates.decide(s, loc, body.decision, body.quantity, by=who, rationale=body.rationale,
-                                    fee_bps=body.feeBps, override_floor=body.overrideFeeFloor)
+                                    fee_bps=body.feeBps, override_floor=body.overrideFeeFloor,
+                                    expires_at=body.expiresAt)
     except locates.DecisionError as e:
         raise HTTPException(409, str(e)) from e
 
@@ -88,7 +93,8 @@ async def decide_batch(body: BatchDecisionIn, who: str = Depends(trader),
             failed.append({"id": loc_id, "error": "not open"})
             continue
         try:
-            await locates.decide(s, loc, body.decision, body.quantity, by=who, rationale=body.rationale, reply=False)
+            await locates.decide(s, loc, body.decision, body.quantity, by=who, rationale=body.rationale, reply=False,
+                                 expires_at=body.expiresAt)
             done.append(loc)
         except locates.DecisionError as e:
             failed.append({"id": loc_id, "error": str(e)})
@@ -108,6 +114,29 @@ async def release(loc_id: str, who: str = Depends(trader), s: AsyncSession = Dep
         raise HTTPException(409, str(e)) from e
     await s.commit()
     return locates.locate_json(loc)
+
+
+# -- the short list --------------------------------------------------------------------------------
+@router.get("/short-list", tags=["short list"])
+async def short_list(date_: date | None = Query(None, alias="date", description="Trade date; default the latest"),
+                     s: AsyncSession = Depends(get_session)) -> dict:
+    """Per name: clients' shorts settling next, the box that covers them, the shortfall and the covers working."""
+    return await shortlist.build(s, date_)
+
+
+@router.post("/short-list/draft", tags=["short list"])
+async def draft_covers(who: str = Depends(trader), s: AsyncSession = Depends(get_session)) -> dict:
+    """Draft a cover card for every name still uncovered (one per name). Nothing is sent until approved."""
+    out = await shortlist.draft(s, by=who)
+    await s.commit()
+    return out
+
+
+@router.post("/short-list/refresh", tags=["short list"])
+async def refresh_short_list(s: AsyncSession = Depends(get_session)) -> dict:
+    """Read the latest stock record now, rather than on the next poll."""
+    await sync.sync_stock_record()
+    return await shortlist.build(s)
 
 
 # -- orders ---------------------------------------------------------------------------------------

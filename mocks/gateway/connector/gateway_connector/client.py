@@ -1,6 +1,7 @@
 """Clients for the Counterparty Gateway (see ../../API.md).
 
-* ``GatewayPlatformClient``: the LoanDesk side. Pull or stream incoming locates, post decisions.
+* ``GatewayPlatformClient``: the LoanDesk side. Pull or stream incoming locates, post decisions, read the
+  stock record (client short positions and the short sales done against each locate).
 * ``CounterpartyClient``: what a prime broker or fund uses to send us locates and orders.
 """
 
@@ -14,7 +15,7 @@ from datetime import date, datetime
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from ._http import Http
 
@@ -29,12 +30,15 @@ class LocateLine(_Model):
     idType: str | None = None
     isin: str | None = None
     quantity: int
+    maxFeeBps: float | None = None  # the client's limit, if it sent one
     status: Literal["RECEIVED", "INVALID", "APPROVED", "PARTIAL", "REJECTED"]
     approvedQuantity: int | None = None
-    indicativeFeeBps: float | None = None
+    feeBps: float | None = None  # the agreed fee
     rationale: str | None = None
     regShoBasis: str | None = None
+    enteredAt: str | None = None
     expiresAt: str | None = None
+    usedQuantity: int | None = None  # set at the close it expired into
     error: str | None = None
 
 
@@ -57,10 +61,11 @@ class Decision(_Model):
     lineNo: int
     decision: Literal["APPROVED", "PARTIAL", "REJECTED"]
     approvedQuantity: int = Field(0, ge=0, description="0 with APPROVED means the full requested quantity")
-    indicativeFeeBps: float | None = None
+    feeBps: float | None = Field(None, validation_alias=AliasChoices("feeBps", "indicativeFeeBps"),
+                                 description="The agreed fee the client pays on what it shorts against the locate")
     rationale: str | None = None
     regShoBasis: str | None = Field(None, description="Reg SHO 203(b) reasonable-grounds basis for an approval")
-    expiresAt: datetime | None = None
+    expiresAt: datetime | None = Field(None, description="Default: today's close, or the next business day's")
 
 
 class Receipt(_Model):
@@ -110,6 +115,12 @@ class GatewayPlatformClient:
         params = {"locateId": locate_id} if locate_id else {}
         return await self._h.json("GET", "/v1/deliveries", params=params)
 
+    async def stock_record(self, trade_date: date | None = None) -> dict[str, Any]:
+        """Client short positions at a close (default the latest), settling the next business day, with
+        ``shortSales`` and ``locateUsage`` (how much of each locate expiring then was used)."""
+        params = {"date": trade_date.isoformat()} if trade_date else {}
+        return await self._h.json("GET", "/v1/stock-record", params=params)
+
 
 class CounterpartyClient:
     """The counterparty side. Every submission carries an ``Idempotency-Key`` (generated unless you
@@ -127,19 +138,22 @@ class CounterpartyClient:
     async def __aexit__(self, *exc: object) -> None:
         await self._h.aclose()
 
-    async def submit_locates(self, lines: Iterable[tuple[str, int]], request_id: str | None = None,
+    async def submit_locates(self, lines: Iterable[tuple[str, int] | tuple[str, int, float]],
+                             request_id: str | None = None,
                              settlement_date: date | None = None, callback_url: str | None = None,
                              fmt: Literal["CDM", "FLAT", "CSV"] = "CDM", idempotency_key: str | None = None,
                              ) -> Receipt:
-        """``lines`` are ``(identifier, quantity)``; identifiers may be ISIN, CUSIP, SEDOL or ticker."""
-        items = list(lines)
+        """``lines`` are ``(identifier, quantity)`` or ``(identifier, quantity, maxFeeBps)``; identifiers may be
+        ISIN, CUSIP, SEDOL or ticker. ``maxFeeBps`` is the most the client will pay to short the name."""
+        items = [(x[0], x[1], x[2] if len(x) > 2 else None) for x in lines]
+        limits = any(f is not None for _, _, f in items)
         headers = {"Idempotency-Key": idempotency_key or str(uuid.uuid4())}
         sd = settlement_date.isoformat() if settlement_date else None
         if fmt == "CSV":
             buf = io.StringIO()
             w = csv.writer(buf)
-            w.writerow(["identifier", "quantity"])
-            w.writerows(items)
+            w.writerow(["identifier", "quantity", "maxFeeBps"] if limits else ["identifier", "quantity"])
+            w.writerows([(i, q, "" if f is None else f) if limits else (i, q) for i, q, f in items])
             params = {k: v for k, v in {"requestId": request_id, "settlementDate": sd,
                                         "callbackUrl": callback_url}.items() if v}
             data = await self._h.json("POST", "/v1/locates", content=buf.getvalue().encode(), params=params,
@@ -147,12 +161,13 @@ class CounterpartyClient:
         elif fmt == "CDM":
             doc: dict[str, Any] = {"borrowerLocate": {
                 "locateRequestId": request_id, "settlementDate": sd, "callbackUrl": callback_url,
-                "locateLines": [{"security": {"identifier": i}, "quantity": {"amount": q, "unit": "SHARES"}}
-                                for i, q in items]}}
+                "locateLines": [{"security": {"identifier": i}, "quantity": {"amount": q, "unit": "SHARES"},
+                                 **({"maxFee": {"bps": f}} if f is not None else {})} for i, q, f in items]}}
             data = await self._h.json("POST", "/v1/locates", json=doc, headers=headers)
         else:
             doc = {"requestId": request_id, "settlementDate": sd, "callbackUrl": callback_url,
-                   "lines": [{"identifier": i, "quantity": q} for i, q in items]}
+                   "lines": [{"identifier": i, "quantity": q, **({"maxFeeBps": f} if f is not None else {})}
+                             for i, q, f in items]}
             data = await self._h.json("POST", "/v1/locates", json=doc, headers=headers)
         return Receipt.model_validate(data)
 

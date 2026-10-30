@@ -4,7 +4,7 @@ import { authEnabled } from "../lib/auth";
 import { time } from "../lib/format";
 import { useQuery } from "../lib/hooks";
 import { useDesk, VIEWS } from "../lib/store";
-import type { Status } from "../lib/types";
+import type { ShortList, Status } from "../lib/types";
 import { Kbd } from "./ui";
 
 const SHORT: Record<string, string> = {
@@ -85,8 +85,10 @@ export function Rail() {
   const setView = useDesk((s) => s.setView);
   const counts = useQuery<{ counts: Record<string, number> }>("/blotter", ["order", "trade", "break", "locate"]);
   const actions = useQuery<unknown[]>("/actions", ["action"]);
+  const shorts = useQuery<ShortList>("/short-list", ["short_list", "order", "trade", "action"]);
   const badge: Record<string, number | undefined> = {
     locates: counts.data?.counts.openLocates,
+    shorts: shorts.data?.summary.short,
     blotter: counts.data ? counts.data.counts.breaks + counts.data.counts.unbooked : undefined,
     agent: actions.data?.length,
   };

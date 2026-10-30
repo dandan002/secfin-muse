@@ -134,7 +134,9 @@ function Inbox() {
                     <td className="td text-right">{qty(l.qtyRequested)}</td>
                     <td className={`td text-right ${(l.available ?? 0) < l.qtyRequested ? "text-down" : "text-dim"}`}>{qty(l.available)}</td>
                     <td className="td text-right text-accent">{qty(l.suggestedQty)}</td>
-                    <td className="td text-right text-dim" title={`market ${bps(l.instrument?.feeBps)}, floor ${bps(l.feeFloorBps)}`}>{bps(l.feeIndBps)}</td>
+                    <td className={`td text-right ${l.feeLimitBps != null && (l.feeBps ?? 0) > l.feeLimitBps ? "text-warm" : "text-dim"}`}
+                      title={`market ${bps(l.instrument?.feeBps)}, floor ${bps(l.feeFloorBps)}${l.feeLimitBps != null ? `, client's limit ${bps(l.feeLimitBps)}` : ""}`}>
+                      {bps(l.feeBps)}</td>
                     <td className="td text-right text-dim">{pct(l.instrument?.utilPct, 0)}</td>
                     <td className="td"><State s={l.route} /></td>
                     <td className="td text-faint max-w-[220px] truncate">{l.routeReasons.join(" · ")}</td>
@@ -159,19 +161,24 @@ function LocateDetail({ l, onDecide }: {
   const [fee, setFee] = useState("");
   const [why, setWhy] = useState("");
   const [override, setOverride] = useState(false);
+  const [expiry, setExpiry] = useState("");
   const toast = useDesk((s) => s.toast);
   useEffect(() => {
     setQ(l?.suggestedQty ? String(l.suggestedQty) : "");
-    setFee(l?.feeIndBps != null ? String(l.feeIndBps) : "");  // the desk's quote: a bit above market
+    setFee(l?.feeBps != null ? String(l.feeBps) : "");  // the desk's quote: a bit above market
     setWhy("");
     setOverride(false);
-  }, [l?.id, l?.suggestedQty, l?.feeIndBps]);
+    setExpiry("");
+  }, [l?.id, l?.suggestedQty, l?.feeBps]);
   if (!l) return <Panel title="detail"><Empty>Select a line.</Empty></Panel>;
   const n = parseQty(q) ?? undefined;
   const feeN = fee ? parseFloat(fee) : undefined;
   const underFloor = feeN != null && l.feeFloorBps != null && feeN < l.feeFloorBps;
   const room = l.counterpartyRoom;
-  const extra = { feeBps: feeN, rationale: why || undefined, overrideFeeFloor: underFloor && override };
+  const overLimit = feeN != null && l.feeLimitBps != null && feeN > l.feeLimitBps;
+  // A locate is good until the close unless the trader sets a time (New York) on the next business day or so.
+  const expiresAt = expiry ? nyToIso(expiry) : undefined;
+  const extra = { feeBps: feeN, rationale: why || undefined, overrideFeeFloor: underFloor && override, expiresAt };
   const askAgent = async () => {
     try {
       await api.post(`/agent/locates/${l.id}/review`);
@@ -198,6 +205,7 @@ function LocateDetail({ l, onDecide }: {
         <Stat label="street" value={qty(l.availableBy?.street)} />
         <Stat label="market bps" value={bps(l.instrument?.feeBps)} />
         <Stat label="floor bps" value={bps(l.feeFloorBps)} />
+        <Stat label="client limit" value={l.feeLimitBps != null ? bps(l.feeLimitBps) : "none"} tone={overLimit ? "text-warm" : ""} />
         <Stat label="cp room" value={room ? qty(room.maxQty) : "—"} tone={room && room.maxQty < l.qtyRequested ? "text-down" : ""} />
         <Stat label="util" value={pct(l.instrument?.utilPct)} />
         <Stat label="via" value={l.channel.toLowerCase()} />
@@ -211,8 +219,14 @@ function LocateDetail({ l, onDecide }: {
       <div className="border-t rule pt-3 grid grid-cols-2 gap-2">
         <label className="flex flex-col gap-1"><span className="label">quantity</span>
           <input value={q} onChange={(e) => setQ(e.target.value)} className="input text-right" /></label>
-        <label className="flex flex-col gap-1"><span className="label">ind. fee bps</span>
+        <label className="flex flex-col gap-1"><span className="label">fee bps</span>
           <input value={fee} onChange={(e) => setFee(e.target.value)} className="input text-right" /></label>
+        <label className="col-span-2 flex flex-col gap-1"><span className="label">good until (New York)</span>
+          <input type="datetime-local" value={expiry} onChange={(e) => setExpiry(e.target.value)} className="input"
+            title="Leave empty: today's close (16:00), or the next business day's after it" /></label>
+        {overLimit && (
+          <div className="col-span-2 text-2xs text-warm">over the client's limit of {bps(l.feeLimitBps)}: it may go elsewhere</div>
+        )}
         {underFloor && (
           <label className="col-span-2 flex items-center gap-2 text-2xs text-warm">
             <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
@@ -247,9 +261,10 @@ function Actioned() {
     }
   };
   const exportCsv = () => {
-    const head = "id,counterparty,instrument,requested,approved,status,decidedBy,decidedAt,regShoBasis";
+    const head = "id,counterparty,instrument,requested,approved,feeBps,enteredAt,expiresAt,used,status,decidedBy,regShoBasis";
     const body = rows.map((l) => [l.id, l.counterparty, l.instrument?.isin ?? l.identifier, l.qtyRequested, l.qtyApproved,
-      l.status, l.decidedBy, l.decidedAt, `"${l.regShoBasis ?? ""}"`].join(","));
+      l.feeBps ?? "", l.enteredAt ?? "", l.expiresAt ?? "", l.qtyUsed, l.status, l.decidedBy,
+      `"${l.regShoBasis ?? ""}"`].join(","));
     const url = URL.createObjectURL(new Blob([[head, ...body].join("\n")], { type: "text/csv" }));
     const a = Object.assign(document.createElement("a"), { href: url, download: "locates-actioned.csv" });
     a.click();
@@ -260,17 +275,20 @@ function Actioned() {
       right={<button className="btn" onClick={exportCsv}>export csv</button>} className="flex-1" bodyClass="overflow-auto">
       {!rows.length ? <Empty>No decisions yet.</Empty> : (
         <table className="w-full text-xs">
-          <thead><tr>{["decided", "cp", "name", "tier", "req", "approved", "status", "by", "reply", "reg sho basis", ""].map((h) =>
-            <th key={h} className={`th ${["req", "approved"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+          <thead><tr>{["entered", "cp", "name", "tier", "req", "approved", "fee", "expires", "used", "status", "by", "reply", "reg sho basis", ""].map((h) =>
+            <th key={h} className={`th ${["req", "approved", "fee", "used"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
           <tbody>
             {rows.map((l) => (
               <tr key={l.id} className="row">
-                <td className="td text-faint">{time(l.decidedAt ?? l.receivedAt)}</td>
+                <td className="td text-faint" title={`requested ${time(l.receivedAt)}`}>{time(l.enteredAt ?? l.decidedAt ?? l.receivedAt)}</td>
                 <td className="td text-dim">{l.counterparty}</td>
                 <td className="td">{l.instrument?.composite ?? l.identifier}</td>
                 <td className="td"><TierBadge tier={l.tier} /></td>
                 <td className="td text-right text-dim">{qty(l.qtyRequested)}</td>
                 <td className="td text-right">{qty(l.qtyApproved)}</td>
+                <td className="td text-right text-dim">{l.qtyApproved ? bps(l.feeBps) : "—"}</td>
+                <td className="td text-faint">{l.qtyApproved ? time(l.expiresAt) : "—"}</td>
+                <td className="td text-right">{l.status === "USED" || l.status === "EXPIRED" ? qty(l.qtyUsed) : "—"}</td>
                 <td className="td"><State s={l.status} /></td>
                 <td className="td text-dim">{actor(l.decidedBy)}</td>
                 <td className="td text-faint">{l.replyStatus?.toLowerCase()}</td>
@@ -286,4 +304,12 @@ function Actioned() {
       )}
     </Panel>
   );
+}
+
+/** A datetime-local value read as New York time ("2026-10-28T12:00") to an ISO instant. */
+function nyToIso(local: string): string {
+  const guess = new Date(`${local}:00Z`);
+  const ny = new Date(guess.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const utc = new Date(guess.toLocaleString("en-US", { timeZone: "UTC" }));
+  return new Date(guess.getTime() + (utc.getTime() - ny.getTime())).toISOString();
 }

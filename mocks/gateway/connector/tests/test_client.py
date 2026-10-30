@@ -35,3 +35,23 @@ async def test_submit_formats_idempotency_and_rate_limit_retry():
                                      "quantity": {"amount": 500, "unit": "SHARES"}}
     assert csv_req.headers["content-type"] == "text/csv" and csv_req.headers["idempotency-key"] == "K2"
     assert csv_req.content.decode().splitlines() == ["identifier,quantity", "XS0000000001,1000"]
+
+
+async def test_fee_limits_and_the_agreed_fee():
+    from gateway_connector import Decision
+
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return httpx.Response(202, json={"locateId": "LOC-1", "status": "RECEIVED", "lines": 2})
+
+    async with CounterpartyClient("http://gw", api_key="k", transport=httpx.MockTransport(handler)) as cp:
+        await cp.submit_locates([("XS0000000001", 1000, 450.0), ("ABC US", 500)])
+        await cp.submit_locates([("XS0000000001", 1000, 450.0), ("ABC US", 500)], fmt="CSV")
+    cdm = json.loads(seen[0].content)["borrowerLocate"]["locateLines"]
+    assert cdm[0]["maxFee"] == {"bps": 450.0} and "maxFee" not in cdm[1]
+    assert seen[1].content.decode().splitlines() == ["identifier,quantity,maxFeeBps", "XS0000000001,1000,450.0",
+                                                     "ABC US,500,"]
+    # The old name still reads; it goes out as the agreed fee.
+    assert Decision(lineNo=1, decision="APPROVED", indicativeFeeBps=30).model_dump(exclude_none=True)["feeBps"] == 30

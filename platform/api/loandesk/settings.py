@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # Venue A down (unreachable or 5xx): an AUTO-routed order with no named counterparty goes to Venue B as
     # an interest list instead, and the order says so.
     failover_to_venue_b: bool = True
+    # The short list: when the stock record lands after the close, draft a cover for every name the box doesn't
+    # cover (a borrow order, or a bid in chat to an agent lender for a hot name). The trader approves each.
+    draft_covers: bool = True
+    cover_markup_pct: float = 5.0  # bid this much over the market fee, so a firm bid fills
     fat_finger_band: float = 0.5  # block fees outside last fee x (1 - band, 1 + 1/band)
     max_pct_shares_out: float = 5.0
     max_pct_adv: float = 100.0

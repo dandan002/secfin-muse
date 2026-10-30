@@ -63,11 +63,13 @@ export interface Locate {
   instrumentId: string | null;
   qtyRequested: number;
   qtyApproved: number;
+  qtyUsed: number;
   status: LocateStatus;
   route: "AUTO" | "REVIEW" | "HOLD";
   routeReasons: string[];
   tier: Tier | null;
-  feeIndBps: number | null;
+  feeBps: number | null; // our quote until decided, then the agreed fee
+  feeLimitBps: number | null; // the most the client said it would pay
   decidedBy: string | null;
   rationale: string | null;
   channel: string;
@@ -76,7 +78,8 @@ export interface Locate {
   error: string | null;
   receivedAt: string;
   decidedAt: string | null;
-  expiresAt: string | null;
+  enteredAt: string | null; // when the locate was granted
+  expiresAt: string | null; // default the close
   instrument?: { composite: string; name: string; isin: string; tier: Tier; feeBps: number; utilPct: number; etb: boolean };
   available?: number;
   availableBy?: { internal: number; street: number };
@@ -260,4 +263,38 @@ export interface ChatMessage {
   ourSide: "LEND" | "BORROW" | null;
   note: string | null;
   receivedAt: string;
+}
+
+export interface ShortListLine {
+  instrumentId: string;
+  composite: string;
+  name: string | null;
+  ccy: string | null;
+  tier: Tier;
+  etb: boolean;
+  feeBps: number;
+  lastPx: number;
+  clientShort: number;
+  soldToday: number;
+  coveredToday: number;
+  clients: { counterparty: string; short: number; sold: number; covered: number }[];
+  box: number;
+  unbooked: number;
+  fails: number;
+  cover: number;
+  shortfall: number;
+  working: number;
+  drafted: { actionId: string; kind: string; title: string }[];
+  uncovered: number;
+  excess: number;
+  uncoveredNotional: number;
+  status: "SHORT" | "WORKING" | "COVERED";
+}
+
+export interface ShortList {
+  tradeDate: string | null;
+  settlementDate: string | null;
+  lines: ShortListLine[];
+  summary: { names?: number; short?: number; working?: number; covered?: number; clientShort?: number;
+    shortfall?: number; uncovered?: number; uncoveredNotional?: number };
 }

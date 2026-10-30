@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from mockcore.clock import NEW_YORK
+
+MARKET_CLOSE = time(16, 0)  # New York; a locate is good until the close of the day it's granted
 
 HOLIDAYS = {
     "US": {"2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15"},
@@ -36,3 +38,16 @@ def trade_date(ts: datetime) -> date:
 
 def settle_date(ts: datetime, country: str = "US", lag: int = 1) -> date:
     return add_business_days(trade_date(ts), lag, country)
+
+
+def close_at(d: date) -> datetime:
+    """The US market close on ``d``, New York time."""
+    return datetime.combine(d, MARKET_CLOSE, tzinfo=NEW_YORK)
+
+
+def locate_expiry(ts: datetime) -> datetime:
+    """A locate granted at ``ts`` is good until today's close, or the next business day's if granted after it."""
+    d = trade_date(ts)
+    if is_business_day(d) and ts < close_at(d):
+        return close_at(d)
+    return close_at(add_business_days(d, 1))

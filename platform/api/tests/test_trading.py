@@ -18,6 +18,7 @@ from loandesk import db, sync
 from loandesk.adapters import systems
 from loandesk.models import Action, Counterparty, Trade
 from loandesk.services import booking, lifecycle, orders
+from refdata.counterparties import OUR_FIRM
 
 _n = itertools.count(1)
 
@@ -300,10 +301,11 @@ async def test_a_venue_b_rerate_waits_for_the_counterparty(client: httpx.AsyncCl
 
 
 # -- chat -------------------------------------------------------------------------------------------------
-async def test_a_trade_agreed_in_chat_becomes_an_order_card(client: httpx.AsyncClient) -> None:
+async def test_a_trade_agreed_in_chat_becomes_an_order_card(client: httpx.AsyncClient,
+                                                            post_trade: SimpleNamespace) -> None:
     m = SimpleNamespace(id="chat-agreed-1", our_side="BORROW", counterparty="HARBORAL", parser="model:muse-spark-1.3",
-                        text="Sure, send 500", lines=[{"identifier": "NVDA US", "instrumentId": "I00001",
-                                                       "quantity": 500, "rate": "GC"}])
+                        text="Sure, send 500. ref HAR-55501", lines=[{"identifier": "NVDA US", "instrumentId": "I00001",
+                                                                      "quantity": 500, "rate": "GC"}])
     async with db.session() as s:
         notes = await orders.propose_from_chat(s, m)
         await s.commit()
@@ -312,8 +314,15 @@ async def test_a_trade_agreed_in_chat_becomes_an_order_card(client: httpx.AsyncC
     assert (a.kind, a.proposed_by) == ("order", "chat:model:muse-spark-1.3")
     assert (a.payload["side"], a.payload["counterparty"], a.payload["quantity"]) == ("BORROW", "HARBORAL", 500)
     assert a.payload["feeBps"] > 0 and "market fee" in a.rationale
+    assert a.payload["venue"] == "BILATERAL" and a.payload["externalRef"] == "HAR-55501"
     r = (await client.post(f"/actions/{a.id}/approve", headers={"x-trader": "sam"})).json()
-    assert r["status"] == "EXECUTED" and r["result"]["status"] == "FAILED"  # Venue A is down; no failover to B
+    # Agreed already, with Harbor: approving books it directly (no venue), and it settles like any fill.
+    assert r["status"] == "EXECUTED" and r["result"]["status"] == "EXECUTED"
+    [t] = [x for x in (await client.get("/trades")).json() if x["orderId"] == r["result"]["orderId"]]
+    assert (t["venue"], t["counterparty"], t["quantity"], t["compareStatus"]) == ("BILATERAL", "HARBORAL", 500,
+                                                                                  "MATCHED")
+    assert t["uti"].startswith(OUR_FIRM["lei"]) and t["reg10c1a"]["platform"] == "Bilateral (agreed in chat)"
+    assert post_trade.custodian.sent[-1]["txId"].startswith(t["id"])
 
 
 async def test_chat_agreement_without_sides_is_left_to_the_trader(setup: None) -> None:

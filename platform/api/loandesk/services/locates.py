@@ -1,18 +1,21 @@
 """Locates (spec module 3): intake from any channel, rules-engine routing, decisions and replies.
 
-Every approval decrements the live availability ledger (``market.held``) and records the basis the
-desk relied on under Reg SHO 203(b). Lines the rules engine can't clear wait for a trader (or, once
-it's wired, the agent).
+A granted locate is a quantity at an agreed fee, entered at a time and good until an expiry (the close
+by default). Every approval decrements the live availability ledger (``market.held``) and records the
+basis the desk relied on under Reg SHO 203(b). Lines the rules engine can't clear wait for a trader or
+the agent. After the close the stock record says how much of each locate the client used (``apply_usage``).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from refdata import calendar
 
 from .. import clock, events, rules, secmaster
 from ..adapters import AdapterError, systems
@@ -21,6 +24,7 @@ from ..settings import get_settings
 from . import limits, market
 
 Decision = Literal["APPROVED", "PARTIAL", "REJECTED"]
+GRANTED = ("APPROVED", "PARTIAL", "USED", "EXPIRED", "RELEASED")  # was granted: has an entry time
 
 # The ETB list the auto-approve policy relies on: rebuilt each desk day from the market-data feed.
 _etb_built_at: datetime | None = None
@@ -44,6 +48,7 @@ class LineIn:
     identifier: str
     quantity: int
     line_no: int | None = None
+    max_fee_bps: float | None = None  # the client's limit
 
 
 def locate_json(loc: Locate, inst: Instrument | None = None, available: int | None = None,
@@ -52,10 +57,12 @@ def locate_json(loc: Locate, inst: Instrument | None = None, available: int | No
     out = {"id": loc.id, "requestRef": loc.request_ref, "lineNo": loc.line_no, "counterparty": loc.requester_cp,
            "identifier": loc.identifier, "instrumentId": loc.instrument_id, "qtyRequested": loc.qty_req,
            "qtyApproved": loc.qty_approved, "qtyUsed": loc.qty_used, "status": loc.status, "route": loc.route,
-           "routeReasons": loc.route_reasons, "tier": loc.tier_at_decision, "feeIndBps": loc.fee_ind_bps,
-           "decidedBy": loc.decided_by, "rationale": loc.rationale, "channel": loc.source_channel,
+           "routeReasons": loc.route_reasons, "tier": loc.tier_at_decision, "feeBps": loc.fee_bps,
+           "feeLimitBps": loc.fee_limit_bps, "decidedBy": loc.decided_by, "rationale": loc.rationale,
+           "channel": loc.source_channel,
            "sourceRef": loc.source_ref, "regShoBasis": loc.reg_sho_basis, "replyStatus": loc.reply_status,
            "error": loc.error, "receivedAt": clock.iso(loc.received_at), "decidedAt": clock.iso(loc.decided_at),
+           "enteredAt": clock.iso(loc.decided_at) if loc.status in GRANTED else None,
            "expiresAt": clock.iso(loc.expires_at)}
     if inst is not None:
         lv = secmaster.live(inst.id)
@@ -103,7 +110,7 @@ async def intake(s: AsyncSession, *, counterparty: str, lines: list[LineIn], cha
         loc = Locate(id=events.new_id("loc"), request_ref=request_ref, line_no=ln.line_no or n,
                      requester_cp=cp.code if cp else counterparty.upper(), identifier=ln.identifier,
                      qty_req=ln.quantity, status="RECEIVED", route="HOLD", route_reasons=[], source_channel=channel,
-                     source_ref=source_ref, received_at=now,
+                     fee_limit_bps=ln.max_fee_bps, source_ref=source_ref, received_at=now,
                      reply_status="PENDING" if channel in ("API", "CHAT") else "N/A")
         if res.instrument is None:
             loc.status, loc.route = "INVALID", "HOLD"
@@ -116,7 +123,10 @@ async def intake(s: AsyncSession, *, counterparty: str, lines: list[LineIn], cha
             avail = await market.available(s, inst.id)
             loc.route, loc.route_reasons = rules.locate_route(inst, lv["tier"], etb, ln.quantity, avail, cp)
             loc.tier_at_decision = lv["tier"]
-            loc.fee_ind_bps = (await pricing(s, inst, cp))["floorBps"]  # quote a bit above market
+            loc.fee_bps = (await pricing(s, inst, cp))["floorBps"]  # quote a bit above market
+            if ln.max_fee_bps is not None and loc.fee_bps > ln.max_fee_bps:  # no fee to agree without a trader
+                loc.route = "HOLD"
+                loc.route_reasons = [f"client's limit {ln.max_fee_bps:g} bps is under our floor {loc.fee_bps:g}"]
             hits = await filters(s, inst, available=avail, fresh=fresh)
             if cp is not None:
                 failing = [c for c in (await limits.for_line(s, cp, inst, ln.quantity))[0] if not c.ok]
@@ -173,8 +183,9 @@ class DecisionError(ValueError):
 
 async def decide(s: AsyncSession, loc: Locate, decision: Decision, qty: int | None, *, by: str,
                  rationale: str | None = None, fee_bps: float | None = None, reply: bool = True,
-                 override_floor: bool = False) -> Locate:
-    """Decide one line. Counterparty limits are hard; the fee floor gives way only to a trader's override."""
+                 override_floor: bool = False, expires_at: datetime | None = None) -> Locate:
+    """Decide one line. Counterparty limits are hard; the fee floor gives way only to a trader's override.
+    A granted locate is good until ``expires_at``: by default today's close, or the next business day's."""
     if loc.status not in ("RECEIVED",):
         raise DecisionError(f"locate {loc.id} is {loc.status}")
     qty = 0 if decision == "REJECTED" else (qty if qty is not None else loc.qty_req)
@@ -182,6 +193,8 @@ async def decide(s: AsyncSession, loc: Locate, decision: Decision, qty: int | No
         raise DecisionError("approved quantity exceeds requested")
     if decision != "REJECTED" and qty <= 0:
         raise DecisionError("approve a positive quantity, or reject")
+    if expires_at is not None and expires_at <= clock.now():
+        raise DecisionError("the expiry has already passed")
     if decision == "APPROVED" and qty < loc.qty_req:
         decision = "PARTIAL"
     if decision != "REJECTED" and loc.instrument_id:
@@ -192,7 +205,7 @@ async def decide(s: AsyncSession, loc: Locate, decision: Decision, qty: int | No
             raise DecisionError(f"over counterparty limits: {'; '.join(failing)}; at most {max_qty:,} fits")
         floor = (await pricing(s, inst, cp))["floorBps"]
         if fee_bps is None:  # the quote from intake, re-quoted if the market has moved through it
-            fee_bps = max(loc.fee_ind_bps or 0.0, floor)
+            fee_bps = max(loc.fee_bps or 0.0, floor)
         elif fee_bps < floor:
             if not (override_floor and by.startswith("trader:")):
                 raise DecisionError(f"{fee_bps:g} bps is under the desk's floor of {floor:g} "
@@ -202,9 +215,14 @@ async def decide(s: AsyncSession, loc: Locate, decision: Decision, qty: int | No
     # Cross first: before this line holds anything, how much of it our own inventory covers.
     crossed = min(qty, (await market.split(s, loc.instrument_id))["internal"]) if loc.instrument_id else 0
     loc.status, loc.qty_approved, loc.decided_by, loc.rationale = decision, qty, by, rationale
-    loc.decided_at, loc.expires_at = clock.now(), clock.end_of_day()
+    # Stored in UTC like every time here: SQLite drops the zone, so the New York close would read back as UTC.
+    loc.decided_at = clock.now()
+    loc.expires_at = (expires_at or calendar.locate_expiry(clock.now())).astimezone(UTC)
     if fee_bps is not None:
-        loc.fee_ind_bps = fee_bps
+        loc.fee_bps = fee_bps
+        if loc.fee_limit_bps is not None and fee_bps > loc.fee_limit_bps and decision != "REJECTED":
+            rationale = f"{rationale + '; ' if rationale else ''}over the client's limit of {loc.fee_limit_bps:g}"
+            loc.rationale = rationale
     if decision != "REJECTED":
         loc.reg_sho_basis = await reg_sho_basis(s, loc, crossed)
     events.record(s, "locate", loc.id, decision.lower(), locate_json(loc), before=before, actor=by)
@@ -221,7 +239,7 @@ async def send_reply(s: AsyncSession, locs: list[Locate]) -> None:
             by_req.setdefault(loc.request_ref, []).append(loc)
     for ref, group in by_req.items():
         lines = [{"lineNo": x.line_no, "decision": x.status, "approvedQuantity": x.qty_approved,
-                  "indicativeFeeBps": x.fee_ind_bps, "rationale": x.rationale, "regShoBasis": x.reg_sho_basis,
+                  "feeBps": x.fee_bps, "rationale": x.rationale, "regShoBasis": x.reg_sho_basis,
                   "expiresAt": clock.iso(x.expires_at)} for x in group]
         try:
             await systems().gateway.decide(ref, lines)
