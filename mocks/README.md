@@ -111,8 +111,8 @@ Default sim start: **Tue 27 Oct 2026, 08:55 New York**.
 YAML files in `control/scenarios/` drive the mocks with timed `<service>.<verb>` steps (`GET <svc>/_admin/scenario`
 lists a service's verbs):
 
-* `demo.yaml`: the five-minute demo's inputs. PB-ALPHA blasts 40 locates in chat (34 GC/ETB + 6 Warm),
-  the hedge fund's API posts 25 more, there's a hot-name RFQ, IOIs, a PB-BRAVO SEDOL/ISIN list, an internal
+* `demo.yaml`: the five-minute demo's inputs. Basalt's API sends 40 locates (34 GC/ETB + 6 Warm),
+  Kestrel's API posts 25 more, there's a hot-name RFQ, IOIs, a PB-BRAVO SEDOL/ISIN list, an internal
   borrow, and a prompt-injection attempt. The first booking breaks at the processor, and background API flow
   bursts from 09:00 to 09:45.
 * `chaos.yaml`: Venue A outage then lossy execution reports, a custodian settlement fail, slow and lossy

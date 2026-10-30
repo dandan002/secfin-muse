@@ -286,9 +286,14 @@ export interface ShortListLine {
   working: number;
   drafted: { actionId: string; kind: string; title: string }[];
   uncovered: number;
-  excess: number;
   uncoveredNotional: number;
-  status: "SHORT" | "WORKING" | "COVERED";
+  returnedSinceBox: number;
+  excess: number;
+  excessNotional: number;
+  excessCostUsd: number;
+  returning: { actionId: string; title: string; quantity: number }[];
+  toReturn: number;
+  status: "SHORT" | "WORKING" | "COVERED" | "EXCESS";
 }
 
 export interface ShortList {
@@ -296,5 +301,6 @@ export interface ShortList {
   settlementDate: string | null;
   lines: ShortListLine[];
   summary: { names?: number; short?: number; working?: number; covered?: number; clientShort?: number;
-    shortfall?: number; uncovered?: number; uncoveredNotional?: number };
+    shortfall?: number; uncovered?: number; uncoveredNotional?: number; excess?: number; excessNotional?: number;
+    excessCostUsd?: number; toReturn?: number };
 }

@@ -4,7 +4,7 @@
 #       POST /scenarios/demo/run {"mode": "live", "speed": 10}
 name: demo
 description: >
-  09:00 open; PB-ALPHA's API sends 40 locates (34 GC/ETB + 6 Warm); Kestrel's API posts 25 more. In chat,
+  09:00 open; Basalt's API sends 40 locates (34 GC/ETB + 6 Warm); Kestrel's API posts 25 more. In chat,
   traders work borrows and loans: a hot-name RFQ from Kestrel, a PB-ALPHA borrow with a bid, PB-BRAVO's
   borrow list, an internal borrow, a lender's IOIs and a recall; a prompt-injection attempt from Juniper; the
   processor breaks the first booking; background API flow with a 09:00-09:45 burst.
@@ -30,12 +30,12 @@ steps:
 
   - at: "09:00:05"
     do: gateway.burst
-    label: PB-ALPHA's API sends 40 locates (34 ETB + 6 Warm)
-    args: {counterparty: PBALPHA, lines: 40, tierCounts: {GC: 34, WARM: 6}, requestId: PBALPHA-DEMO-0001}
+    label: Basalt's API sends 40 locates (34 ETB + 6 Warm)
+    args: {counterparty: BASALTHF, lines: 40, tierCounts: {GC: 34, WARM: 6}, requestId: BASALTHF-DEMO-0001}
 
   - at: "09:00:30"
     do: gateway.burst
-    label: Hedge-fund API posts 25 locates
+    label: Kestrel's API posts 25 locates
     args: {counterparty: KESTRELHF, lines: 25, requestId: KESTRELHF-DEMO-0001}
 
   - at: "09:02:00"

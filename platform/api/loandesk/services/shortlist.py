@@ -10,6 +10,11 @@ yet, less borrows whose delivery is failing. The rest is the shortfall. Covers a
 borrow orders, and cover cards waiting at the gate) count against it; what's left is drafted as covers
 (``draft``): a borrow order the router places (a firm bid on Venue A for a GC name), or for a hot name a
 bid in chat to an agent lender we already talk to. The trader approves each card.
+
+Borrows the clients no longer need are excess: a name we're net borrowed in that nobody is short, or where the
+box is more than the shorts. Each costs its fee every day it stays out, so ``draft`` also drafts returns for
+the latest list, the dearest borrow first. Returns made since the box was read still show in it, so they're
+counted off, or the next draft would return the same shares again.
 """
 
 from __future__ import annotations
@@ -39,10 +44,12 @@ from ..models import (
 )
 from ..settings import get_settings
 from . import inventory
+from .booking import open_qty
 from .orders import OPEN as OPEN_ORDERS
 from .orders import OrderError, OrderIn, preview
 
 SOURCE = "short"  # cover cards carry source_ref "short:<instrument id>"
+RETURN = "return"  # return cards carry source_ref "return:<instrument id>"
 
 
 async def latest_date(s: AsyncSession) -> date | None:
@@ -93,7 +100,13 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
     by_name: dict[str, list[ClientShort]] = defaultdict(list)
     for c in shorts:
         by_name[c.instrument_id].append(c)
-    iids = list(by_name)
+    # And every name we're net borrowed in, so a borrow nobody is short against any more shows as excess.
+    held = {iid for iid, n in (await s.execute(
+        select(InternalPosition.instrument_id, func.sum(InternalPosition.borrowed - InternalPosition.lent))
+        .group_by(InternalPosition.instrument_id))).all() if (n or 0) > 0}
+    held |= set((await s.execute(select(Trade.instrument_id).where(Trade.side == "BORROW",
+                                                                   Trade.loan_status == "OPEN"))).scalars())
+    iids = [*by_name, *sorted(held - by_name.keys())]
     insts = {i.id: i for i in (await s.execute(select(Instrument).where(Instrument.id.in_(iids)))).scalars()}
     box: dict[str, int] = defaultdict(int)
     for p in (await s.execute(select(InternalPosition).where(InternalPosition.instrument_id.in_(iids)))).scalars():
@@ -110,6 +123,16 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
             unbooked[t.instrument_id] += q
         elif t.side == "BORROW" and t.settle_status == "FAILING":
             fails[t.instrument_id] += q
+    since: dict[str, int] = defaultdict(int)  # returns and recalls since the box was read: it still shows them
+    if box_at is not None:
+        for t in (await s.execute(select(Trade).where(Trade.instrument_id.in_(iids),
+                                                      Trade.sfp_contract_id.is_not(None)))).scalars():
+            booked = clock.parse_ts(clock.iso(t.booked_at)) if t.booked_at else None
+            if booked is None or booked > box_at:  # not in the box: its open quantity already counts
+                continue
+            for e in t.lifecycle or []:
+                if e.get("event") in ("RETURN", "RECALL") and clock.parse_ts(e["ts"]) > box_at:
+                    since[t.instrument_id] += int(e["quantity"]) * (1 if t.side == "BORROW" else -1)
     working: dict[str, int] = defaultdict(int)  # open borrow orders, and chat bids not answered yet
     for o in (await s.execute(select(Order).where(Order.instrument_id.in_(iids), Order.side == "BORROW",
                                                   Order.status.in_(OPEN_ORDERS)))).scalars():
@@ -124,17 +147,29 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
             drafted[a.source_ref.split(":", 1)[1]].append(a)
         elif a.kind == "order" and a.payload.get("side") == "BORROW" and a.payload.get("instrument") in by_name:
             drafted[a.payload["instrument"]].append(a)
+    returning: dict[str, list[tuple[Action, int]]] = defaultdict(list)  # return cards at the gate, and how many
+    cards = (await s.execute(select(Action).where(Action.status == "PENDING", Action.kind == "lifecycle"))).scalars()
+    cards = [a for a in cards if a.payload.get("event") == "RETURN"]
+    on = {t.id: t for t in (await s.execute(select(Trade).where(
+        Trade.id.in_([a.payload["tradeId"] for a in cards])))).scalars()} if cards else {}
+    for a in cards:
+        if (tr := on.get(a.payload["tradeId"])) is not None:
+            returning[tr.instrument_id].append((a, int(a.payload.get("quantity") or open_qty(tr))))
     lines = []
-    for iid, rows in by_name.items():
+    for iid in iids:
+        rows = by_name.get(iid, [])
         inst = insts.get(iid)
         lv = secmaster.live(iid)
         need = sum(c.short_qty for c in rows)
-        cover = max(box[iid], 0) + unbooked[iid] - fails[iid]
+        cover = max(box[iid] - since[iid], 0) + unbooked[iid] - fails[iid]
         shortfall = max(need - cover, 0)
         pending = working[iid] + sum(int(a.payload.get("quantity") or (a.original or {}).get("quantity") or 0)
                                      for a in drafted[iid])
         uncovered = max(shortfall - pending, 0)
         px = lv["lastPx"] or 0.0
+        fx = rules.FX_USD.get(inst.ccy if inst else "USD", 1.0)
+        excess = max(cover - need, 0)
+        to_return = max(excess - sum(q for _, q in returning[iid]), 0)
         lines.append({
             "instrumentId": iid, "composite": inst.composite if inst else iid, "name": inst.name if inst else None,
             "ccy": inst.ccy if inst else None, "tier": lv["tier"],
@@ -147,11 +182,16 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
             "box": box[iid], "unbooked": unbooked[iid], "fails": fails[iid], "cover": cover,
             "shortfall": shortfall, "working": working[iid],
             "drafted": [{"actionId": a.id, "kind": a.kind, "title": a.title} for a in drafted[iid]],
-            "uncovered": uncovered, "excess": max(cover - need, 0) if unbooked[iid] or box[iid] > 0 else 0,
-            "uncoveredNotional": round(uncovered * px * rules.FX_USD.get(inst.ccy if inst else "USD", 1.0), 2),
-            "status": "COVERED" if shortfall == 0 else ("WORKING" if uncovered == 0 else "SHORT"),
+            "uncovered": uncovered, "uncoveredNotional": round(uncovered * px * fx, 2),
+            "returnedSinceBox": since[iid], "excess": excess, "excessNotional": round(excess * px * fx, 2),
+            # What the excess costs a day at the market fee (actual/360).
+            "excessCostUsd": round(excess * px * fx * (lv["feeBps"] or 0.0) / 10_000 / 360, 2),
+            "returning": [{"actionId": a.id, "title": a.title, "quantity": q} for a, q in returning[iid]],
+            "toReturn": to_return,
+            "status": ("EXCESS" if excess else "COVERED") if shortfall == 0
+            else ("WORKING" if uncovered == 0 else "SHORT"),
         })
-    lines.sort(key=lambda x: (-x["uncoveredNotional"], -x["shortfall"], x["composite"]))
+    lines.sort(key=lambda x: (-x["uncoveredNotional"], -x["shortfall"], -x["excessNotional"], x["composite"]))
     short = [x for x in lines if x["status"] != "COVERED"]
     return {
         "tradeDate": d.isoformat(), "settlementDate": calendar.add_business_days(d, 1).isoformat(),
@@ -159,6 +199,10 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
         "summary": {"names": len(lines), "short": sum(1 for x in lines if x["status"] == "SHORT"),
                     "working": sum(1 for x in lines if x["status"] == "WORKING"),
                     "covered": sum(1 for x in lines if x["status"] == "COVERED"),
+                    "excess": sum(1 for x in lines if x["status"] == "EXCESS"),
+                    "excessNotional": round(sum(x["excessNotional"] for x in lines), 2),
+                    "excessCostUsd": round(sum(x["excessCostUsd"] for x in lines), 2),
+                    "toReturn": sum(x["toReturn"] for x in lines),
                     "clientShort": sum(x["clientShort"] for x in lines),
                     "shortfall": sum(x["shortfall"] for x in short),
                     "uncovered": sum(x["uncovered"] for x in short),
@@ -253,9 +297,61 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
             made.append(a.id)
         except (OrderError, gate.GateError) as e:
             notes.append(f"{ln['composite']}: {e}")
+    if trade_date is None or trade_date == await latest_date(s):  # an old list's excess is history
+        made += await _draft_returns(s, sl, by=by, notes=notes)
     if made:
         events.publish_later(s, "short_list", {"type": "drafted", "actions": made})
     return {"tradeDate": sl["tradeDate"], "drafted": made, "notes": notes}
+
+
+async def _draft_returns(s: AsyncSession, sl: dict[str, Any], *, by: str, notes: list[str]) -> list[str]:
+    """A return card per borrow for each name's excess (less returns already at the gate), dearest fee first.
+    Only borrows booked at the processor and not failing can be returned."""
+    from .. import gate
+
+    made = []
+    for ln in sl["lines"]:
+        left = ln["toReturn"] // 100 * 100
+        if left <= 0:
+            continue
+        carded = {a["actionId"] for a in ln["returning"]}
+        busy = {(await s.get(Action, i)).payload["tradeId"] for i in carded}
+        trades = (await s.execute(select(Trade).where(
+            Trade.instrument_id == ln["instrumentId"], Trade.side == "BORROW", Trade.loan_status == "OPEN",
+            Trade.sfp_contract_id.is_not(None), Trade.settle_status.is_distinct_from("FAILING"))
+            .order_by(Trade.fee_bps.desc(), Trade.executed_at.desc()))).scalars().all()
+        why = (f"clients short {ln['clientShort']:,} {ln['composite']} settling {sl['settlementDate']}; box "
+               f"{ln['box']:,}" + (f", unbooked {ln['unbooked']:,}" if ln["unbooked"] else "")
+               + (f", returned since the box was read {ln['returnedSinceBox']:,}" if ln["returnedSinceBox"] else "")
+               + (f", failing {ln['fails']:,}" if ln["fails"] else "")
+               + f": {ln['excess']:,} more than they need")
+        flags = [f"warning: borrow orders for {ln['working']:,} still working on the name; cancel them too"
+                 ] if ln["working"] else []
+        for t in trades:
+            if left <= 0:
+                break
+            have = open_qty(t)
+            if t.id in busy or have <= 0:
+                continue
+            qty = have if have <= left else left
+            left -= qty
+            daily = qty * ln["lastPx"] * rules.FX_USD.get(ln["ccy"] or "USD", 1.0) * t.fee_bps / 10_000 / 360
+            try:
+                a = await gate.propose(
+                    s, kind="lifecycle", payload={"tradeId": t.id, "event": "RETURN", "quantity": qty},
+                    proposed_by=by,
+                    title=f"return excess: {qty:,} {ln['composite']} to {t.cp_code} @ {t.fee_bps:g} bps",
+                    rationale=f"{why}. Returning {'all' if qty == have else f'{qty:,} of {have:,}'} of {t.id}, the "
+                              f"dearest borrow left, saves about ${daily:,.0f} a day.",
+                    risk_flags=flags, source_ref=f"{RETURN}:{ln['instrumentId']}",
+                    original={"shortList": sl["tradeDate"], "line": ln["instrumentId"], "excess": ln["excess"]})
+                made.append(a.id)
+            except gate.GateError as e:
+                notes.append(f"{ln['composite']}: {e}")
+                break
+        if left >= 100:
+            notes.append(f"{ln['composite']}: {left:,} excess isn't on a returnable borrow yet (unbooked or failing)")
+    return made
 
 
 def missed_closes(have: date | None, latest: date) -> list[date]:

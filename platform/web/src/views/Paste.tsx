@@ -18,7 +18,7 @@ export function Paste() {
   const [text, setText] = useState("");
   const [prev, setPrev] = useState<PastePreview | null>(null);
   const [target, setTarget] = useState<Target>("locates");
-  const [cp, setCp] = useState("PBALPHA");
+  const [cp, setCp] = useState("KESTRELHF");
   const [skip, setSkip] = useState<Set<number>>(new Set());
   const { data: cps } = useQuery<Counterparty[]>("/counterparties");
   const toast = useDesk((s) => s.toast);
@@ -78,7 +78,7 @@ export function Paste() {
             { id: "interest_list", label: "as venue B list" }, { id: "watchlist", label: "as watchlist" }]} />
           {target === "locates" && (
             <select value={cp} onChange={(e) => setCp(e.target.value)} className="input h-6 w-32">
-              {cps?.filter((c) => c.kind !== "AGENT_LENDER").map((c) => <option key={c.code}>{c.code}</option>)}
+              {cps?.filter((c) => c.kind === "HEDGE_FUND").map((c) => <option key={c.code}>{c.code}</option>)}
             </select>
           )}
           <button className="btn-accent" onClick={apply}>apply</button>

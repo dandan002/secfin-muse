@@ -39,6 +39,16 @@ def _gateway(monkeypatch: pytest.MonkeyPatch, rec: dict[str, Any]) -> None:
     monkeypatch.setattr(systems().gateway, "stock_record", stock_record)
 
 
+def _short(sl: dict[str, Any]) -> list[dict[str, Any]]:
+    """The lines the clients are short (the list also carries names we hold borrows in, from other tests)."""
+    return [x for x in sl["lines"] if x["clientShort"]]
+
+
+async def _line(client: httpx.AsyncClient, trade_date: str, instrument_id: str) -> dict[str, Any]:
+    sl = (await client.get("/short-list", params={"date": trade_date})).json()
+    return next(x for x in sl["lines"] if x["instrumentId"] == instrument_id)
+
+
 async def _api_locate(ref: str, inst: Instrument, qty: int, cp: str = "KESTRELHF") -> Locate:
     await _supply(inst.id, 5_000_000)
     async with db.session() as s:
@@ -105,7 +115,7 @@ async def test_the_stock_record_uses_locates_and_builds_the_short_list(
         assert (await s.get(Locate, lb.id)).status == "EXPIRED"  # the client went elsewhere
     sl = (await client.get("/short-list", params={"date": "2026-10-23"})).json()
     assert sl["settlementDate"] == "2026-10-26"
-    [ln] = sl["lines"]
+    [ln] = _short(sl)
     assert (ln["instrumentId"], ln["clientShort"], ln["box"], ln["shortfall"]) == (a.id, 75_000, 0, 75_000)
     assert [c["counterparty"] for c in ln["clients"]] == ["KESTRELHF", "CEDARHF"]
     [card] = ln["drafted"]  # drafted as the record landed; the trader approves it
@@ -123,7 +133,7 @@ async def test_the_stock_record_uses_locates_and_builds_the_short_list(
         await inventory.apply(s, [{"instrumentId": a.id, "side": "BORROW", "openQuantity": 75_000,
                                    "bookingEntity": "LOANDESK-US", "avgFeeBps": 12.0}])
         await s.commit()
-    [ln] = (await client.get("/short-list", params={"date": "2026-10-23"})).json()["lines"]
+    ln = await _line(client, "2026-10-23", a.id)
     assert (ln["box"], ln["shortfall"], ln["status"]) == (75_000, 0, "COVERED")
 
 
@@ -142,7 +152,7 @@ async def test_a_hot_cover_is_a_bid_in_chat_and_the_lenders_done_drafts_the_borr
                                           "shortQuantity": 120_000, "soldQuantity": 120_000,
                                           "coveredQuantity": 0}]})
     await sync.sync_stock_record()
-    [ln] = (await client.get("/short-list", params={"date": "2026-10-26"})).json()["lines"]
+    ln = await _line(client, "2026-10-26", hot.id)
     [card] = ln["drafted"]
     assert card["kind"] == "chat_send" and ln["status"] == "WORKING"
     async with db.session() as s:
@@ -183,12 +193,12 @@ async def test_a_bid_out_in_chat_is_working_until_the_lender_counters_then_the_c
                            "positions": [{"counterparty": "CEDARHF", "instrumentId": hot.id, "shortQuantity": 30_000,
                                           "soldQuantity": 30_000, "coveredQuantity": 0}]})
     await sync.sync_stock_record()
-    [ln] = (await client.get("/short-list", params={"date": "2026-10-27"})).json()["lines"]
+    ln = await _line(client, "2026-10-27", hot.id)
     [card] = ln["drafted"]
     assert card["kind"] == "chat_send"
     assert (await client.post(f"/actions/{card['actionId']}/approve")).json()["status"] == "EXECUTED"
     room, text = sent[-1]
-    [ln] = (await client.get("/short-list", params={"date": "2026-10-27"})).json()["lines"]
+    ln = await _line(client, "2026-10-27", hot.id)
     assert (ln["status"], ln["working"], ln["drafted"]) == ("WORKING", 30_000, [])  # the bid is out
 
     async with db.session() as s:
@@ -198,7 +208,7 @@ async def test_a_bid_out_in_chat_is_working_until_the_lender_counters_then_the_c
                                   "text": f"best I can do on {hot.composite} is 9000bps"})
         await s.commit()
     assert m.intent == "COUNTER"
-    [ln] = (await client.get("/short-list", params={"date": "2026-10-27"})).json()["lines"]
+    ln = await _line(client, "2026-10-27", hot.id)
     assert (ln["status"], ln["working"]) == ("SHORT", 0)  # answered, and not done: the trader's call again
     [again] = (await client.post("/short-list/draft")).json()["drafted"]
     async with db.session() as s:
@@ -233,8 +243,91 @@ async def test_a_borrow_booked_since_the_box_was_read_still_covers(client: httpx
                         loan_status="OPEN", lifecycle=[]))
             await s.commit()
         await sync.sync_stock_record()
-        [ln] = (await client.get("/short-list", params={"date": "2026-10-28"})).json()["lines"]
+        ln = await _line(client, "2026-10-28", name.id)
         assert (ln["box"], ln["unbooked"], ln["shortfall"], ln["status"]) == (0, 40_000, 0, "COVERED")
         assert (await client.post("/short-list/draft")).json()["drafted"] == []
+    finally:
+        clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+
+
+async def test_borrows_the_clients_no_longer_need_are_returned_dearest_first(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The box holds more than the clients are short: return the excess, the dearest borrow first, and never a
+    failing one. A return made before the box is read again must not be drafted a second time."""
+    from datetime import UTC, date, datetime
+
+    from loandesk import clock
+    from loandesk.models import Trade
+
+    x, y = (await _names("GC", 8))[6:8]  # x: clients short 30k of a 60k box; y: nobody short any more
+    calls: list[tuple[str, str, int | None]] = []
+
+    async def lifecycle(contract_id: str, event: str, quantity: int | None = None,
+                        fee_bps: float | None = None) -> dict[str, Any]:
+        calls.append((event, contract_id, quantity))
+        return {}
+
+    async def instruct(body: dict[str, Any]) -> dict[str, Any]:
+        return {"instruction": {**body, "instructionId": f"CUST-RET-{len(calls)}", "status": "ACCEPTED"}}
+
+    monkeypatch.setattr(systems().processor, "lifecycle", lifecycle)
+    monkeypatch.setattr(systems().custodian, "instruct", instruct)
+
+    def borrow(tid: str, inst: Instrument, qty: int, fee: float, settle: str = "SETTLED") -> Trade:
+        at = datetime(2026, 10, 27, 13, 0, tzinfo=UTC)  # booked before the box was read: it's in the box
+        return Trade(id=tid, venue="VENUE_A", venue_trade_id=f"NGT-{tid}", uti=f"UTI{tid}", side="BORROW",
+                     instrument_id=inst.id, cp_code="HARBORAL", qty=qty, open_qty=qty, fee_bps=fee, price=50.0,
+                     ccy="USD", settle_date=date(2026, 10, 28), venue_json={}, executed_at=at,
+                     sfp_contract_id=f"SFP-{tid}", booked_at=at, loan_status="OPEN", settle_status=settle,
+                     lifecycle=[])
+
+    async with db.session() as s:
+        s.add_all([borrow("trd_xs_cheap", x, 40_000, 20.0), borrow("trd_xs_dear", x, 20_000, 60.0),
+                   borrow("trd_xs_y", y, 25_000, 15.0), borrow("trd_xs_yfail", y, 10_000, 90.0, "FAILING")])
+        await inventory.apply(s, [{"instrumentId": x.id, "side": "BORROW", "openQuantity": 60_000,
+                                   "bookingEntity": "LOANDESK-US", "avgFeeBps": 33.0},
+                                  {"instrumentId": y.id, "side": "BORROW", "openQuantity": 35_000,
+                                   "bookingEntity": "LOANDESK-US", "avgFeeBps": 36.0}])
+        await s.commit()
+    _gateway(monkeypatch, {"tradeDate": "2026-10-29", "settlementDate": "2026-10-30",
+                           "closedAt": "2026-10-29T20:00:00Z", "shortSales": [], "locateUsage": [],
+                           "positions": [{"counterparty": "CEDARHF", "instrumentId": x.id, "shortQuantity": 30_000,
+                                          "soldQuantity": 0, "coveredQuantity": 10_000}]})
+    await sync.sync_stock_record()  # drafts the returns along with any covers
+
+    lx = await _line(client, "2026-10-29", x.id)
+    assert (lx["clientShort"], lx["cover"], lx["excess"], lx["status"]) == (30_000, 60_000, 30_000, "EXCESS")
+    assert lx["excessCostUsd"] > 0 and lx["toReturn"] == 0  # all of it is at the gate
+    async with db.session() as s:
+        cards = [await s.get(Action, r["actionId"]) for r in lx["returning"]]
+    assert sorted((a.payload["tradeId"], a.payload["quantity"]) for a in cards) == [
+        ("trd_xs_cheap", 10_000), ("trd_xs_dear", 20_000)]  # the 60 bps borrow goes back whole
+    assert all(a.kind == "lifecycle" and a.payload["event"] == "RETURN" for a in cards)
+    assert "30,000 more than they need" in cards[0].rationale
+
+    ly = await _line(client, "2026-10-29", y.id)
+    assert (ly["clientShort"], ly["fails"], ly["excess"], ly["status"]) == (0, 10_000, 25_000, "EXCESS")
+    [ry] = ly["returning"]
+    async with db.session() as s:
+        assert (await s.get(Action, ry["actionId"])).payload == {"tradeId": "trd_xs_y", "event": "RETURN",
+                                                                 "quantity": 25_000}  # not the failing one
+    assert (await client.post("/short-list/draft")).json()["drafted"] == []  # one card per borrow
+
+    clock.pin(datetime(2026, 10, 27, 14, 5, tzinfo=UTC))
+    try:
+        for a in cards:
+            assert (await client.post(f"/actions/{a.id}/approve")).json()["status"] == "EXECUTED"
+        assert sorted(calls) == [("RETURN", "SFP-trd_xs_cheap", 10_000), ("RETURN", "SFP-trd_xs_dear", 20_000)]
+        lx = await _line(client, "2026-10-29", x.id)  # the box still shows them until it's read again
+        assert (lx["box"], lx["returnedSinceBox"], lx["excess"], lx["status"]) == (60_000, 30_000, 0, "COVERED")
+        assert (await client.post("/short-list/draft")).json()["drafted"] == []
+        async with db.session() as s:
+            await inventory.apply(s, [{"instrumentId": x.id, "side": "BORROW", "openQuantity": 30_000,
+                                       "bookingEntity": "LOANDESK-US", "avgFeeBps": 20.0},
+                                      {"instrumentId": y.id, "side": "BORROW", "openQuantity": 35_000,
+                                       "bookingEntity": "LOANDESK-US", "avgFeeBps": 36.0}])
+            await s.commit()
+        lx = await _line(client, "2026-10-29", x.id)
+        assert (lx["box"], lx["returnedSinceBox"], lx["excess"]) == (30_000, 0, 0)
     finally:
         clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
