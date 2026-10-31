@@ -114,6 +114,8 @@ export interface Order {
   counterFeeBps: number | null;
   counterQty: number | null;
   rejectReason: string | null;
+  basketId: string | null; // one line of a basket: a Venue B list shared with other names
+  lineNo: number | null;
   checks: Check[];
   createdBy: string;
   settlementDate: string;

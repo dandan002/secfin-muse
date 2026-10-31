@@ -83,7 +83,8 @@ export function BlotterView() {
                   <td className="td text-right text-warm">{o.counterFeeBps ? `${bps(o.counterFeeBps)}${o.counterQty ? ` × ${qty(o.counterQty)}` : ""}` : ""}</td>
                   <td className="td text-right text-dim">{o.filledQty ? qty(o.filledQty) : ""}</td>
                   <td className="td text-dim">{o.counterparty ?? "best"}</td>
-                  <td className="td text-faint">{o.venue.replace("VENUE_", "")}</td>
+                  <td className="td text-faint" title={o.basketId ? `basket ${o.basketId}, line ${o.lineNo}: one Venue B list` : ""}>
+                    {o.venue.replace("VENUE_", "")}{o.basketId && <span className="ml-1 text-info">basket</span>}</td>
                   <td className="td"><State s={o.status} /></td>
                   <td className="td text-faint">{actor(o.createdBy)}</td>
                   <td className="td text-faint max-w-[260px] truncate" title={o.rejectReason ?? o.routeReason}>{o.rejectReason ?? o.routeReason}</td>

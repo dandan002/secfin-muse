@@ -38,6 +38,7 @@ async with VenueBClient("https://wematch.mocks.example.com", api_key=key) as wm:
 | GET | `/v1/interest-lists` | Your lists |
 | GET | `/v1/interest-lists/{listId}` | The list with `lineItems` (each with `matchedQuantity` and `status`) |
 | DELETE | `/v1/interest-lists/{listId}` | Withdraw |
+| DELETE | `/v1/interest-lists/{listId}/lines/{lineNo}` | Withdraw one line (a basket name no longer needed); the rest stays live, and the optimiser skips it. 409 if filled |
 
 **JSON**: `{name, product (SBL|TRS|REPO), clientRef?, autoAccept?, lines: [ListLine]}`, up to
 10,000 lines. `ListLine`: `instrument` (any identifier), `side` (BORROW/LEND), `quantity`,

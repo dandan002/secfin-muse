@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     # cover (a borrow order, or a bid in chat to an agent lender for a hot name). The trader approves each.
     draft_covers: bool = True
     cover_markup_pct: float = 5.0  # bid this much over the market fee, so a firm bid fills
+    # A name the clients are short that we've lent out: recall the loan rather than borrow, when the loan earns
+    # less than the cover would cost (or the name is hot). And when several warm (negotiated) names are short at
+    # once, cover them as one basket: a single Venue B interest list, a line per name.
+    recall_loans_for_shorts: bool = True
+    basket_min_names: int = 3  # 0 turns baskets off
     fat_finger_band: float = 0.5  # block fees outside last fee x (1 - band, 1 + 1/band)
     max_pct_shares_out: float = 5.0
     max_pct_adv: float = 100.0

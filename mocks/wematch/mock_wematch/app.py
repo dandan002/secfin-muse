@@ -152,6 +152,23 @@ async def withdraw_list(list_id: str, who: str = Depends(member("lists:write")))
         return engine.list_json(lst)
 
 
+@app.delete("/v1/interest-lists/{list_id}/lines/{line_no}", tags=["lists"])
+async def withdraw_line(list_id: str, line_no: int, who: str = Depends(member("lists:write"))) -> dict:
+    """Withdraw one line of a list (a basket's name no longer needed); the rest stays live. Matches already
+    proposed on it stand until accepted or rejected."""
+    async with ctx.session() as s:
+        ln = (await s.execute(select(ListLine).where(ListLine.list_id == list_id, ListLine.line_no == line_no)
+                              .with_for_update())).scalar()
+        if ln is None:
+            raise HTTPException(404, "no such line")
+        if ln.status == "FILLED":
+            raise HTTPException(409, "line is filled")
+        ln.status = "WITHDRAWN"
+        await ctx.events.emit(s, "line_withdrawn", "list", list_id, engine.line_json(ln), topic="lists")
+        await s.commit()
+        return engine.line_json(ln)
+
+
 class OptimiserRun(BaseModel):
     listId: str | None = None
 

@@ -101,17 +101,21 @@ class VenueB:
     async def matches(self, list_id: str | None = None, limit: int = 5000) -> list[dict[str, Any]]:
         return [m for m in self.match_rows if not list_id or m["listId"] == list_id]
 
-    def dealer_counters(self, list_id: str, fee: float, qty: int) -> None:
-        self.match_rows.append({"matchId": f"WM-M-{next(_n):08d}", "listId": list_id,
+    def dealer_counters(self, list_id: str, fee: float, qty: int, instrument_id: str = "I00001") -> None:
+        self.match_rows.append({"matchId": f"WM-M-{next(_n):08d}", "listId": list_id, "instrumentId": instrument_id,
                                 "status": "PROPOSED", "ourAccept": False, "feeBps": fee, "quantity": qty,
                                 "counterparty": {"entity": self.entity}})
+
+    async def withdraw_line(self, list_id: str, line_no: int) -> dict[str, Any]:
+        self.calls.append(("withdraw_line", list_id, line_no))
+        return {}
 
     async def accept(self, match_id: str) -> dict[str, Any]:
         m = next(x for x in self.match_rows if x["matchId"] == match_id)
         m.update(status="AGREED", ourAccept=True)
         line = self.by_id[m["listId"]]["lines"][0]
         self.loan_rows.append({
-            "loanId": f"WM-T-{next(_n):08d}", "matchId": match_id, "instrumentId": "I00001",
+            "loanId": f"WM-T-{next(_n):08d}", "matchId": match_id, "instrumentId": m.get("instrumentId", "I00001"),
             "side": line["side"], "counterparty": {"entity": self.entity}, "quantityOriginal": m["quantity"],
             "quantityOpen": m["quantity"], "feeBps": m["feeBps"], "pendingRerateBps": None, "priceAtTrade": 180.0,
             "ccy": "USD", "term": "OPEN", "collateralType": "CASH", "collateralCcy": "USD",
@@ -162,7 +166,7 @@ async def venue_b(monkeypatch: pytest.MonkeyPatch, setup: None) -> VenueB:
         harbor = await s.get(Counterparty, "HARBORAL")
     vb = VenueB(harbor.wematch_entity)
     for name in ("upload_list", "run_optimiser", "lists", "interest_list", "matches", "accept", "propose", "reject",
-                 "withdraw", "loans", "rerate", "return_qty"):
+                 "withdraw", "withdraw_line", "loans", "rerate", "return_qty"):
         monkeypatch.setattr(systems().venue_b, name, getattr(vb, name))
     return vb
 
@@ -346,6 +350,49 @@ async def test_a_venue_b_buy_in_closes_the_loan_and_is_booked_at_the_processor(
         [claim] = (await s.execute(select(Action).where(Action.source_ref == f"buyin:{b['id']}"))).scalars().all()
     assert (claim.payload["direction"], claim.payload["amount"]) == ("RECEIVE", 1_200.0)
     assert claim.title.startswith("claim $1,200 from HARBORAL") and b["cashStatus"] == "TO_RECEIVE"
+
+
+async def test_a_basket_is_one_venue_b_list_and_each_name_fills_or_cancels_on_its_own(
+        client: httpx.AsyncClient, post_trade: SimpleNamespace, venue_b: VenueB) -> None:
+    """Three names as one interest list: an order per line. A dealer's counter and fill land on the name they're
+    in; cancelling one name withdraws its line and leaves the others working."""
+    from loandesk import gate, secmaster
+
+    names = ["I00004", "I00005", "I00006"]
+    fee = {iid: round(secmaster.live(iid)["feeBps"] * 1.05, 1) for iid in names}
+    async with db.session() as s:
+        a = await gate.propose(s, kind="basket", proposed_by="rules:short-list", title="basket", payload={"lines": [
+            {"side": "BORROW", "instrument": iid, "quantity": 10_000 * (n + 1), "feeBps": fee[iid], "venue": "VENUE_B",
+             "override": True} for n, iid in enumerate(names)]})
+        await s.commit()
+    r = (await client.post(f"/actions/{a.id}/approve", headers={"x-trader": "sam"})).json()
+    assert r["status"] == "EXECUTED", r["result"]
+    [lst] = [x for x in venue_b.by_id.values() if x["listId"] == r["result"]["listId"]]
+    assert len(lst["lines"]) == 3 and lst["autoAccept"] is True
+    basket = r["result"]["basketId"]
+
+    async def lines() -> dict[str, dict[str, Any]]:
+        return {o["instrumentId"]: o for o in (await client.get("/orders")).json() if o["basketId"] == basket}
+
+    got = await lines()
+    assert {o["venueOrderId"] for o in got.values()} == {lst["listId"]}
+    assert [got[i]["lineNo"] for i in names] == [1, 2, 3]
+    assert all(o["status"] == "PENDING" and o["venue"] == "VENUE_B" for o in got.values())
+
+    venue_b.dealer_counters(lst["listId"], fee["I00005"] - 0.5, 20_000, instrument_id="I00005")  # inside its limit
+    await sync.sync_venue_b()  # accepted within the limit
+    await sync.sync_venue_b()  # and the loan lands on line 2's order
+    after = await lines()
+    assert (after["I00005"]["status"], after["I00005"]["filledQty"]) == ("EXECUTED", 20_000)
+    assert after["I00004"]["status"] == after["I00006"]["status"] == "PENDING"
+    [t] = [x for x in (await client.get("/trades")).json() if x["orderId"] == got["I00005"]["id"]]
+    assert t["instrumentId"] == "I00005" and t["venue"] == "VENUE_B"
+
+    c = (await client.post(f"/orders/{got['I00006']['id']}/cancel", headers={"x-trader": "sam"})).json()
+    assert c["status"] == "CANCELLED"
+    assert ("withdraw_line", lst["listId"], 3) in venue_b.calls and lst["status"] == "ACTIVE"  # the list stays
+    still = await lines()
+    assert still["I00004"]["status"] == "PENDING"
 
 
 # -- chat -------------------------------------------------------------------------------------------------

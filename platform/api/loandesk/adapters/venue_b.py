@@ -33,6 +33,10 @@ class VenueB(Client):
     async def withdraw(self, list_id: str) -> dict[str, Any]:
         return await self.request("DELETE", f"/v1/interest-lists/{list_id}")
 
+    async def withdraw_line(self, list_id: str, line_no: int) -> dict[str, Any]:
+        """One line of a list (a basket's name); the rest stays live."""
+        return await self.request("DELETE", f"/v1/interest-lists/{list_id}/lines/{line_no}")
+
     async def matches(self, list_id: str | None = None, limit: int = 5000) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"limit": limit}
         if list_id:

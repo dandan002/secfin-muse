@@ -1473,6 +1473,60 @@
         ]
       }
     },
+    "/v1/interest-lists/{list_id}/lines/{line_no}": {
+      "delete": {
+        "description": "Withdraw one line of a list (a basket's name no longer needed); the rest stays live. Matches already\nproposed on it stand until accepted or rejected.",
+        "operationId": "withdraw_line_v1_interest_lists__list_id__lines__line_no__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "list_id",
+            "required": true,
+            "schema": {
+              "title": "List Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "line_no",
+            "required": true,
+            "schema": {
+              "title": "Line No",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Withdraw Line V1 Interest Lists  List Id  Lines  Line No  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw Line",
+        "tags": [
+          "lists"
+        ]
+      }
+    },
     "/v1/loans": {
       "get": {
         "operationId": "loans_v1_loans_get",

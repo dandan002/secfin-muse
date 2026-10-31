@@ -58,6 +58,7 @@ def order_json(o: Order, inst: Instrument | None = None) -> dict[str, Any]:
             "marginPct": o.margin_pct, "term": o.term, "termEndDate": o.term_end.isoformat() if o.term_end else None,
             "settlementDate": o.settle_date.isoformat(), "legalAgreement": o.legal_agreement,
             "bookingEntity": o.booking_entity, "status": o.status, "filledQty": o.filled_qty,
+            "basketId": o.basket_id, "lineNo": o.line_no,
             "counterFeeBps": o.counter_fee_bps, "counterQty": o.counter_qty, "rejectReason": o.reject_reason,
             "checks": o.checks, "createdBy": o.created_by, "actionId": o.action_id,
             "createdAt": clock.iso(o.created_at), "updatedAt": clock.iso(o.updated_at)}
@@ -149,6 +150,46 @@ async def create(s: AsyncSession, req: OrderIn, *, by: str, action_id: str | Non
         await send_to_venue(s, o, failover=cfg.failover_to_venue_b and req.venue == "AUTO" and req.type == "AUTO"
                             and not o.cp_code)
     return o
+
+
+async def create_basket(s: AsyncSession, reqs: list[OrderIn], *, by: str, action_id: str | None = None) -> list[Order]:
+    """Several names as one Venue B interest list: an order per line, sharing the list, sent together. Each line's
+    pre-trade checks are its own; a line that fails them stops the basket."""
+    basket = events.new_id("bsk")
+    made = []
+    for n, req in enumerate(reqs, start=1):
+        o = await create(s, req.model_copy(update={"venue": "VENUE_B", "type": "INTEREST_LIST"}), by=by,
+                         action_id=action_id, send=False)
+        o.basket_id, o.line_no = basket, n
+        o.route_reason = f"basket of {len(reqs)} names: one Venue B interest list, line {n}"
+        made.append(o)
+    insts = {o.id: await s.get(Instrument, o.instrument_id) for o in made}
+    vb = systems().venue_b
+    lines = [{"instrument": insts[o.id].isin, "side": o.side, "quantity": o.qty, "feeBps": o.fee_bps, "term": o.term,
+              "collateralType": o.collateral_type, "collateralCcy": o.collateral_ccy} for o in made]
+    try:
+        lst = await vb.upload_list(f"basket {basket}", lines, auto_accept=True, client_ref=basket)
+        for o in made:
+            o.venue_order_id, o.status = lst["listId"], "PENDING"
+    except AdapterError as e:
+        for o in made:
+            o.status, o.reject_reason = ("REJECTED" if not _down(e) else "FAILED"), str(e)
+    else:
+        try:
+            await vb.run_optimiser(lst["listId"])
+        except AdapterError:
+            pass
+    for o in made:
+        o.updated_at = clock.now()
+        events.record(s, "order", o.id, "sent" if o.venue_order_id else "send_failed", order_json(o, insts[o.id]),
+                      actor="system")
+    return made
+
+
+def mine(o: Order, matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The matches on this order's list that are its own: on a basket, the ones in its name."""
+    return [m for m in matches if m.get("listId") == o.venue_order_id
+            and (o.basket_id is None or m.get("instrumentId") == o.instrument_id)]
 
 
 def _down(e: AdapterError) -> bool:
@@ -339,8 +380,9 @@ async def add_trade_b(s: AsyncSession, loan: dict[str, Any], list_id: str | None
     suffix); terms the venue doesn't carry come from the order, or the desk's defaults for the counterparty."""
     if (await s.execute(select(Trade.id).where(Trade.venue_trade_id == loan["loanId"]))).scalar():
         return None
-    o = (await s.execute(select(Order).where(Order.venue == "VENUE_B", Order.venue_order_id == list_id))).scalar() \
-        if list_id else None
+    o = (await s.execute(select(Order).where(  # on a basket, the list has an order per name
+        Order.venue == "VENUE_B", Order.venue_order_id == list_id,
+        Order.instrument_id == loan["instrumentId"]))).scalar() if list_id else None
     cp = (await s.execute(select(Counterparty).where(
         Counterparty.wematch_entity == loan["counterparty"]["entity"]))).scalar()
     inst = await s.get(Instrument, loan["instrumentId"])
@@ -374,7 +416,7 @@ async def add_trade_b(s: AsyncSession, loan: dict[str, Any], list_id: str | None
 async def _venue_b_command(s: AsyncSession, o: Order, cmd: str, fee_bps: float | None,
                            quantity: int | None) -> None:
     vb = systems().venue_b
-    matches = await vb.matches(o.venue_order_id)
+    matches = mine(o, await vb.matches(o.venue_order_id))
     waiting = [m for m in matches if m["status"] == "PROPOSED" and not m["ourAccept"]]
     if cmd == "accept":
         if not waiting:
@@ -393,9 +435,15 @@ async def _venue_b_command(s: AsyncSession, o: Order, cmd: str, fee_bps: float |
         for m in matches:
             if m["status"] == "PROPOSED":
                 await vb.reject(m["matchId"])
+        if o.basket_id:  # one name out of the basket: the rest stays on the list
+            await vb.withdraw_line(o.venue_order_id, o.line_no)
+            before = order_json(o)
+            o.status, o.counter_fee_bps, o.counter_qty, o.updated_at = "CANCELLED", None, None, clock.now()
+            events.record(s, "order", o.id, "cancelled", order_json(o), before=before, actor="venue_b")
+            return
         await vb.withdraw(o.venue_order_id)
     lst = await vb.interest_list(o.venue_order_id)
-    await apply_venue_b(s, o, lst, await vb.matches(o.venue_order_id))
+    await apply_venue_b(s, o, lst, mine(o, await vb.matches(o.venue_order_id)))
 
 
 # -- chat: a trade agreed in Desk Chat becomes an order card ----------------------------------------------

@@ -914,3 +914,96 @@ async def test_a_vote_or_dividend_ahead_shows_the_borrows_at_risk_and_the_recall
 async def secmaster_instrument(instrument_id: str) -> Instrument:
     async with db.session() as s:
         return await s.get(Instrument, instrument_id)
+
+
+async def test_a_name_we_lend_out_is_recalled_before_it_is_borrowed(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clients short 40k; we lend 30k of the name cheaply and 20k dearly. The cheap loan is recalled (it costs us
+    less in lending fee than a borrow would cost); the dear one stays out, and only the rest is borrowed."""
+    from datetime import UTC, date, datetime
+
+    from loandesk.models import Trade
+
+    [name] = (await _names("GC", 28))[27:]
+    at = datetime(2026, 10, 27, 13, 0, tzinfo=UTC)
+
+    def loan(tid: str, cp: str, qty: int, fee: float, side: str = "LEND") -> Trade:
+        return Trade(id=tid, venue="VENUE_A", venue_trade_id=f"NGT-{tid}", uti=f"UTI{tid}", side=side,
+                     instrument_id=name.id, cp_code=cp, qty=qty, open_qty=qty, fee_bps=fee, price=50.0, ccy="USD",
+                     settle_date=date(2026, 10, 28), venue_json={}, executed_at=at, sfp_contract_id=f"SFP-{tid}",
+                     booked_at=at, loan_status="OPEN", settle_status="SETTLED", lifecycle=[])
+
+    async with db.session() as s:
+        s.add_all([loan("trd_rl_in", "HARBORAL", 50_000, 20.0, side="BORROW"),
+                   loan("trd_rl_cheap", "PBBRAVO", 30_000, 1.0), loan("trd_rl_dear", "ORIONBD", 20_000, 5_000.0)])
+        await inventory.apply(s, [{"instrumentId": name.id, "side": "BORROW", "openQuantity": 50_000,
+                                   "bookingEntity": "LOANDESK-US", "avgFeeBps": 20.0},
+                                  {"instrumentId": name.id, "side": "LEND", "openQuantity": 50_000,
+                                   "bookingEntity": "LOANDESK-US"}])
+        await s.commit()
+    _gateway(monkeypatch, {"tradeDate": "2026-11-17", "settlementDate": "2026-11-18",
+                           "closedAt": "2026-11-17T21:00:00Z", "shortSales": [], "locateUsage": [],
+                           "positions": [{"counterparty": "BASALTHF", "instrumentId": name.id, "shortQuantity": 40_000,
+                                          "soldQuantity": 40_000, "coveredQuantity": 0}]})
+    await sync.sync_stock_record()
+    ln = await _line(client, "2026-11-17", name.id)
+    assert (ln["box"], ln["shortfall"], ln["uncovered"]) == (0, 40_000, 0)
+    async with db.session() as s:
+        cards = {a.kind: a for a in (await s.execute(select(Action).where(
+            Action.source_ref == f"short:{name.id}", Action.status == "PENDING"))).scalars()}
+    assert cards["lifecycle"].payload == {"tradeId": "trd_rl_cheap", "event": "RECALL", "quantity": 30_000}
+    assert "recall 30,000" in cards["lifecycle"].title and "PBBRAVO" in cards["lifecycle"].title
+    assert cards["order"].payload["quantity"] == 10_000 and "recalling 30,000 we lent" in cards["order"].rationale
+
+    async def lifecycle(contract_id: str, event: str, quantity: int | None = None, fee_bps: float | None = None,
+                        price: float | None = None) -> dict[str, Any]:
+        return {}
+
+    async def instruct(body: dict[str, Any]) -> dict[str, Any]:
+        return {"instruction": {**body, "instructionId": "CUST-RL-1", "status": "ACCEPTED"}}
+
+    monkeypatch.setattr(systems().processor, "lifecycle", lifecycle)
+    monkeypatch.setattr(systems().custodian, "instruct", instruct)
+    from loandesk import clock
+
+    clock.pin(datetime(2026, 10, 27, 14, 5, tzinfo=UTC))  # after the box was read
+    try:
+        r = (await client.post(f"/actions/{cards['lifecycle'].id}/approve", headers={"x-trader": "sam"})).json()
+        assert r["status"] == "EXECUTED" and r["result"]["openQty"] == 0, r["result"]
+        ln = await _line(client, "2026-11-17", name.id)  # back in the box (as the next read will show)
+        assert (ln["returnedSinceBox"], ln["cover"], ln["shortfall"], ln["uncovered"]) == (-30_000, 30_000, 10_000, 0)
+    finally:
+        clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+
+
+async def test_warm_names_short_together_are_one_basket_on_venue_b(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three warm names short at the close: one basket card, a line per name, instead of three negotiated bids.
+    One name's clients buy back half: the basket is superseded and drafted again at the new sizes."""
+    names = (await _names("WARM", 8))[4:7]
+    assert len(names) == 3
+    rec = {"tradeDate": "2026-11-18", "settlementDate": "2026-11-19", "closedAt": "2026-11-18T21:00:00Z",
+           "shortSales": [], "locateUsage": [],
+           "positions": [{"counterparty": "KESTRELHF", "instrumentId": n.id, "shortQuantity": 20_000,
+                          "soldQuantity": 20_000, "coveredQuantity": 0} for n in names]}
+    _gateway(monkeypatch, rec)
+    await sync.sync_stock_record()
+    async with db.session() as s:
+        [b] = (await s.execute(select(Action).where(Action.kind == "basket", Action.status == "PENDING"))
+               ).scalars().all()
+    assert {x["instrument"]: x["quantity"] for x in b.payload["lines"]} == {n.id: 20_000 for n in names}
+    assert all(x["venue"] == "VENUE_B" for x in b.payload["lines"]) and "basket of 3 names" in b.title
+    for n in names:
+        ln = await _line(client, "2026-11-18", n.id)
+        assert (ln["uncovered"], ln["status"], ln["drafted"][0]["quantity"]) == (0, "WORKING", 20_000)
+
+    rec2 = {**rec, "tradeDate": "2026-11-19", "settlementDate": "2026-11-20",
+            "positions": [{**p, "soldQuantity": 0, "shortQuantity": 10_000 if p["instrumentId"] == names[0].id
+                           else 20_000} for p in rec["positions"]]}
+    _gateway(monkeypatch, rec2)
+    await sync.sync_stock_record()
+    async with db.session() as s:
+        assert (await s.get(Action, b.id)).status == "SUPERSEDED"
+        [b2] = (await s.execute(select(Action).where(Action.kind == "basket", Action.status == "PENDING"))
+                ).scalars().all()
+    assert {x["instrument"]: x["quantity"] for x in b2.payload["lines"]}[names[0].id] == 10_000

@@ -346,7 +346,8 @@ async def _release(s: AsyncSession, m: Match) -> None:
     ln = await s.get(ListLine, m.line_id, with_for_update=True)
     dl = await s.get(DealerLine, m.dealer_line_id, with_for_update=True)
     ln.matched_qty -= m.qty
-    ln.status = "PARTIAL" if ln.matched_qty else "OPEN"
+    if ln.status != "WITHDRAWN":  # a withdrawn line stays out of matching
+        ln.status = "PARTIAL" if ln.matched_qty else "OPEN"
     dl.qty += m.qty
 
 

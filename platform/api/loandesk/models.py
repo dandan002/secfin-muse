@@ -166,6 +166,9 @@ class Order(Base):
     action_id: Mapped[str | None] = mapped_column(String(24))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # One line of a basket: several orders on one Venue B interest list (``venue_order_id``), a line per name.
+    basket_id: Mapped[str | None] = mapped_column(String(24), index=True)
+    line_no: Mapped[int | None] = mapped_column(Integer)
 
 
 class Trade(Base):
