@@ -114,3 +114,23 @@ def test_market_processes_are_pure_functions_of_time():
     assert abs(market.fee_bps(inst, t + timedelta(seconds=1)) - f1) / f1 < 0.02
     assert market.price(inst, t) > 0
     assert 0 < market.util_pct(inst, t) < 100
+
+
+def test_corporate_actions_are_one_calendar_per_seed():
+    from datetime import date
+
+    from refdata import calendar
+    from refdata.corpactions import corporate_actions, event_by_id, recalls
+
+    evs = corporate_actions(date(2026, 10, 28), date(2026, 12, 15), seed=20261027)
+    kinds = {e.kind for e in evs}
+    assert {"DIVIDEND", "AGM"} <= kinds and evs == corporate_actions(date(2026, 10, 28), date(2026, 12, 15),
+                                                                     seed=20261027)
+    for e in evs:
+        assert calendar.is_business_day(e.record_date, e.country)
+        assert e.notice_date < e.due_date < e.record_date
+        assert (e.amount or 0) > 0 if e.kind == "DIVIDEND" else e.amount is None
+        assert event_by_id(e.event_id, seed=20261027) == e
+    d = next(e for e in evs if e.kind == "DIVIDEND")
+    assert recalls(d, "SFP-C-1") == recalls(d, "SFP-C-1")  # the same lender decides the same way
+    assert 0.1 < sum(recalls(d, f"SFP-C-{n}") for n in range(400)) / 400 < 0.3

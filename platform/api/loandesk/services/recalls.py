@@ -7,7 +7,8 @@ is the loan; and on Venue B, on the venue's loan (``on_notice``, both from ``syn
 the trade (``recalled_qty``, due ``recall_due``) and stop counting as cover on the short list. A return card for
 them goes to the gate; any excess return already drafted in the name is superseded, since the recall changes
 what's spare; and the short list redrafts, so a name the clients still need gets a cover to borrow it elsewhere.
-A chat recall we can't match waits in chat for the trader.
+A chat recall we can't match waits in chat for the trader. A notice may name the corporate action it's for (a
+lender wants its dividend or its vote): the card says so, and the trade's recall entry keeps the event.
 """
 
 from __future__ import annotations
@@ -82,30 +83,39 @@ async def on_recall(s: AsyncSession, m: ChatMessage) -> tuple[bool, list[str]]:
     return whole and bool(made), notes
 
 
-async def on_notice(s: AsyncSession, t: Trade, qty: int, due: Any, *, ref: str, origin: str) -> list[str]:
+async def on_notice(s: AsyncSession, t: Trade, qty: int, due: Any, *, ref: str, origin: str,
+                    event_id: str | None = None) -> list[str]:
     """A recall on one of our borrows from the processor or Venue B: put it on the trade and draft the return."""
+    from .. import secmaster
+
     inst = await s.get(Instrument, t.instrument_id)
     name = inst.composite if inst else t.instrument_id
+    ev = secmaster.corporate_action(event_id) if event_id else None
     qty = min(qty, open_qty(t) - (t.recalled_qty or 0))
     if qty <= 0:
         return []
     notes: list[str] = []
     via = {"processor": "at the processor", "venue_b": "on Venue B"}.get(origin, f"via {origin}")
-    why = f"{t.cp_code} recalled {qty:,} {name} {via} (ref {ref}), due back {due.isoformat()}"
+    why = f"{t.cp_code} recalled {qty:,} {name} {via} (ref {ref})" + (
+        f" ahead of the {secmaster.CA_LABEL.get(ev.kind, ev.kind)} (record date {ev.record_date.isoformat()})"
+        if ev else "") + f", due back {due.isoformat()}"
     a = await _recall(s, t, qty, due, ref, by=f"{origin}:{t.cp_code}", key=ref, why=why, name=name, notes=notes,
-                      original={"origin": origin, "ref": ref, "due": due.isoformat(), "quantity": qty})
+                      original={"origin": origin, "ref": ref, "due": due.isoformat(), "quantity": qty,
+                                **({"eventId": ev.event_id, "reason": ev.kind} if ev else {})},
+                      event=ev.event_id if ev else None)
     return notes + await _after(s, {t.instrument_id}, [a.id] if a else [], f"{t.cp_code}'s recall ({ref})")
 
 
 async def _recall(s: AsyncSession, t: Trade, qty: int, due: Any, ref: str | None, *, by: str, key: str, why: str,
-                  name: str, notes: list[str], original: dict[str, Any]) -> Action | None:
+                  name: str, notes: list[str], original: dict[str, Any], event: str | None = None) -> Action | None:
     """Mark ``qty`` of a borrow recalled and draft its return (none until it's booked)."""
     from .. import gate
 
     before = trade_json(t)
     t.recalled_qty, t.recall_due, t.recall_ref = (t.recalled_qty or 0) + qty, due, ref
     t.lifecycle = [*(t.lifecycle or []), {"ts": clock.iso(clock.now()), "event": "RECALLED", "by": by,
-                                          "quantity": qty, "due": due.isoformat(), "ref": ref, "source": key}]
+                                          "quantity": qty, "due": due.isoformat(), "ref": ref, "source": key,
+                                          **({"eventId": event} if event else {})}]
     events.record(s, "trade", t.id, "recalled", trade_json(t), before=before, actor=by)
     if t.sfp_contract_id:  # in the box: no longer ours to lend or locate against
         await inventory.take(s, t.instrument_id, qty)

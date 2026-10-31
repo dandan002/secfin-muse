@@ -59,6 +59,22 @@ async def load(s: AsyncSession) -> int:
     return n
 
 
+CA_LABEL = {"DIVIDEND": "dividend", "AGM": "AGM", "SPECIAL_MEETING": "special meeting"}
+
+
+def corporate_actions(start: Any, end: Any, instrument_ids: set[str] | None = None) -> list[Any]:
+    """Corporate actions with a record date in [start, end], from the reference-data feed (refdata.corpactions)."""
+    from refdata.corpactions import corporate_actions as feed
+
+    return feed(start, end, instrument_ids)
+
+
+def corporate_action(event_id: str) -> Any:
+    from refdata.corpactions import event_by_id
+
+    return event_by_id(event_id)
+
+
 def classify(fee_bps: float, util_pct: float) -> str:
     cfg = get_settings()
     if fee_bps > cfg.hot_min_fee_bps or util_pct > cfg.hot_min_util_pct:

@@ -80,7 +80,9 @@ expire after 30 minutes (`EXPIRED`).
 | GET | `/v1/stats` | Open loans, ongoing notional (USD), match counts by status |
 
 When the lender on a loan we borrowed recalls shares, the loan carries `recall` (`quantity`, `dueDate`,
-`overdue`) and its history a `RECALL_NOTICE`; returning the shares clears it.
+`overdue`, and for a recall ahead of a corporate action `reason` and `eventId`) and its history a
+`RECALL_NOTICE`; returning the shares clears it. Lenders recall ahead of dividends and votes as at the processor
+(`refdata.corpactions`: three business days before the record date, each lender deciding once per loan and event).
 
 Not back a business day after the due date (in market hours; engine config `buy_in_after_days`, `null`
 never), the lender buys the shares in at the market price plus 0.5-3%: the loan closes for them, and the

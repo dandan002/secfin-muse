@@ -290,6 +290,49 @@ def test_sfp_lender_buys_in_a_recall_not_returned_a_day_after_due(mocks):
     assert out["contract"]["openQuantity"] == 50_000
 
 
+def test_sfp_lenders_recall_ahead_of_a_record_date(mocks):
+    """A lender who wants its vote (or its dividend) recalls three business days before the record date, due back
+    the day before."""
+    from datetime import date
+
+    from mockcore import rng
+    from refdata.corpactions import corporate_actions, recalls
+    from refdata.universe import instrument_by_id
+
+    rng.set_seed(20261027)
+    h = _sfp(mocks)
+    mocks.verb("sfp", "flags", break_rate=0.0)
+    ev = next(e for e in corporate_actions(date(2026, 11, 3)) if e.country == "US" and recalls(e, "SFP-C-00000001"))
+    trade = {"clientRef": "BK-CA", "uti": "UTI-CA-1", "venue": "VENUE_A", "venueRef": "NGT-T-CA", "side": "BORROW",
+             "counterparty": "HARBORAL", "instrument": instrument_by_id(ev.instrument_id).isin, "quantity": 30_000,
+             "feeBps": 20, **TRADE_TERMS}
+    c = mocks.post("sfp", "/trades", headers=h, json=trade).json()["contract"]
+    assert c["contractId"] == "SFP-C-00000001"
+    before = calendar_day(ev.notice_date, -1)
+    mocks.post("control", "/clock/advance", json={"to": f"{before}T15:00:00{_ny(before)}"}).raise_for_status()
+    assert mocks.get("sfp", f"/recalls?contractId={c['contractId']}", headers=h).json() == []
+    on = ev.notice_date.isoformat()
+    mocks.post("control", "/clock/advance", json={"to": f"{on}T09:05:00{_ny(ev.notice_date)}"}).raise_for_status()
+    [n] = mocks.get("sfp", f"/recalls?contractId={c['contractId']}", headers=h).json()
+    assert (n["reason"], n["eventId"], n["quantity"]) == (ev.kind, ev.event_id, 30_000)
+    assert (n["dueDate"], n["recordDate"]) == (ev.due_date.isoformat(), ev.record_date.isoformat())
+    mocks.advance(600)
+    assert len(mocks.get("sfp", f"/recalls?contractId={c['contractId']}", headers=h).json()) == 1  # once
+
+
+def calendar_day(d, n: int):
+    from refdata import calendar
+
+    return calendar.add_business_days(d, n)
+
+
+def _ny(d) -> str:
+    """New York's UTC offset on a date (EDT until 1 Nov 2026)."""
+    from datetime import date
+
+    return "-04:00" if d < date(2026, 11, 1) else "-05:00"
+
+
 def test_wematch_lender_buys_in_a_recall_on_our_borrow(mocks):
     h = {"x-api-key": mocks.creds("wematch")["apiKey"]}
     mocks.verb("wematch", "config", dealer_accept_p=1.0)

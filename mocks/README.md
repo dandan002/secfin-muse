@@ -42,7 +42,8 @@ mocks/
                      loandesk-connector-<name>)
   ib/desk-chat/      mock-ib's terminal UI (its own npm project)
   libs/mockcore/     loandesk-mockcore: sim clock, scheduler, faults, event log, FastAPI factory
-  libs/refdata/      loandesk-refdata: synthetic instruments, identifiers, counterparties, market
+  libs/refdata/      loandesk-refdata: synthetic instruments, identifiers, counterparties, market,
+                     corporate actions
   harness/           runs every system from its own environment and plays the platform against them
   ruff.toml          shared house style
 ```
