@@ -180,9 +180,9 @@ async def sync_venue_b() -> None:
         if open_orders:
             lists = {x["listId"]: x for x in await vb.lists()}
             for o in open_orders:
-                mine = [m for m in matches if m["listId"] == o.venue_order_id]
+                mine = orders.mine(o, matches)
                 if await orders.accept_within_limit(s, o, mine):
-                    mine = await vb.matches(o.venue_order_id)
+                    mine = orders.mine(o, await vb.matches(o.venue_order_id))
                 await orders.apply_venue_b(s, o, lists.get(o.venue_order_id), mine)
         for loan in await vb.loans():
             t = (await s.execute(select(Trade).where(Trade.venue_trade_id == loan["loanId"]))).scalar()

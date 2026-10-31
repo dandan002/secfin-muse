@@ -199,6 +199,23 @@ def test_wematch_list_optimise_negotiate_lifecycle(mocks):
     assert stats["openLoans"] >= 1 and stats["ongoingNotionalUsd"] > 0
 
 
+def test_wematch_one_line_of_a_list_can_be_withdrawn(mocks):
+    """A basket's name no longer needed: its line leaves matching, the rest of the list stays live."""
+    h = {"x-api-key": mocks.creds("wematch")["apiKey"]}
+    dealer = mocks.get("wematch", "/_admin/dealer-lines?side=LEND&limit=2").json()
+    lines = [{"instrument": _isin_of(mocks, d["instrumentId"]), "side": "BORROW", "quantity": d["quantity"],
+              "feeBps": d["feeMax"]} for d in dealer]
+    up = mocks.post("wematch", "/v1/interest-lists", headers=h, json={"name": "basket", "lines": lines}).json()
+    w = mocks.http.delete(mocks.url("wematch", f"/v1/interest-lists/{up['listId']}/lines/2"), headers=h).json()
+    assert w["status"] == "WITHDRAWN"
+    run = mocks.post("wematch", "/v1/optimiser/run", headers=h, json={"listId": up["listId"]}).json()
+    matched = {m["instrumentId"] for m in mocks.get("wematch", f"/v1/matches?listId={up['listId']}", headers=h).json()}
+    assert run["matchesProposed"] >= 1 and dealer[1]["instrumentId"] not in matched
+    assert dealer[0]["instrumentId"] in matched
+    got = mocks.get("wematch", f"/v1/interest-lists/{up['listId']}", headers=h).json()
+    assert got["status"] == "ACTIVE" and [x["status"] for x in got["lineItems"]][1] == "WITHDRAWN"
+
+
 def _isin_of(mocks, instrument_id: str) -> str:
     from mockcore import rng
     from refdata.universe import instrument_by_id

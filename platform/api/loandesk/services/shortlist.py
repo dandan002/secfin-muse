@@ -149,11 +149,21 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
     for iid, bid in (await chat_bids(s, iids)).items():
         working[iid] += sum(int((a.original or {}).get("quantity") or 0) for a, answered in bid if not answered)
     # Cards at the gate: our cover drafts, and any borrow card for the name (one agreed in chat, say).
+    # A basket card covers a line per name; a recall of a loan of ours covers its name as a borrow would.
     drafted: dict[str, list[Action]] = defaultdict(list)
-    for a in (await s.execute(select(Action).where(Action.status == "PENDING",
-                                                   Action.kind.in_(("order", "chat_send"))))).scalars():
-        if (a.source_ref or "").startswith(f"{SOURCE}:"):
-            drafted[a.source_ref.split(":", 1)[1]].append(a)
+    asked: dict[tuple[str, str], int] = {}  # (card, name): shares the card would bring in
+    for a in (await s.execute(select(Action).where(Action.status == "PENDING", Action.kind.in_(
+            ("order", "chat_send", "basket", "lifecycle"))))).scalars():
+        ref = a.source_ref or ""
+        if a.kind == "basket":
+            for x in a.payload.get("lines", []):
+                drafted[x["instrument"]].append(a)
+                asked[(a.id, x["instrument"])] = int(x["quantity"])
+        elif a.kind == "lifecycle":
+            if ref.startswith(f"{SOURCE}:") and a.payload.get("event") == "RECALL":
+                drafted[ref.split(":", 1)[1]].append(a)
+        elif ref.startswith(f"{SOURCE}:"):
+            drafted[ref.split(":", 1)[1]].append(a)
         elif a.kind == "order" and a.payload.get("side") == "BORROW" and a.payload.get("instrument") in by_name:
             drafted[a.payload["instrument"]].append(a)
     returning: dict[str, list[tuple[Action, int]]] = defaultdict(list)  # return cards at the gate, and how many
@@ -177,8 +187,7 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
                    sum(f.open_qty for f in failing.get(iid, [])), 0)
         cover = max(box[iid] - since[iid], 0) + unbooked[iid] - fails[iid] - recalled[iid]
         shortfall = max(need - cover, 0)
-        pending = working[iid] + sum(int(a.payload.get("quantity") or (a.original or {}).get("quantity") or 0)
-                                     for a in drafted[iid])
+        pending = working[iid] + sum(_card_qty(a, iid, asked) for a in drafted[iid])
         uncovered = max(shortfall - pending, 0)
         px = lv["lastPx"] or 0.0
         fx = rules.FX_USD.get(inst.ccy if inst else "USD", 1.0)
@@ -197,7 +206,8 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
             "box": box[iid], "unbooked": unbooked[iid], "fails": fails[iid], "recalled": recalled[iid],
             "cover": cover,
             "shortfall": shortfall, "working": working[iid],
-            "drafted": [{"actionId": a.id, "kind": a.kind, "title": a.title} for a in drafted[iid]],
+            "drafted": [{"actionId": a.id, "kind": a.kind, "title": a.title, "quantity": _card_qty(a, iid, asked)}
+                        for a in drafted[iid]],
             "uncovered": uncovered, "uncoveredNotional": round(uncovered * px * fx, 2),
             "returnedSinceBox": since[iid], "excess": excess, "excessNotional": round(excess * px * fx, 2),
             # What the excess costs a day at the market fee (actual/360).
@@ -233,6 +243,13 @@ async def build(s: AsyncSession, trade_date: date | None = None) -> dict[str, An
                     "uncovered": sum(x["uncovered"] for x in short),
                     "uncoveredNotional": round(sum(x["uncoveredNotional"] for x in short), 2)},
     }
+
+
+def _card_qty(a: Action, iid: str, asked: dict[tuple[str, str], int]) -> int:
+    """How many shares a cover card at the gate brings in for a name."""
+    if (a.id, iid) in asked:
+        return asked[(a.id, iid)]
+    return int(a.payload.get("quantity") or (a.original or {}).get("quantity") or 0)
 
 
 def _lot(q: int) -> int:
@@ -284,11 +301,19 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
     sl = await build(s, trade_date)
     bids = await chat_bids(s, [ln["instrumentId"] for ln in sl["lines"]])
     made, notes = [], []
+    basket: list[dict[str, Any]] = []  # warm names, to cover together on Venue B if there are enough of them
     for ln in sl["lines"]:
         if ln["uncovered"] <= 0 or ln["drafted"]:
             continue
-        qty = _lot(ln["uncovered"])
         fee = round(max(ln["feeBps"] or 0.0, 1.0) * (1 + cfg.cover_markup_pct / 100), 1)
+        left = ln["uncovered"]
+        if cfg.recall_loans_for_shorts:  # shares we lent out come back cheaper than the street lends them
+            got, ids = await _recall_loans(s, ln, left, fee, by=by, notes=notes)
+            left -= got
+            made += ids
+            if left <= 0:
+                continue
+        qty = _lot(left)
         why = (f"clients short {ln['clientShort']:,} {ln['composite']} settling {sl['settlementDate']}; box "
                f"{ln['box']:,}" + (f", unbooked {ln['unbooked']:,}" if ln["unbooked"] else "")
                + (f", failing {ln['fails']:,}" if ln["fails"] else "")
@@ -307,6 +332,11 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
         room = await lender_room(s, ln["instrumentId"]) if ln["tier"] == "HOT" and not asked else None
         if asked:
             why += "; the lender we asked in chat didn't do it"
+        if left < ln["uncovered"]:
+            why += f"; recalling {ln['uncovered'] - left:,} we lent: {qty:,} left to borrow"
+        if not room and ln["tier"] == "WARM" and cfg.basket_min_names:
+            basket.append({"line": ln, "qty": qty, "fee": fee, "why": why, "flags": flags})
+            continue
         try:
             if room:
                 stream, cp = room
@@ -332,6 +362,8 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
             made.append(a.id)
         except (OrderError, gate.GateError) as e:
             notes.append(f"{ln['composite']}: {e}")
+    made += await _draft_basket(s, sl, basket, by=by, notes=notes,
+                                single=len(basket) < max(cfg.basket_min_names, 1))
     if trade_date is None or trade_date == await latest_date(s):  # an old list's excess is history
         made += await _draft_returns(s, sl, by=by, notes=notes)
     if made:
@@ -397,13 +429,16 @@ async def _supersede_stale(s: AsyncSession, *, by: str) -> int:
     from .. import gate
 
     n = 0
-    for a in (await s.execute(select(Action).where(Action.status == "PENDING", Action.kind == "order",
+    for a in (await s.execute(select(Action).where(Action.status == "PENDING", Action.kind.in_(("order", "basket")),
                                                    Action.source_ref.like(f"{SOURCE}:%")))).scalars().all():
-        fee, market_bps = a.payload.get("feeBps"), secmaster.live(a.payload["instrument"])["feeBps"]
-        if fee is not None and market_bps and fee < market_bps:
-            await gate.reject(s, a, by, f"bid {fee:g} bps is under the market fee now ({market_bps:g}): redrafted",
-                              status="SUPERSEDED")
-            n += 1
+        for x in a.payload["lines"] if a.kind == "basket" else [a.payload]:
+            fee, market_bps = x.get("feeBps"), secmaster.live(x["instrument"])["feeBps"]
+            if fee is not None and market_bps and fee < market_bps:
+                await gate.reject(s, a, by, f"bid {fee:g} bps is under the market fee now ({market_bps:g})"
+                                            + (f" in {x['instrument']}" if a.kind == "basket" else "") + ": redrafted",
+                                  status="SUPERSEDED")
+                n += 1
+                break
     return n
 
 
@@ -412,18 +447,117 @@ async def _supersede_oversized(s: AsyncSession, sl: dict[str, Any], *, by: str) 
     borrow came in another way) would borrow shares nobody needs: supersede it; the draft sizes it again."""
     from .. import gate
 
-    n = 0
+    n, gone = 0, set()
     for ln in sl["lines"]:
-        cards = [await s.get(Action, d["actionId"]) for d in ln["drafted"]]
-        ours = [a for a in cards if a.kind == "order" and (a.source_ref or "").startswith(f"{SOURCE}:")]
-        asked = sum(int(a.payload.get("quantity") or 0) for a in ours)
+        ours = [d for d in ln["drafted"] if d["kind"] in ("order", "basket") and d["actionId"] not in gone
+                and ((await s.get(Action, d["actionId"])).source_ref or "").startswith(f"{SOURCE}:")]
+        asked = sum(d["quantity"] for d in ours)
         need = _lot(max(ln["shortfall"] - ln["working"], 0)) if ln["shortfall"] > ln["working"] else 0
         if ours and asked > need:
-            for a in ours:
-                await gate.reject(s, a, by, f"the name is short {need:,} now, not {asked:,}: "
-                                            + ("redrafted" if need else "no cover needed"), status="SUPERSEDED")
+            for d in ours:
+                await gate.reject(s, await s.get(Action, d["actionId"]), by,
+                                  f"{ln['composite']} is short {need:,} now, not {asked:,}: "
+                                  + ("redrafted" if need else "no cover needed"), status="SUPERSEDED")
+                gone.add(d["actionId"])  # a basket goes once, for its first name that's over
                 n += 1
     return n
+
+
+async def _recall_loans(s: AsyncSession, ln: dict[str, Any], left: int, cover_fee: float, *, by: str,
+                        notes: list[str]) -> tuple[int, list[str]]:
+    """Recall shares we lent, cheapest loan first, for as much of ``left`` as they cover: when a loan earns less than
+    the cover would cost to borrow (or the name is hot, where the street may not lend at all). Each is a RECALL
+    card at the gate on the loan; the borrower has the standard settlement cycle to return the shares."""
+    from .. import gate
+
+    got, ids = 0, []
+    loans = (await s.execute(select(Trade).where(
+        Trade.instrument_id == ln["instrumentId"], Trade.side == "LEND", Trade.loan_status == "OPEN",
+        Trade.sfp_contract_id.is_not(None)).order_by(Trade.fee_bps, Trade.executed_at))).scalars().all()
+    for t in loans:
+        if got >= left:
+            break
+        if t.fee_bps >= cover_fee and ln["tier"] != "HOT":
+            break  # the rest earn more than the borrow would cost: keep them out, borrow instead
+        q = min(open_qty(t), _lot(left - got))
+        if q <= 0:
+            continue
+        lost = q * ln["lastPx"] * rules.FX_USD.get(ln["ccy"] or "USD", 1.0) * t.fee_bps / 10_000 / 360
+        hot = " (and it's a hot name)" if ln["tier"] == "HOT" else ""
+        try:
+            a = await gate.propose(
+                s, kind="lifecycle", payload={"tradeId": t.id, "event": "RECALL", "quantity": q}, proposed_by=by,
+                title=f"cover short: recall {q:,} {ln['composite']} lent to {t.cp_code} @ {t.fee_bps:g} bps",
+                rationale=f"clients short {ln['clientShort']:,} {ln['composite']}; {ln['uncovered']:,} still to "
+                          f"cover. We lend {open_qty(t):,} to {t.cp_code} on {t.id} at {t.fee_bps:g} bps, under the "
+                          f"{cover_fee:g} bps a borrow would cost{hot}: recalling {q:,} gives up about "
+                          f"${lost:,.0f} a day of lending fee.",
+                risk_flags=["warning: the borrower has the settlement cycle to return them; a cover borrowed today "
+                            "settles sooner"] if ln["closeOutBy"] else [],
+                source_ref=f"{SOURCE}:{ln['instrumentId']}", original={"shortList": ln["instrumentId"], "quantity": q})
+        except gate.GateError as e:
+            notes.append(f"{ln['composite']}: {e}")
+            break
+        got += q
+        ids.append(a.id)
+    return got, ids
+
+
+async def _draft_basket(s: AsyncSession, sl: dict[str, Any], rows: list[dict[str, Any]], *, by: str,
+                        notes: list[str], single: bool) -> list[str]:
+    """Warm names to cover: enough of them go to Venue B as one basket (an interest list, a line per name, each at
+    its own limit); too few, and each gets its own order as usual."""
+    from .. import gate
+
+    made, lines, flags, parts = [], [], [], []
+    for r in rows:
+        ln = r["line"]
+        req = OrderIn(side="BORROW", instrument=ln["instrumentId"], quantity=r["qty"], feeBps=r["fee"],
+                      **({} if single else {"venue": "VENUE_B"}))
+        try:
+            p = await preview(s, req)
+        except OrderError as e:
+            notes.append(f"{ln['composite']}: {e}")
+            continue
+        failed = [c for c in p["checks"] if not c["ok"]]
+        req.override = any(not c["blocking"] for c in failed)
+        line_flags = r["flags"] + [f"{'BLOCKED' if c['blocking'] else 'warning'}: {c['name']} ({c['detail']})"
+                                   for c in failed]
+        if single:
+            try:
+                a = await gate.propose(
+                    s, kind="order", payload=req.model_dump(mode="json"), proposed_by=by,
+                    title=f"cover short: borrow {r['qty']:,} {ln['composite']} @ {r['fee']:g} bps",
+                    rationale=f"{r['why']}. {p['routeReason']}.", risk_flags=line_flags,
+                    source_ref=f"{SOURCE}:{ln['instrumentId']}",
+                    original={"shortList": sl["tradeDate"], "line": ln["instrumentId"]})
+                made.append(a.id)
+            except gate.GateError as e:
+                notes.append(f"{ln['composite']}: {e}")
+            continue
+        if any(c["blocking"] for c in failed):
+            notes.append(f"{ln['composite']}: left out of the basket: " + "; ".join(
+                c["name"] for c in failed if c["blocking"]))
+            continue
+        lines.append(req.model_dump(mode="json"))
+        flags += [f"{ln['composite']}: {f}" for f in line_flags]
+        parts.append(f"{r['qty']:,} {ln['composite']} @ {r['fee']:g} bps")
+    if lines:
+        try:
+            a = await gate.propose(
+                s, kind="basket", payload={"lines": lines}, proposed_by=by,
+                title=f"cover shorts: borrow a basket of {len(lines)} names on Venue B "
+                      f"({sum(x['quantity'] for x in lines):,} shares)",
+                rationale=f"{len(lines)} warm names short at the {sl['tradeDate']} close, settling "
+                          f"{sl['settlementDate']}: one Venue B interest list rather than {len(lines)} negotiated "
+                          f"bids, each line at its own limit, accepted on our side when a dealer meets it: "
+                          + "; ".join(parts) + ".",
+                risk_flags=flags, source_ref=f"{SOURCE}:basket:{sl['tradeDate']}",
+                original={"shortList": sl["tradeDate"], "lines": [x["instrument"] for x in lines]})
+            made.append(a.id)
+        except gate.GateError as e:
+            notes.append(f"basket: {e}")
+    return made
 
 
 def missed_closes(have: date | None, latest: date) -> list[date]:

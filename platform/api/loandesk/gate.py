@@ -132,6 +132,17 @@ async def _order(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
     return {"orderId": o.id, "status": o.status, "venueOrderId": o.venue_order_id}
 
 
+@executor("basket")
+async def _basket(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
+    """Several names as one Venue B interest list (``lines``: an order each)."""
+    from .services import orders
+
+    made = await orders.create_basket(s, [orders.OrderIn.model_validate(x) for x in a.payload["lines"]],
+                                      by=f"{a.proposed_by}+{approver}", action_id=a.id)
+    return {"basketId": made[0].basket_id if made else None, "listId": made[0].venue_order_id if made else None,
+            "orders": [{"orderId": o.id, "instrument": o.instrument_id, "status": o.status} for o in made]}
+
+
 @executor("booking")
 async def _booking(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
     from .services import booking

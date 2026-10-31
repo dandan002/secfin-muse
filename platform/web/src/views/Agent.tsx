@@ -101,7 +101,7 @@ export function Agent() {
                 {a.riskFlags.map((f) => <span key={f} className="text-2xs text-hot border border-hot/40 rounded px-1.5">{f}</span>)}
               </div>
             )}
-            <Diff payload={a.payload} original={a.original} />
+            {a.kind === "basket" ? <BasketLines payload={a.payload} /> : <Diff payload={a.payload} original={a.original} />}
             <div className="mt-2 flex items-center gap-2 text-2xs text-faint">
               <span>{actor(a.proposedBy)}</span><span>·</span><span>{time(a.createdAt)}</span>
               {a.approver && <><span>·</span><span>{a.status.toLowerCase()} by {actor(a.approver)}</span></>}
@@ -176,6 +176,26 @@ export function Agent() {
         </Panel>
       </div>
     </div>
+  );
+}
+
+/** A basket card: one Venue B list, a line per name at its own limit. */
+function BasketLines({ payload }: { payload: Record<string, unknown> }) {
+  const lines = (payload.lines ?? []) as { instrument: string; quantity: number; feeBps: number }[];
+  return (
+    <table className="mt-2 text-2xs">
+      <thead><tr>{["line", "name", "qty", "limit bps"].map((h) => <th key={h} className="th text-left pr-4">{h}</th>)}</tr></thead>
+      <tbody>
+        {lines.map((x, i) => (
+          <tr key={x.instrument}>
+            <td className="text-faint pr-4">{i + 1}</td>
+            <td className="text-dim pr-4">{x.instrument}</td>
+            <td className="text-dim pr-4">{x.quantity.toLocaleString()}</td>
+            <td className="text-dim">{x.feeBps}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
