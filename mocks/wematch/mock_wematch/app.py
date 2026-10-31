@@ -76,6 +76,7 @@ async def _optimiser_tick() -> None:
 
 async def _buy_in_tick() -> None:
     async with ctx.session() as s:
+        await engine.ca_recalls(ctx, s)
         await engine.auto_buy_ins(ctx, s)
         await s.commit()
 

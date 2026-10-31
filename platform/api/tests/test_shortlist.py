@@ -861,3 +861,56 @@ async def test_a_cover_bigger_than_what_is_still_short_is_redrafted_to_size(
                                                       Action.status == "PENDING"))).scalars().all()
     assert old.status == "SUPERSEDED" and "short 12,000 now, not 30,000" in old.result["reason"]
     assert new.payload["quantity"] == 12_000
+
+
+async def test_a_vote_or_dividend_ahead_shows_the_borrows_at_risk_and_the_recall_says_why(
+        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A name we borrow has a record date coming: the borrows a lender may recall for it, how many we'd expect,
+    and what the clients would be short if they came. When a lender does recall for it, the card says so."""
+    from datetime import UTC, date, datetime, timedelta
+
+    from loandesk import clock
+    from loandesk.models import Trade
+
+    ev = next(e for e in secmaster.corporate_actions(date(2026, 11, 2), date(2026, 11, 6))
+              if e.country == "US" and e.kind != "DIVIDEND")
+    name = await secmaster_instrument(ev.instrument_id)
+    at = datetime(2026, 10, 27, 13, 0, tzinfo=UTC)
+    async with db.session() as s:
+        s.add(Trade(id="trd_ca_1", venue="VENUE_A", venue_trade_id="NGT-T-CA1", uti="UTICA1", side="BORROW",
+                    instrument_id=name.id, cp_code="PENSIONA", qty=40_000, open_qty=40_000, fee_bps=20.0, price=50.0,
+                    ccy="USD", settle_date=date(2026, 10, 28), venue_json={}, executed_at=at,
+                    sfp_contract_id="SFP-C-CA1", booked_at=at, loan_status="OPEN", settle_status="SETTLED",
+                    lifecycle=[]))
+        await s.commit()
+    clock.pin(datetime.combine(ev.notice_date - timedelta(days=3), datetime.min.time(), tzinfo=UTC)
+              + timedelta(hours=15))
+    try:
+        [x] = [r for r in (await client.get("/corporate-actions")).json() if r["eventId"] == ev.event_id]
+        assert (x["kind"], x["recordDate"], x["atRisk"], x["noticeDue"]) == (ev.kind, ev.record_date.isoformat(),
+                                                                             40_000, False)
+        assert x["expectedRecall"] == int(round(40_000 * ev.recall_p, -2))
+        assert [lr["counterparty"] for lr in x["lenders"]] == ["PENSIONA"]
+
+        notice = {"seq": 500, "recallId": "SFP-R-000500", "contractId": "SFP-C-CA1", "counterparty": "PENSIONA",
+                  "status": "OPEN", "quantity": 40_000, "outstanding": 40_000, "dueDate": ev.due_date.isoformat(),
+                  "reason": ev.kind, "eventId": ev.event_id}
+
+        async def recalls(after: int = 0) -> list[dict[str, Any]]:
+            return [notice] if after < 500 else []
+
+        monkeypatch.setattr(systems().processor, "recalls", recalls)
+        await sync.sync_recalls()
+        async with db.session() as s:
+            [card] = (await s.execute(select(Action).where(Action.source_ref == "recall:SFP-R-000500"))).scalars().all()
+        label = secmaster.CA_LABEL[ev.kind]
+        assert f"ahead of the {label} (record date {ev.record_date.isoformat()})" in card.rationale
+        [x] = [r for r in (await client.get("/corporate-actions")).json() if r["eventId"] == ev.event_id]
+        assert (x["atRisk"], x["lenders"][0]["recalledForThis"]) == (0, True)  # it came: nothing more at risk
+    finally:
+        clock.pin(datetime(2026, 10, 27, 14, 0, tzinfo=UTC))
+
+
+async def secmaster_instrument(instrument_id: str) -> Instrument:
+    async with db.session() as s:
+        return await s.get(Instrument, instrument_id)

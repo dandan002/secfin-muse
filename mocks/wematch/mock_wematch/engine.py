@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -108,7 +108,8 @@ def loan_json(ln: Loan) -> dict[str, Any]:
             "tradeDate": ln.trade_date.isoformat(), "settlementDate": ln.settle_date.isoformat(),
             "status": ln.status, "history": ln.history,
             "recall": {"quantity": ln.recall_qty, "dueDate": ln.recall_due.isoformat(),
-                       "overdue": ln.recall_due < calendar.trade_date(clock.now())}
+                       "overdue": ln.recall_due < calendar.trade_date(clock.now()), "reason": ln.recall_reason,
+                       "eventId": ln.recall_event}
             if ln.recall_qty and ln.recall_due else None,
             "buyIns": [{k: v for k, v in h.items() if k != "event"} for h in ln.history if h["event"] == "BOUGHT_IN"]}
 
@@ -470,7 +471,8 @@ async def return_qty(ctx: ServiceContext, s: AsyncSession, loan_id: str, qty: in
     return ln
 
 
-async def recall_notice(ctx: ServiceContext, s: AsyncSession, ln: Loan, qty: int | None, due_days: int) -> Loan:
+async def recall_notice(ctx: ServiceContext, s: AsyncSession, ln: Loan, qty: int | None, due_days: int,
+                        *, due: date | None = None, reason: str | None = None, event_id: str | None = None) -> Loan:
     """The lender on a loan we borrowed recalls shares: we owe them back by the due date."""
     if ln.status != "OPEN" or ln.side != "BORROW":
         raise EngineError("BAD_STATE", "only an open loan we borrowed can be recalled by its lender", 409)
@@ -480,8 +482,10 @@ async def recall_notice(ctx: ServiceContext, s: AsyncSession, ln: Loan, qty: int
         raise EngineError("BAD_STATE", "recalled in full already", 409)
     today = calendar.trade_date(clock.now())
     ln.recall_qty = (ln.recall_qty or 0) + qty
-    ln.recall_due = calendar.add_business_days(today, due_days)
-    _hist(ln, "RECALL_NOTICE", quantity=qty, dueDate=ln.recall_due.isoformat(), by=ln.counterparty)
+    ln.recall_due = due or calendar.add_business_days(today, due_days)
+    ln.recall_reason, ln.recall_event = reason, event_id
+    _hist(ln, "RECALL_NOTICE", quantity=qty, dueDate=ln.recall_due.isoformat(), by=ln.counterparty,
+          **({"reason": reason, "eventId": event_id} if event_id else {}))
     await ctx.events.emit(s, "loan_recall_notice", "loan", ln.loan_id, loan_json(ln), topic="loans")
     return ln
 
@@ -507,6 +511,33 @@ async def buy_in(ctx: ServiceContext, s: AsyncSession, ln: Loan, qty: int | None
           cost=round(qty * px, 2), collateralKept=kept, amountDue=round(qty * px - kept, 2), remaining=ln.qty_open)
     await ctx.events.emit(s, "loan_bought_in", "loan", ln.loan_id, loan_json(ln), topic="loans")
     return ln
+
+
+async def ca_recalls(ctx: ServiceContext, s: AsyncSession) -> int:
+    """Lenders who want their dividend or their vote recall ``NOTICE_DAYS`` business days before the record date,
+    due the day before (each lender decides once per loan and event, seeded)."""
+    from datetime import time
+
+    from refdata.corpactions import NOTICE_DAYS, corporate_actions
+    from refdata.corpactions import recalls as lender_recalls
+
+    now = clock.now()
+    today = calendar.trade_date(now)
+    if not calendar.is_business_day(today) or now.astimezone(clock.NEW_YORK).time() < time(9, 0):
+        return 0
+    events = [e for e in corporate_actions(today, calendar.add_business_days(today, NOTICE_DAYS + 1))
+              if e.notice_date <= today <= e.due_date]
+    n = 0
+    for e in events:
+        for ln in (await s.execute(select(Loan).where(Loan.status == "OPEN", Loan.side == "BORROW",
+                                                      Loan.instrument_id == e.instrument_id)
+                                   .order_by(Loan.id).with_for_update())).scalars().all():
+            seen = any(h["event"] == "RECALL_NOTICE" and h.get("eventId") == e.event_id for h in ln.history)
+            if seen or not lender_recalls(e, ln.loan_id) or ln.qty_open - (ln.recall_qty or 0) <= 0:
+                continue
+            await recall_notice(ctx, s, ln, None, 0, due=e.due_date, reason=e.kind, event_id=e.event_id)
+            n += 1
+    return n
 
 
 async def auto_buy_ins(ctx: ServiceContext, s: AsyncSession) -> int:

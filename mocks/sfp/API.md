@@ -125,6 +125,12 @@ lender wants shares back, the recall notice lands here. (A Venue B loan is recal
 | GET | `/buy-ins?contractId=&after=` | Buy-ins on our overdue recalls: `buyInId` (`SFP-B-…`), `seq`, `recallId`, `contractId`, `counterparty`, `instrumentId`, `quantity`, `price`, `ccy`, `cost`, `collateralKept`, `amountDue` |
 
 A `RETURN` on the contract answers its open recalls, oldest first (`recallsAnswered` in the response).
+Lenders also recall ahead of a corporate action (the shared calendar in `refdata.corpactions`: dividends,
+AGMs, contested special meetings): to get the dividend itself rather than a manufactured payment, or to vote.
+Three business days before the record date, each lender on an open borrow decides once per contract and event
+(seeded: 20% for a dividend, 15% for an AGM, 60% for a special meeting), due back the business day before the
+record date. The notice carries `reason` (the event's kind), `eventId` and `recordDate`.
+
 Shares not back by the due date leave the notice `overdue`: under the lending agreement the lender may
 then buy them in at our cost. Here it does, a business day after the due date, in market hours (verb
 `buy_in_after {days}`; `null` never): it buys what's still outstanding at the market price plus 0.5-3%,

@@ -307,6 +307,35 @@ export interface ShortListLine {
   status: "SHORT" | "WORKING" | "COVERED" | "EXCESS";
 }
 
+/** A dividend or shareholder vote ahead in a name we borrow or the clients are short. */
+export interface CorpActionExposure {
+  eventId: string;
+  instrumentId: string;
+  composite: string;
+  kind: "DIVIDEND" | "AGM" | "SPECIAL_MEETING";
+  label: string;
+  recordDate: string;
+  exDate: string | null;
+  amount: number | null;
+  ccy: string;
+  recallP: number; // how likely a lender recalls for this kind of event
+  noticeDate: string; // lenders send recalls from here
+  dueDate: string;
+  daysToRecord: number;
+  noticeDue: boolean;
+  lenders: { tradeId: string; counterparty: string; openQty: number; recalledQty: number; atRisk: number;
+    recalledForThis: boolean }[];
+  borrowed: number;
+  atRisk: number;
+  expectedRecall: number;
+  clientShort: number;
+  cover: number;
+  shortIfAllRecalled: number;
+  shortIfExpected: number;
+  atRiskNotional: number;
+  manufacturedUsd: number | null; // a dividend the clients short over the record date owe
+}
+
 /** Shares bought in against us: a lender's on an overdue recall, or the buyer's at CNS on a client fail. */
 export interface BuyIn {
   id: string;

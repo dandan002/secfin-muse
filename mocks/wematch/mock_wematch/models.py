@@ -108,6 +108,8 @@ class Loan(Base):
     # The lender's recall on a loan we borrowed: shares owed back by recall_due (cleared as we return them).
     recall_qty: Mapped[int | None] = mapped_column(BigInteger)
     recall_due: Mapped[date | None] = mapped_column(Date)
+    recall_reason: Mapped[str | None] = mapped_column(String(16))  # DIVIDEND | AGM | SPECIAL_MEETING, if that's why
+    recall_event: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     history: Mapped[list[Any]] = mapped_column(default=list)
     note: Mapped[str | None] = mapped_column(Text)

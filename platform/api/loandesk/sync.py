@@ -195,7 +195,8 @@ async def sync_venue_b() -> None:
                     await buyins.on_recall(s, t, b, origin="venue_b")
                 if t.side == "BORROW" and (rc.get("quantity") or 0) > (t.recalled_qty or 0):  # a new recall on it
                     await recalls.on_notice(s, t, rc["quantity"] - (t.recalled_qty or 0),
-                                            date.fromisoformat(rc["dueDate"]), ref=loan["loanId"], origin="venue_b")
+                                            date.fromisoformat(rc["dueDate"]), ref=loan["loanId"], origin="venue_b",
+                                            event_id=rc.get("eventId"))
         await s.commit()
 
 
@@ -210,7 +211,7 @@ async def sync_recalls() -> None:
             if t is None or n["status"] != "OPEN":
                 continue
             await recalls.on_notice(s, t, int(n["outstanding"]), date.fromisoformat(n["dueDate"]),
-                                    ref=n["recallId"], origin="processor")
+                                    ref=n["recallId"], origin="processor", event_id=n.get("eventId"))
         await _set_cursor(s, "processor_recalls", str(after))
         await s.commit()
 

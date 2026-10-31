@@ -2,7 +2,7 @@ import { api } from "../lib/api";
 import { actor, bps, full, money, qty, when } from "../lib/format";
 import { useKeys, useQuery, useSelection } from "../lib/hooks";
 import { useDesk } from "../lib/store";
-import type { BuyIn, DeliveryFail, ShortList, ShortListLine } from "../lib/types";
+import type { BuyIn, CorpActionExposure, DeliveryFail, ShortList, ShortListLine } from "../lib/types";
 import { Empty, Kbd, Panel, PreBorrowTag, Stat, State, TierBadge } from "../components/ui";
 
 const TOPICS = ["short_list", "order", "trade", "action", "market"];
@@ -13,6 +13,7 @@ export function ShortListView() {
   const { data, error, reload } = useQuery<ShortList>("/short-list", TOPICS);
   const { data: fails, reload: reloadFails } = useQuery<DeliveryFail[]>("/fails", TOPICS);
   const { data: buyIns } = useQuery<BuyIn[]>("/buy-ins", TOPICS);
+  const { data: events } = useQuery<CorpActionExposure[]>("/corporate-actions", TOPICS);
   const toast = useDesk((s) => s.toast);
   const openTicket = useDesk((s) => s.openTicket);
   const rows = data?.lines ?? [];
@@ -64,6 +65,7 @@ export function ShortListView() {
       </div>
       {!!fails?.length && <FailsPanel fails={fails} onDone={() => { reload(); reloadFails(); }} />}
       {!!buyIns?.length && <BuyInsPanel rows={buyIns} />}
+      {!!events?.some((e) => e.atRisk || e.clientShort) && <CorpActionsPanel rows={events.filter((e) => e.atRisk || e.clientShort)} />}
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-3">
         <Panel
           title={<>short list <span className="text-dim normal-case tracking-normal">{rows.length}</span></>}
@@ -282,6 +284,42 @@ function BuyInsPanel({ rows }: { rows: BuyIn[] }) {
               <td className="td" title={b.cashStatus === "CNS" ? "NSCC's money settlement takes it" : b.cashRef ?? ""}><State s={b.cashStatus} /></td>
               <td className="td" title={b.chargeRef ?? ""}>{b.kind === "CNS" ? <State s={b.chargeStatus} /> : <span className="text-faint">—</span>}</td>
               <td className="td text-dim">{when(b.boughtInAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Panel>
+  );
+}
+
+/** Dividends and votes ahead: the borrows a lender may recall to get them, and what the clients would be short. */
+function CorpActionsPanel({ rows }: { rows: CorpActionExposure[] }) {
+  return (
+    <Panel title={<>corporate actions ahead <span className="text-dim normal-case tracking-normal">{rows.length}</span></>}
+      right={<span className="text-2xs text-faint">lenders recall to have their shares back by the record date: from a few days before it</span>}
+      bodyClass="overflow-auto max-h-36">
+      <table className="w-full text-xs">
+        <thead><tr>{["record", "name", "event", "lenders", "borrowed", "at risk", "likely", "short if likely", "short if all", ""].map((h) =>
+          <th key={h} className={`th ${["borrowed", "at risk", "likely", "short if likely", "short if all"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((e) => (
+            <tr key={e.eventId} className="row">
+              <td className="td text-dim" title={`recalls from ${e.noticeDate}, due back ${e.dueDate}`}>{e.recordDate} <span className="text-faint">({e.daysToRecord}d)</span></td>
+              <td className="td">{e.composite}</td>
+              <td className={`td ${e.kind === "SPECIAL_MEETING" ? "text-hot" : "text-dim"}`}
+                title={e.kind === "DIVIDEND" ? `${e.ccy} ${e.amount} a share, ex ${e.exDate}` : "lenders recall to vote"}>{e.label}</td>
+              <td className="td text-dim" title={e.lenders.map((l) => `${l.counterparty} ${full(l.openQty)}${l.recalledForThis ? " (recalled)" : ""}`).join("\n")}>
+                {e.lenders.map((l) => l.counterparty).join(", ") || "—"}</td>
+              <td className="td text-right">{e.borrowed ? full(e.borrowed) : "—"}</td>
+              <td className={`td text-right ${e.atRisk ? "text-warm" : "text-faint"}`}>{e.atRisk ? full(e.atRisk) : "—"}</td>
+              <td className="td text-right text-dim" title={`${Math.round(e.recallP * 100)}% of lenders recall for a ${e.label}`}>
+                {e.expectedRecall ? full(e.expectedRecall) : "—"}</td>
+              <td className={`td text-right ${e.shortIfExpected ? "text-hot" : "text-faint"}`}>{e.shortIfExpected ? full(e.shortIfExpected) : "—"}</td>
+              <td className={`td text-right ${e.shortIfAllRecalled ? "text-warm" : "text-faint"}`}>{e.shortIfAllRecalled ? full(e.shortIfAllRecalled) : "—"}</td>
+              <td className="td text-2xs">
+                {e.noticeDue && <span className="text-warm">recalls due now</span>}
+                {e.manufacturedUsd ? <span className="text-faint ml-2" title="the clients short over the record date owe the dividend">clients owe {money(e.manufacturedUsd)}</span> : null}
+              </td>
             </tr>
           ))}
         </tbody>

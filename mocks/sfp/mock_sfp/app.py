@@ -27,6 +27,8 @@ from mockcore import clock, rng
 from mockcore.app import ServiceContext, ServiceSpec, create_app
 from mockcore.keys import AuthSpec, Grant, Principal
 from refdata import calendar, market
+from refdata.corpactions import NOTICE_DAYS, corporate_actions, event_by_id
+from refdata.corpactions import recalls as lender_recalls
 from refdata.counterparties import OUR_FIRM, counterparty_by_code
 from refdata.universe import instrument_by_id, resolve
 
@@ -434,11 +436,13 @@ async def lifecycle(ref: str, body: LifecycleIn, who: str = Depends(client("cont
 # recall on one arrives here. (Venue B loans are recalled on the venue.)
 def recall_json(n: RecallNotice) -> dict[str, Any]:
     inst = instrument_by_id(n.instrument_id)
+    ev = event_by_id(n.event_id) if n.event_id else None  # recalled for a dividend or a vote
     return {"recallId": n.recall_id, "contractId": n.contract_id, "counterparty": n.counterparty,
             "instrumentId": n.instrument_id, "composite": inst.composite if inst else None, "quantity": n.qty,
             "outstanding": n.outstanding, "noticeDate": n.notice_date.isoformat(), "dueDate": n.due_date.isoformat(),
             "status": n.status, "overdue": n.status == "OPEN" and n.due_date < calendar.trade_date(clock.now()),
-            "boughtIn": n.bought_in_qty or 0, "ts": clock.iso(n.ts)}
+            "boughtIn": n.bought_in_qty or 0, "reason": n.reason, "eventId": n.event_id,
+            "recordDate": ev.record_date.isoformat() if ev else None, "ts": clock.iso(n.ts)}
 
 
 async def _answer_recalls(s, c: Contract, q: int) -> list[str]:
@@ -553,6 +557,49 @@ async def verb_buy_in_after(args: dict[str, Any]) -> dict:
     days = args.get("days", BUY_IN_AFTER_DAYS)
     _buy_ins["afterDays"] = None if days is None else max(int(days), 0)
     return dict(_buy_ins)
+
+
+# -- recalls ahead of corporate actions -------------------------------------------------------------
+async def _ca_recalls() -> None:
+    """A lender who wants its dividend or its vote recalls a borrow ``NOTICE_DAYS`` business days before the record
+    date, due back the day before. Each lender decides once per loan and event (seeded)."""
+    now = clock.now()
+    today = calendar.trade_date(now)
+    if not calendar.is_business_day(today) or now.astimezone(clock.NEW_YORK).time() < dtime(9, 0):
+        return
+    events = [e for e in corporate_actions(today, calendar.add_business_days(today, NOTICE_DAYS + 1))
+              if e.notice_date <= today <= e.due_date]
+    if not events:
+        return
+    async with ctx.session() as s:
+        by_name: dict[str, list[Contract]] = {}
+        for c in (await s.execute(select(Contract).where(
+                Contract.status == "OPEN", Contract.side == "BORROW", Contract.venue != "VENUE_B",
+                Contract.instrument_id.in_({e.instrument_id for e in events})).order_by(Contract.id))).scalars():
+            by_name.setdefault(c.instrument_id, []).append(c)
+        for e in events:
+            for c in by_name.get(e.instrument_id, []):
+                if not lender_recalls(e, c.contract_id) or (await s.execute(select(RecallNotice.id).where(
+                        RecallNotice.contract_id == c.contract_id, RecallNotice.event_id == e.event_id))).first():
+                    continue
+                owed = sum((await s.execute(select(RecallNotice.outstanding).where(
+                    RecallNotice.contract_id == c.contract_id, RecallNotice.status == "OPEN"))).scalars())
+                qty = c.open_qty - owed
+                if qty <= 0:
+                    continue
+                n = RecallNotice(recall_id="pending", contract_id=c.contract_id, counterparty=c.counterparty,
+                                 instrument_id=c.instrument_id, qty=qty, outstanding=qty, notice_date=today,
+                                 due_date=e.due_date, status="OPEN", ts=now, reason=e.kind, event_id=e.event_id)
+                s.add(n)
+                await s.flush()
+                n.recall_id = f"SFP-R-{n.id:06d}"
+                _hist(c, "RECALL_NOTICE", recallId=n.recall_id, quantity=qty, dueDate=n.due_date.isoformat(),
+                      reason=e.kind, eventId=e.event_id)
+                await ctx.events.emit(s, "recall_notice", "recall", n.recall_id, recall_json(n), topic="contracts")
+        await s.commit()
+
+
+ctx.scheduler.every(60, "ca-recalls", _ca_recalls)
 
 
 @app.get("/recalls", tags=["lifecycle"])

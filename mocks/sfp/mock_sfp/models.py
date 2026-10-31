@@ -63,6 +63,8 @@ class RecallNotice(Base):
     status: Mapped[str] = mapped_column(String(16))  # OPEN | RETURNED | BOUGHT_IN
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     bought_in_qty: Mapped[int | None] = mapped_column(BigInteger)
+    reason: Mapped[str | None] = mapped_column(String(16))  # None (the lender's own reasons) | DIVIDEND | AGM | ...
+    event_id: Mapped[str | None] = mapped_column(String(32))  # the corporate action, if that's why
 
 
 class BuyIn(Base):
