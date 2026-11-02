@@ -59,5 +59,23 @@ async def test_the_token_names_the_trader_not_the_header(client: httpx.AsyncClie
     assert (await client.get("/locates", headers=no_claim)).status_code == 200  # falls back to the Clerk user id
 
 
+async def test_docs_and_schema_close_with_sign_in_on(clerk: None, client: httpx.AsyncClient) -> None:
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert (await client.get(path)).status_code == 404
+
+
+async def test_the_stream_refuses_a_missing_or_bad_token(clerk: None) -> None:
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from loandesk.app import create_app
+
+    tc = TestClient(create_app())  # no lifespan: refused before anything it sets up is touched
+    for q in ("", f"?token={token(OTHER)}"):
+        with pytest.raises(WebSocketDisconnect) as e, tc.websocket_connect("/stream" + q) as ws:
+            ws.receive_json()
+        assert e.value.code == 4401
+
+
 async def test_sign_in_off_keeps_the_dev_desk_open(client: httpx.AsyncClient) -> None:
     assert (await client.get("/locates")).status_code == 200

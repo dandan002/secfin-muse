@@ -34,7 +34,12 @@ that needs a venue fails visibly (order `FAILED`, reply `FAILED`) instead of han
 
 ## Sign-in (Clerk)
 
-The web app opens on a landing page; the desk is behind a Clerk sign-in, and the API checks every request itself.
+The web app has three pages: the public landing at `/`, Clerk's sign-in at `/sign-in`, and the desk at `/desk`, which
+only mounts with a live Clerk session (signed out, it sends you to `/sign-in`; signed in, `/sign-in` sends you to the
+desk; a session that ends mid-use drops you back out). Nothing routes until Clerk has loaded, so if Clerk can't be
+reached the desk stays closed. The API checks every request itself; the page gating is for people, not security.
+Whatever serves the built `dist/` must fall back to `index.html` for unknown paths (Vite's dev and preview servers
+do), so a deep link to `/desk` or a Clerk step under `/sign-in/…` loads the app.
 
 1. Create an application in the [Clerk dashboard](https://dashboard.clerk.com). Turn off sign-up (or restrict it)
    so only invited traders get in.
@@ -45,10 +50,12 @@ The web app opens on a landing page; the desk is behind a Clerk sign-in, and the
    expiry, issuer and the site it was minted for (`azp`, from `LOANDESK_CLERK_AUTHORIZED_PARTIES`, default the CORS
    origins). The trader in the audit trail is the token's `trader` or `username` claim (add one under
    *Sessions → Customize session token*, e.g. `{"trader": "{{user.username}}"}`), else the Clerk user id; the
-   `X-Trader` header is ignored.
+   `X-Trader` header is ignored. With the issuer set, `/docs`, `/redoc` and `/openapi.json` are off too; without it,
+   the API logs a warning at startup that it's open.
+4. In the Clerk dashboard, add `/sign-in` as the sign-in URL and your web origin(s) to the allowed origins.
 
-Without the key the landing page says sign-in isn't configured; `npm run dev` still offers "open the desk (dev,
-no sign-in)", and without the issuer the API stays open, as before. Set both for anything beyond your laptop.
+Without the key the landing page says sign-in isn't configured and a production build never mounts the desk;
+`npm run dev` still offers "open the desk (dev, no sign-in)", and without the issuer the API stays open, as before. Set both for anything beyond your laptop.
 
 ## What's built (spec module → code)
 

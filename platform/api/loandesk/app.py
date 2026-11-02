@@ -26,6 +26,8 @@ log = logging.getLogger("loandesk")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     cfg = get_settings()
+    if not auth.enabled():
+        log.warning("sign-in is off (LOANDESK_CLERK_ISSUER unset): the desk API is open to anyone who can reach it")
     secmaster.set_seed(cfg.seed)
     db.configure(cfg.database_url)
     await db.create_all()
@@ -46,8 +48,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     cfg = get_settings()
+    # With sign-in on, the schema and docs pages close too: they'd map every route for anyone (they sit outside the
+    # gated routers). Open in local dev.
+    docs = {} if not auth.enabled() else {"docs_url": None, "redoc_url": None, "openapi_url": None}
     app = FastAPI(title="LoanDesk AI", version="0.1.0", lifespan=lifespan,
-                  description="Securities-lending desk platform. Synthetic data only.")
+                  description="Securities-lending desk platform. Synthetic data only.", **docs)
     app.add_middleware(CORSMiddleware, allow_origins=cfg.cors_origins, allow_methods=["*"], allow_headers=["*"])
     for r in (reference.router, trading.router, chat.router, desk.router):
         app.include_router(r, dependencies=[Depends(auth.require_user)])
