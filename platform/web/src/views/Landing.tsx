@@ -1,5 +1,6 @@
-import { SignInButton } from "@clerk/react";
+import type { ReactNode } from "react";
 import { authEnabled } from "../lib/auth";
+import { navigate, ROUTES } from "../lib/router";
 
 const STEPS = [
   ["chat", "A borrow agreed in Desk Chat is read in context and drafted as an order card."],
@@ -15,12 +16,24 @@ const FEATURES = [
   { title: "Booking", tone: "text-hot", body: "CDM trades to the processor, Rule 10c-1a fields captured at booking, settlement on ISO 20022 sese.023, and daily marks." },
 ];
 
-/** Signed-out front door. ``onDevEnter``: with sign-in not configured, local dev can still open the desk. */
-export function Landing({ onDevEnter }: { onDevEnter?: () => void }) {
+/** An in-app link: a real href (open in new tab works), routed without a reload. */
+function Go({ to, className, children }: { to: string; className: string; children: ReactNode }) {
+  return (
+    <a href={to} className={className} onClick={(e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      navigate(to);
+    }}>{children}</a>
+  );
+}
+
+/** Front door. Sign-in lives on its own page (``/sign-in``); a trader already signed in goes straight to the desk.
+ *  ``onDevEnter``: with sign-in not configured, local dev can still open the desk. */
+export function Landing({ signedIn = false, onDevEnter }: { signedIn?: boolean; onDevEnter?: () => void }) {
   const cta = authEnabled ? (
-    <SignInButton mode="modal">
-      <button className="btn-accent h-9 px-4 text-sm">Sign in to the desk</button>
-    </SignInButton>
+    signedIn
+      ? <Go to={ROUTES.desk} className="btn-accent h-9 px-4 text-sm">Open the desk</Go>
+      : <Go to={ROUTES.signIn} className="btn-accent h-9 px-4 text-sm">Sign in to the desk</Go>
   ) : onDevEnter ? (
     <button className="btn-accent h-9 px-4 text-sm" onClick={onDevEnter}>Open the desk (dev, no sign-in)</button>
   ) : null;
@@ -33,9 +46,9 @@ export function Landing({ onDevEnter }: { onDevEnter?: () => void }) {
             <span className="text-sm font-medium tracking-[0.22em]">LOANDESK</span>
             <span className="text-2xs text-faint">sec lending desk</span>
           </div>
-          {authEnabled && (
-            <SignInButton mode="modal"><button className="btn">Sign in</button></SignInButton>
-          )}
+          {authEnabled && (signedIn
+            ? <Go to={ROUTES.desk} className="btn">Desk</Go>
+            : <Go to={ROUTES.signIn} className="btn">Sign in</Go>)}
         </header>
 
         <section className="pt-16 pb-14 sm:pt-24">
