@@ -219,6 +219,15 @@ async def list_events(entity: str | None = None, id: str | None = None, limit: i
              "actor": e.actor, "before": e.before, "after": e.after} for e in (await s.execute(q)).scalars()]
 
 
+@router.get("/events/story", tags=["audit"])
+async def event_story(id: str, s: AsyncSession = Depends(get_session)) -> dict:
+    """One trade's (or order's, card's, locate's, chat message's) story: its events and those of everything it
+    came from or led to, in time order."""
+    from ..services import story
+
+    return await story.story(s, id)
+
+
 @router.get("/status", tags=["audit"])
 async def status() -> dict:
     cfg = get_settings()

@@ -170,6 +170,10 @@ async def propose_fix(s: AsyncSession, t: Trade) -> Action | None:
         return None
 
 
+class AmendError(RuntimeError):
+    """The processor wouldn't take the amendment (it's down, or doesn't know the contract)."""
+
+
 async def amend_to_fill(s: AsyncSession, t: Trade, *, by: str, fields: dict[str, Any] | None = None) -> Trade:
     """Fix a break by aligning the processor's contract to our venue fill (or to ``fields``, if given)."""
     if t.compare_status != "UNMATCHED" or not t.sfp_contract_id:
@@ -178,8 +182,9 @@ async def amend_to_fill(s: AsyncSession, t: Trade, *, by: str, fields: dict[str,
     try:
         await systems().processor.amend(t.sfp_contract_id, fields, "align to venue fill")
     except AdapterError as e:
+        # Say why, rather than leave the caller to report the break as merely still open.
         events.record(s, "trade", t.id, "amend_failed", {"error": str(e)}, actor=by)
-        return t
+        raise AmendError(f"the processor refused the amend: {e}") from e
     events.record(s, "trade", t.id, "amended", {"fields": fields}, actor=by)
     return await compare(s, t, by=by)
 

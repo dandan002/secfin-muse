@@ -3,7 +3,7 @@ import { actor, bps, full, money, qty, when } from "../lib/format";
 import { useKeys, useMulti, useQuery, useSelection } from "../lib/hooks";
 import { useDesk } from "../lib/store";
 import type { BuyIn, CorpActionExposure, DeliveryFail, ShortList, ShortListLine } from "../lib/types";
-import { Empty, Kbd, Panel, PreBorrowTag, Stat, State, TierBadge } from "../components/ui";
+import { Empty, Figures, Kbd, Panel, PreBorrowTag, Stat, State, TierBadge } from "../components/ui";
 
 const TOPICS = ["short_list", "order", "trade", "action", "market"];
 
@@ -59,18 +59,20 @@ export function ShortListView() {
 
   return (
     <div className="h-full flex flex-col gap-3 min-h-0">
-      <div className="panel grid grid-cols-3 md:grid-cols-8 gap-4 px-4 py-3.5">
-        <Stat label="stock record" value={data?.tradeDate ?? "—"} />
-        <Stat label="settles" value={data?.settlementDate ?? "—"} />
-        <Stat label="names short" value={full(sum.short)} tone={sum.short ? "text-hot" : ""} />
-        <Stat label="working" value={full(sum.working)} tone={sum.working ? "text-warm" : ""} />
-        <Stat label="covered" value={full(sum.covered)} tone="text-up" />
-        <Stat label="to borrow" value={money(sum.uncoveredNotional)} tone={sum.uncoveredNotional ? "text-hot" : ""} />
-        <Stat label="excess · $/day" value={sum.excess ? `${money(sum.excessNotional)} · ${money(sum.excessCostUsd)}` : "—"}
-          tone={sum.excess ? "text-warm" : ""} />
-        <Stat label="rule 204 · pre-borrow" value={sum.cnsFails ? `${full(sum.closeOut)} · ${full(sum.preBorrow)}` : "—"}
-          tone={sum.preBorrow ? "text-down" : sum.closeOut ? "text-hot" : ""} />
+      <div className="flex items-center gap-3">
+        <span className="label">{data?.tradeDate ? `Stock record ${data.tradeDate} · settles ${data.settlementDate}` : "No stock record yet"}</span>
       </div>
+      <Figures items={[
+        { label: "Names short", value: full(sum.short), tone: sum.short ? "text-hot" : "" },
+        { label: "Covered", value: full(sum.covered), sub: "by the box or loans" },
+        { label: "Working", value: full(sum.working), sub: "orders or cards out" },
+        { label: "To borrow", value: sum.uncoveredNotional ? `$${money(sum.uncoveredNotional)}` : "—",
+          tone: sum.uncoveredNotional ? "text-hot" : "", sub: sum.uncovered ? `${qty(sum.uncovered)} shares` : undefined },
+        { label: "Excess", value: sum.excess ? `$${money(sum.excessNotional)}` : "—",
+          sub: sum.excess ? `costs $${money(sum.excessCostUsd)} / day` : undefined },
+        { label: "Rule 204", value: sum.cnsFails ? full(sum.closeOut) : "—", tone: sum.preBorrow ? "text-down" : sum.closeOut ? "text-hot" : "",
+          sub: sum.cnsFails ? `close-outs due${sum.preBorrow ? ` · ${full(sum.preBorrow)} pre-borrow` : ""}` : undefined },
+      ]} />
       {!!fails?.length && <FailsPanel fails={fails} onDone={() => { reload(); reloadFails(); }} />}
       {!!buyIns?.length && <BuyInsPanel rows={buyIns} />}
       {!!events?.some((e) => e.atRisk || e.clientShort) && <CorpActionsPanel rows={events.filter((e) => e.atRisk || e.clientShort)} />}
@@ -154,9 +156,10 @@ export function ShortListView() {
 
 function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (l: ShortListLine) => void }) {
   const setView = useDesk((s) => s.setView);
-  if (!l) return <Panel title="detail"><Empty>Select a name.</Empty></Panel>;
+  if (!l) return <Panel title="Detail"><Empty>Select a name.</Empty></Panel>;
   return (
-    <Panel title="detail" right={<State s={l.status} />} bodyClass="p-3 flex flex-col gap-4 overflow-auto">
+    <Panel title={<>{l.composite} <span className="label">{l.clients.length} client{l.clients.length === 1 ? "" : "s"}</span></>}
+      right={<State s={l.status} />} bodyClass="p-4 flex flex-col gap-4 overflow-auto">
       <div>
         <div className="flex items-center gap-2">
           <span className="text-sm">{l.composite}</span>
@@ -165,15 +168,11 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
         </div>
         <div className="text-xs text-faint truncate">{l.name}</div>
       </div>
+      <Waterfall l={l} />
       <div className="grid grid-cols-3 gap-3">
-        <Stat label="client short" value={full(l.clientShort)} />
-        <Stat label="box" value={full(l.box)} />
-        <Stat label="unbooked" value={full(l.unbooked)} />
-        <Stat label="failing in" value={full(l.fails)} tone={l.fails ? "text-hot" : ""} />
-        <Stat label="failed at CNS" value={full(l.cnsFails)} tone={l.closeOutBy ? "text-hot" : l.cnsFails ? "text-warm" : ""} />
-        <Stat label="recalled" value={full(l.recalled)} tone={l.recalled ? "text-warm" : ""} />
-        <Stat label="short by" value={full(l.shortfall)} tone={l.shortfall ? "text-hot" : "text-up"} />
-        <Stat label="market bps" value={bps(l.feeBps)} />
+        <Stat label="Failed at CNS" value={full(l.cnsFails)} tone={l.closeOutBy ? "text-hot" : ""} />
+        <Stat label="Unbooked in box" value={full(l.unbooked)} />
+        <Stat label="Market bps" value={bps(l.feeBps)} />
       </div>
       <div className="border-t rule pt-3">
         <div className="label mb-1.5">Clients</div>
@@ -224,6 +223,47 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
         {!!l.uncovered && <button className="btn" onClick={() => onBorrow(l)}>Borrow {qty(l.uncovered)} by hand</button>}
       </div>
     </Panel>
+  );
+}
+
+/** What the desk must borrow, as the arithmetic the short list does: what's owed, less what we hold, plus what's
+ *  failing in or recalled away, gives the short; less what's already working leaves what to borrow. Built from the
+ *  server's own figures, so it always adds up to them. */
+function Waterfall({ l }: { l: ShortListLine }) {
+  const held = l.need - l.shortfall + l.excess + l.fails + l.recalled;  // the box (and unbooked fills) we count
+  const working = l.shortfall - l.uncovered;
+  const steps: { label: string; v: number; sign: "" | "−" | "+"; from: number; to: number; total?: boolean; tone?: string }[] = [];
+  let at = l.need;
+  steps.push({ label: "Clients owe", v: l.need, sign: "", from: 0, to: l.need, total: true });
+  const step = (label: string, v: number, sign: "−" | "+") => {
+    if (!v) return;
+    const next = sign === "−" ? at - v : at + v;
+    // Holding more than the clients need takes the running total under zero: draw from zero, the excess is noted.
+    steps.push({ label, v, sign, from: Math.max(0, Math.min(at, next)), to: Math.max(0, at, next) });
+    at = next;
+  };
+  step("Box", held, "−");
+  step("Failing in", l.fails, "+");
+  step("Recalled", l.recalled, "+");
+  steps.push({ label: "Short by", v: l.shortfall, sign: "", from: 0, to: l.shortfall, total: true, tone: l.shortfall ? "text-hot" : "text-up" });
+  at = l.shortfall;
+  step("Working", working, "−");
+  steps.push({ label: "To borrow", v: l.uncovered, sign: "", from: 0, to: l.uncovered, total: true, tone: l.uncovered ? "text-hot" : "" });
+  const scale = Math.max(...steps.map((x) => x.to), 1);
+  return (
+    <div className="flex flex-col gap-2.5" aria-label="How the short is worked out">
+      {steps.map((x) => (
+        <div key={x.label} className="grid grid-cols-[96px_1fr_88px] gap-2.5 items-center">
+          <span className={`text-2xs ${x.total ? "text-ink font-medium" : "text-faint"}`}>{x.sign && `${x.sign} `}{x.label}</span>
+          <span className="relative block h-1.5">
+            <span className={`absolute inset-y-0 ${x.total ? (x.label === "To borrow" ? "bg-accent" : "bg-dim") : "bg-strong"}`}
+              style={{ left: `${(x.from / scale) * 100}%`, width: `${Math.max(((x.to - x.from) / scale) * 100, x.v ? 0.5 : 0)}%` }} />
+          </span>
+          <span className={`text-right ${x.total ? `font-semibold ${x.tone ?? ""}` : "text-dim"}`}>{full(x.v)}</span>
+        </div>
+      ))}
+      {!!l.excess && <span className="label">{full(l.excess)} more than the clients need: returns drafted by D</span>}
+    </div>
   );
 }
 

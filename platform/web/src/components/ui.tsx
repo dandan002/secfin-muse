@@ -140,13 +140,14 @@ export function Tabs<T extends string>({ value, options, onChange }: {
 }
 
 /** A row of headline figures across one panel: the strip at the top of each screen. */
-export function Figures({ items }: { items: { label: string; value: ReactNode; tone?: string }[] }) {
+export function Figures({ items }: { items: { label: string; value: ReactNode; tone?: string; sub?: ReactNode }[] }) {
   return (
     <div className="panel grid shrink-0" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
       {items.map((f, i) => (
         <div key={f.label} className={`flex flex-col gap-1.5 px-4 py-3.5 min-w-0 ${i ? "border-l border-line" : ""}`}>
           <span className="label">{f.label}</span>
           <span className={`fig truncate ${f.tone ?? ""}`}>{f.value}</span>
+          {f.sub && <span className="label truncate">{f.sub}</span>}
         </div>
       ))}
     </div>

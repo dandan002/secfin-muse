@@ -338,6 +338,8 @@ function Story({ t, onFix }: { t: Trade; onFix: () => void }) {
     <aside aria-label="Trade story" className="panel flex-[1_1_300px] max-w-[360px] min-w-0">
       <div className="flex items-center h-10 px-4 border-b border-line gap-2">
         <span className="text-xs font-medium flex-1 truncate">{t.composite} · {t.contractId ?? t.venueTradeId}</span>
+        <button className="text-2xs text-accent" title="From the chat line or locate to settlement, in Audit"
+          onClick={() => useDesk.getState().openAudit(t.id)}>Full story</button>
         <State s={t.loanStatus} />
       </div>
       <div className="grid grid-cols-3 border-b border-line">
