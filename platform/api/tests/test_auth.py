@@ -31,6 +31,8 @@ def clerk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "clerk_issuer", ISSUER)
     monkeypatch.setattr(get_settings(), "clerk_authorized_parties", ["http://localhost:5180"])  # whatever .env says
     monkeypatch.setattr(get_settings(), "traders", [])
+    monkeypatch.setattr(get_settings(), "trader_roles", [])  # whatever .env says: each test sets its own
+    monkeypatch.setattr(get_settings(), "heads", [])
     jwks = SimpleNamespace(get_signing_key_from_jwt=lambda _t: SimpleNamespace(key=KEY.public_key()))
     monkeypatch.setattr(auth, "_jwks", lambda _issuer: jwks)
 
