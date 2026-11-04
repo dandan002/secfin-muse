@@ -23,6 +23,9 @@ async def start() -> Runner | None:
     except ImportError as e:
         missing = f"install the agent extra (uv sync --extra agent): {e.name} is missing"
         return None
+    from .models import load_meter
+
+    await load_meter()  # today's spend so far, from before a restart
     _runner = Runner()
     await _runner.start()
     return _runner

@@ -19,21 +19,29 @@ from .models import Event
 
 
 class Hub:
-    def __init__(self) -> None:
-        self._subs: set[asyncio.Queue[dict[str, Any]]] = set()
+    """Two kinds of subscriber. A UI socket gets everything into a bounded queue: a stalled browser loses its oldest
+    message rather than holding the desk's memory (it refetches anyway). The desk's own workers (the autopilot, the
+    agent team) act on what they hear, so they name the topics they need and lose nothing: a dropped "card proposed"
+    would be a card the autopilot never weighs, or one that waits forever for a review nobody started."""
 
-    def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
-        self._subs.add(q)
+    def __init__(self) -> None:
+        self._subs: dict[asyncio.Queue[dict[str, Any]], frozenset[str] | None] = {}
+
+    def subscribe(self, topics: set[str] | None = None) -> asyncio.Queue[dict[str, Any]]:
+        """``topics`` given: a worker's subscription (those topics only, unbounded). None: a UI socket's."""
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=0 if topics else 1000)
+        self._subs[q] = frozenset(topics) if topics else None
         return q
 
     def unsubscribe(self, q: asyncio.Queue[dict[str, Any]]) -> None:
-        self._subs.discard(q)
+        self._subs.pop(q, None)
 
     def publish(self, topic: str, data: Any) -> None:
         msg = {"topic": topic, "ts": clock.iso(clock.now()), "data": data}
-        for q in list(self._subs):
-            if q.full():  # a stalled client loses its oldest message rather than blocking the desk
+        for q, topics in list(self._subs.items()):
+            if topics is not None and topic not in topics:
+                continue
+            if q.full():  # only a UI socket's queue is bounded
                 q.get_nowait()
             q.put_nowait(msg)
 

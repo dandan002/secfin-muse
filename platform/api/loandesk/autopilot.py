@@ -13,7 +13,8 @@ The limits below are the desk's to set (``PUT /policy/{key}``, see ``policy.py``
   Hot names, cards with warnings, Hot-name lines sent to the agent too, and a lender's counter accepted when it is
   within a tolerance of our bid. Wider limits, not none.
 
-What no mode loosens: a card with a ``BLOCKED`` flag (a hard pre-trade check failed) never approves itself; the
+What no mode loosens: a card with a ``BLOCKED`` flag (a hard pre-trade check failed) or a ``HOLD:`` flag (say, a
+counterparty's "done" on terms we never put up) never approves itself; the
 executors still enforce counterparty limits, fee floors and the restricted list; the kill switch stops everything
 (a card that can't execute stays pending); the model budget still caps spend. A run of failed auto-approvals trips
 the breaker and drops the desk back to ``off``. Every auto-approval is recorded under its policy
@@ -154,6 +155,8 @@ async def verdict(s: Any, a: Action, m: Mode) -> tuple[str | None, float]:
     flags = a.risk_flags or []
     if any(f.startswith("BLOCKED") for f in flags):
         return "a hard check failed (BLOCKED)", 0.0
+    if hold := next((f for f in flags if f.startswith("HOLD:")), None):  # needs a person, whatever the mode
+        return hold[:200], 0.0
     if flags and not env.allow_warnings:
         return f"risk flag: {flags[0]}", 0.0
     if (why := _reviewer(a)) is not None:
@@ -164,6 +167,11 @@ async def verdict(s: Any, a: Action, m: Mode) -> tuple[str | None, float]:
     iid = await _instrument(s, a)
     if iid and not env.allow_hot and secmaster.live(iid)["tier"] == "HOT":
         return "a Hot name", 0.0
+    if a.kind == "locate_decision" and iid and (a.payload or {}).get("decision") != "REJECTED":
+        from .services import market
+
+        if int((a.payload or {}).get("quantity") or 0) > (now := await market.available(s, iid)):
+            return f"only {now:,} available now: the card was sized when there was more", 0.0
     usd = await notional(s, a)
     if usd > env.max_card_usd:
         return f"${usd:,.0f} over the ${env.max_card_usd:,.0f} card limit", usd
@@ -202,8 +210,14 @@ async def consider(action_id: str) -> Action | None:
         if a is None:
             return None
         why, usd = await verdict(s, a, m)
+        if why == READING:  # looked at again when the read lands; make sure one is coming
+            from . import agent
+
+            if (r := agent.current()) is not None:
+                await r.review_trade(a.id)
+            return None
         if why is not None:
-            if a.status == "PENDING" and why != READING:  # a card being read is looked at again when it's read
+            if a.status == "PENDING":
                 events.record(s, ENTITY, a.id, "passed_over", {"reason": why, "mode": m}, actor=ACTOR[m])
                 await s.commit()
             return None
@@ -283,7 +297,7 @@ class Worker:
         self._sweep.set()
 
     async def _run(self) -> None:
-        q = events.hub.subscribe()
+        q = events.hub.subscribe({"action", "locate", "order"})
         try:
             while True:
                 if self._sweep.is_set():

@@ -11,7 +11,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import clock, events
@@ -47,6 +48,28 @@ def set_kill_switch(on: bool, by: str) -> dict[str, Any]:
     return kill_switch()
 
 
+async def save_kill_switch(s: AsyncSession, on: bool, by: str) -> dict[str, Any]:
+    """Throw (or release) the switch and keep it: a restart (the desk scales to zero when idle) must not quietly
+    release it. Audited as a ``gate`` event. The caller commits."""
+    from .models import DeskSetting
+
+    out = set_kill_switch(on, by)
+    row = await s.get(DeskSetting, "kill")
+    if row is None:
+        s.add(DeskSetting(key="kill", value=out, updated_by=by, updated_at=clock.now()))
+    else:
+        row.value, row.updated_by, row.updated_at = out, by, clock.now()
+    events.record(s, "gate", "kill_switch", "on" if on else "off", out, actor=by)
+    return out
+
+
+async def load_kill_switch(s: AsyncSession) -> None:
+    from .models import DeskSetting
+
+    if (row := await s.get(DeskSetting, "kill")) is not None:
+        _kill.update(row.value)
+
+
 def action_json(a: Action) -> dict[str, Any]:
     return {"id": a.id, "kind": a.kind, "title": a.title, "payload": a.payload, "original": a.original,
             "proposedBy": a.proposed_by, "rationale": a.rationale, "riskFlags": a.risk_flags, "status": a.status,
@@ -72,17 +95,35 @@ async def propose(s: AsyncSession, *, kind: str, title: str, payload: dict[str, 
     return a
 
 
+async def _claim(s: AsyncSession, a: Action, status: str, approver: str) -> None:
+    """Move the card out of PENDING atomically, or refuse: two deciders at once (a trader's double click, a trader
+    and the autopilot, a batch) must never both send it. The conditional update holds the row (Postgres) or the
+    database (SQLite) until this session commits, so the other decider finds it decided."""
+    if a.status != "PENDING":
+        raise GateError(f"action {a.id} is {a.status}")
+    try:
+        r = await s.execute(update(Action).where(Action.id == a.id, Action.status == "PENDING")
+                            .values(status=status, approver=approver, decided_at=clock.now())
+                            .execution_options(synchronize_session=False))
+    except OperationalError as e:  # SQLite: another decider holds the write lock on it
+        raise GateError(f"action {a.id} is being decided by someone else") from e
+    if r.rowcount != 1:
+        await s.refresh(a)
+        raise GateError(f"action {a.id} is {a.status}")
+    a.status, a.approver, a.decided_at = status, approver, clock.now()
+
+
 async def approve(s: AsyncSession, a: Action, approver: str, payload: dict[str, Any] | None = None) -> Action:
     if a.status != "PENDING":
         raise GateError(f"action {a.id} is {a.status}")
     if _kill["on"]:
         raise GateError("kill switch is on: nothing executes until it's off")
     before = action_json(a)
+    await _claim(s, a, "APPROVED", approver)
     if payload is not None:
         a.transcript = [*a.transcript, {"ts": clock.iso(clock.now()), "step": "edited", "by": approver,
                                         "from": a.payload, "to": payload}]
         a.payload = payload
-    a.status, a.approver, a.decided_at = "APPROVED", approver, clock.now()
     try:
         a.result = await _executors[a.kind](s, a, approver)
         a.status = "EXECUTED"
@@ -94,10 +135,8 @@ async def approve(s: AsyncSession, a: Action, approver: str, payload: dict[str, 
 
 async def reject(s: AsyncSession, a: Action, approver: str, reason: str | None = None,
                  status: str = "REJECTED") -> Action:
-    if a.status != "PENDING":
-        raise GateError(f"action {a.id} is {a.status}")
     before = action_json(a)
-    a.status, a.approver, a.decided_at = status, approver, clock.now()
+    await _claim(s, a, status, approver)
     a.result = {"reason": reason} if reason else None
     events.record(s, "action", a.id, status.lower(), action_json(a), before=before, actor=approver)
     return a
@@ -113,12 +152,18 @@ async def listing(s: AsyncSession, status: str | None = "PENDING", limit: int = 
 # -- executors ----------------------------------------------------------------------------------
 @executor("locate_decision")
 async def _locate_decision(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
-    from .services import locates
+    from .services import locates, market
 
     p = a.payload
     loc = await s.get(Locate, p["locateId"])
     if loc is None:
         raise GateError(f"no locate {p['locateId']}")
+    if approver.startswith("policy:") and p["decision"] != "REJECTED" and loc.instrument_id:
+        # The card was sized against the supply when it was drafted; a policy approving it later (a sweep when the
+        # autopilot goes on) must still have reasonable grounds now (Reg SHO). A trader sees the market and judges.
+        now = await market.available(s, loc.instrument_id)
+        if int(p.get("quantity") or 0) > now:
+            raise GateError(f"only {now:,} available now, under the {int(p.get('quantity') or 0):,} on the card")
     await locates.decide(s, loc, p["decision"], p.get("quantity"), by=f"{a.proposed_by}+{approver}",
                          rationale=a.rationale, fee_bps=p.get("feeBps"))
     return {"locateId": loc.id, "status": loc.status, "qtyApproved": loc.qty_approved}

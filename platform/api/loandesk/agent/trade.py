@@ -168,8 +168,9 @@ async def check(state: TradeState) -> dict[str, Any]:
             for k, v in r["changes"].items():
                 if not single or k not in (a.payload or {}):
                     problems.append(f"{k} isn't a field this card takes")
-                elif k == "quantity" and not 0 < v <= int(a.payload.get("quantity") or 0) * 2:
-                    problems.append(f"quantity {v:,} is out of range")
+                elif k == "quantity" and not 0 < v <= int(a.payload.get("quantity") or 0):
+                    problems.append(f"quantity {v:,} is more than the card's {a.payload.get('quantity'):,}: the "
+                                    f"rules sized it to the need, and a reviewer may only cut it")
                 elif k == "feeBps" and names:
                     last = secmaster.live(names[0])["feeBps"]
                     lo, hi = rules.fee_band(last) if last else (0, float("inf"))
@@ -228,5 +229,9 @@ def reviewable(a: Action) -> bool:
 def on() -> bool:
     """Is the trade reviewer reading cards? (A runner, a model to call, and the setting.)"""
     from . import current
+    from .models import meter
 
-    return current() is not None and gateway().mode != "off" and get_settings().agent_review_trades
+    cfg = get_settings()
+    if gateway().mode in ("record", "live") and meter.total >= cfg.budget_usd * cfg.agent_trade_budget_share:
+        return False  # the rest of the day's budget is kept for locate reviews
+    return current() is not None and gateway().mode != "off" and cfg.agent_review_trades

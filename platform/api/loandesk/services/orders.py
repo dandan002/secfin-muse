@@ -447,6 +447,36 @@ async def _venue_b_command(s: AsyncSession, o: Order, cmd: str, fee_bps: float |
 
 
 # -- chat: a trade agreed in Desk Chat becomes an order card ----------------------------------------------
+async def _what_we_said(s: AsyncSession, m: Any) -> dict[str, dict[str, Any]]:
+    """Our own last terms per name in this room, before their "done": what they can have agreed to."""
+    from ..models import ChatMessage
+
+    rows = (await s.execute(select(ChatMessage).where(ChatMessage.stream_id == m.stream_id, ChatMessage.side == "US",
+                                                      ChatMessage.seq < m.seq).order_by(ChatMessage.seq.desc())
+                            .limit(40))).scalars().all()
+    out: dict[str, dict[str, Any]] = {}
+    for x in rows:
+        for ln in x.lines or []:
+            if ln.get("instrumentId") and ln["instrumentId"] not in out:
+                out[ln["instrumentId"]] = ln
+    return out
+
+
+def _terms_differ(ln: dict[str, Any], ours: dict[str, Any] | None, side: str) -> str | None:
+    """A counterparty's acceptance must be of terms we put up: no bigger, at our fee or better for us."""
+    if ours is None:
+        return "HOLD: they accepted a name we never quoted or bid in this room"
+    want, got = ours.get("quantity"), int(ln["quantity"])
+    if want and got > int(want):
+        return f"HOLD: they agreed {got:,}; we said {int(want):,}"
+    fee, our_fee = ln.get("feeBps"), ours.get("feeBps")
+    if fee is not None and our_fee is not None:
+        worse = fee > our_fee if side == "BORROW" else fee < our_fee
+        if worse and abs(fee - our_fee) > 0.05:
+            return f"HOLD: they agreed {fee:g} bps; we said {our_fee:g}"
+    return None
+
+
 async def propose_from_chat(s: AsyncSession, m: Any) -> list[str]:
     """Draft one order per agreed line, to the counterparty we agreed it with, for the gate.
 
@@ -457,6 +487,9 @@ async def propose_from_chat(s: AsyncSession, m: Any) -> list[str]:
     if not m.our_side or not m.counterparty:
         return ["agreed, but who's on which side isn't clear: the trader books it"]
     notes: list[str] = []
+    # Their acceptance (not ours): of what we said in that room, or it waits for a trader.
+    ours = await _what_we_said(s, m) if getattr(m, "side", "THEM") == "THEM" and getattr(m, "stream_id", None) \
+        else None
     for ln in m.lines or []:
         if not ln.get("instrumentId") or not ln.get("quantity"):
             notes.append(f"{ln.get('identifier')}: no name or size to trade")
@@ -483,7 +516,9 @@ async def propose_from_chat(s: AsyncSession, m: Any) -> list[str]:
                 rationale=f"Agreed in Desk Chat with {m.counterparty}: \"{m.text[:120]}\". Priced at {why}; "
                           f"{p['routeReason']}: approving books it.",
                 risk_flags=[f"{'BLOCKED' if c['blocking'] else 'warning'}: {c['name']} ({c['detail']})"
-                            for c in failed],
+                            for c in failed]
+                + ([x] if ours is not None and (x := _terms_differ(ln, ours.get(ln["instrumentId"]), m.our_side))
+                   else []),
                 original={"message": m.id, "line": ln}, source_ref=m.id)
             notes.append(f"{name}: order card {a.id}")
         except gate.GateError as e:

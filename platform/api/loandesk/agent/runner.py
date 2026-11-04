@@ -160,7 +160,14 @@ class Runner:
         return {task: lane.json() for task, lane in self.lanes.items()}
 
     async def _start(self, task: str, subject: str, model: str) -> AgentRun:
+        """One live run per subject: a second ask (the Review button twice, the autopilot and the planner both) gets
+        the run already going, not a second card for the same locate."""
         async with db.session() as s:
+            live = (await s.execute(select(AgentRun).where(AgentRun.task == task, AgentRun.subject == subject,
+                                                           AgentRun.status.in_(("RUNNING", "WAITING")))
+                                    .limit(1))).scalar()
+            if live is not None:
+                return live
             r = AgentRun(id=events.new_id("run"), task=task, subject=subject, status="RUNNING", model=model,
                          created_at=clock.now(), updated_at=clock.now())
             s.add(r)
@@ -172,7 +179,7 @@ class Runner:
     # -- the team's own triggers ------------------------------------------------------------------
     async def _watch(self) -> None:
         """A trade review for each rule-drafted card as it's proposed."""
-        q = events.hub.subscribe()
+        q = events.hub.subscribe({"action"})
         try:
             while True:
                 msg = await q.get()

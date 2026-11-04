@@ -22,6 +22,10 @@ class AuthError(Exception):
     pass
 
 
+class NotATrader(AuthError):
+    """Signed in, but not someone the desk lets trade."""
+
+
 @lru_cache
 def _jwks(issuer: str) -> jwt.PyJWKClient:
     return jwt.PyJWKClient(f"{issuer.rstrip('/')}/.well-known/jwks.json", cache_keys=True, lifespan=3600)
@@ -32,7 +36,7 @@ def enabled() -> bool:
 
 
 async def verify(token: str) -> dict[str, Any]:
-    """The token's claims, if Clerk signed it for this desk and it's live."""
+    """The token's claims, if Clerk signed it for this desk, it's live, and it names one of the desk's traders."""
     cfg = get_settings()
     issuer = cfg.clerk_issuer.rstrip("/")
     try:
@@ -44,6 +48,8 @@ async def verify(token: str) -> dict[str, Any]:
     parties = cfg.clerk_authorized_parties or cfg.cors_origins
     if claims.get("azp") and claims["azp"] not in parties:  # a token minted for another site
         raise AuthError(f"token is for {claims['azp']}")
+    if cfg.traders and trader_name(claims) not in {t.strip().lower() for t in cfg.traders}:
+        raise NotATrader(f"{trader_name(claims)} isn't one of the desk's traders")
     return claims
 
 
@@ -61,5 +67,7 @@ async def require_user(conn: HTTPConnection) -> None:
         raise HTTPException(401, "sign in first", headers={"WWW-Authenticate": "Bearer"})
     try:
         conn.state.claims = await verify(token)
+    except NotATrader as e:
+        raise HTTPException(403, str(e)) from e
     except AuthError as e:
         raise HTTPException(401, f"invalid session: {e}", headers={"WWW-Authenticate": "Bearer"}) from e
