@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import agent, auth, db, observe, secmaster
+from . import agent, auth, autopilot, db, observe, secmaster
 from .adapters import systems
 from .routes import chat, desk, reference, trading
 from .settings import get_settings
@@ -39,9 +39,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if cfg.sync_enabled:
         syncer.start()
     await agent.start()
+    autopilot.start()
+    if autopilot.mode() != "off":
+        log.warning("autopilot starts in %s mode: the desk approves its own cards within its limits", autopilot.mode())
     if observe.enabled():
         log.info("tracing model calls and agent runs to Langfuse at %s", cfg.langfuse_host)
     yield
+    await autopilot.stop()
     await agent.stop()
     observe.flush()
     await syncer.stop()

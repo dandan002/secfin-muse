@@ -314,7 +314,8 @@ async def propose(state: ReviewState) -> dict[str, Any]:
             a = await gate.propose(
                 s, kind="locate_decision",
                 title=f"{d['decision'].title()} {qty:,} {loc['instrument']['composite']} for {loc['counterparty']}",
-                payload={"locateId": loc["id"], "decision": d["decision"], "quantity": qty, "feeBps": d["feeBps"]},
+                payload={"locateId": loc["id"], "decision": d["decision"], "quantity": qty, "feeBps": d["feeBps"],
+                         "confidence": d.get("confidence")},  # what the autopilot weighs; the executor ignores it
                 original={"locateId": loc["id"], "decision": "REQUESTED", "quantity": loc["qtyRequested"]},
                 proposed_by=f"agent:{state['model']}", rationale=_card_rationale(d),
                 risk_flags=[*d["riskFlags"], *state.get("advisories", []), *state.get("concerns", [])],

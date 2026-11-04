@@ -124,6 +124,16 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
 * `agent/models.py`: the model gateway. `LOANDESK_AGENT_MODE=off|replay|record|live`, OpenAI SDK against
   `api.meta.ai/v1`, a cassette for record/replay (keys ignore timestamps and generated ids), a per-model spend meter
   and a hard budget.
+* `autopilot.py`: who approves cards, switched at run time from the sidebar (`PUT /autopilot`; starts from
+  `LOANDESK_AUTOPILOT_MODE`). **Manual** (default): every card waits for a trader. **Autopilot**: the agent starts
+  its own reviews of Warm locates, and a locate, order or basket card approves itself when it carries no risk flag,
+  isn't on a Hot name, the agent was at least 0.85 confident, and it fits $5m a card and $50m / 200 cards a day.
+  **Danger** (needs `confirm: "DANGER"`): end to end, every kind of card (break fixes, recalls and returns, chat
+  bids, cancels, payments), Hot names and warnings, Hot-name lines sent to the agent too, and a lender's counter
+  taken within 10% of our bid; $25m a card, $500m / 2,000 a day. In every mode a `BLOCKED` card never approves
+  itself, the executors keep every hard limit, the kill switch stops it all, and three failed auto-approvals in a
+  row turn it off (the breaker). Approvals are recorded as `policy:AUTOPILOT` / `policy:DANGER` with the notional
+  counted; a card left for a trader says why on the card. All limits are `LOANDESK_AUTOPILOT_*` / `LOANDESK_DANGER_*`.
 * `observe.py`: Langfuse traces, on only with `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (`LANGFUSE_HOST`
   defaults to Langfuse Cloud) and the agent in `record` or `live`; `off`, `replay` and CI never trace. Each model
   call through the gateway is a generation (model, messages, parameters, tokens, the desk's own cost; errors marked);

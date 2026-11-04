@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import agent, auth, clock, events, gate, observe, sync
+from .. import agent, auth, autopilot, clock, events, gate, observe, sync
 from ..adapters import AdapterError, systems
 from ..agent.models import gateway
 from ..agent.tools import REGISTRY
@@ -87,6 +87,25 @@ class KillIn(BaseModel):
 @router.put("/kill-switch", tags=["gate"])
 async def kill_switch(body: KillIn, who: str = Depends(trader)) -> dict:
     return gate.set_kill_switch(body.on, who)
+
+
+class AutopilotIn(BaseModel):
+    mode: Literal["off", "autopilot", "danger"]
+    confirm: str | None = Field(None, description='Danger mode only: "DANGER", to say it was meant')
+
+
+@router.get("/autopilot", tags=["gate"])
+async def autopilot_state(s: AsyncSession = Depends(get_session)) -> dict:
+    n, usd = await autopilot.used_today(s)
+    return {**autopilot.state(), "today": {"count": n, "notionalUsd": round(usd, 2)}}
+
+
+@router.put("/autopilot", tags=["gate"])
+async def set_autopilot(body: AutopilotIn, who: str = Depends(trader)) -> dict:
+    """Off, autopilot (limited kinds and sizes) or danger (end to end). Danger asks for ``confirm: "DANGER"``."""
+    if body.mode == "danger" and body.confirm != "DANGER":
+        raise HTTPException(422, 'danger mode lets the agent act end to end: send confirm "DANGER" to turn it on')
+    return await autopilot.set_mode(body.mode, who)
 
 
 # -- paste ingestion ---------------------------------------------------------------------------------
@@ -232,7 +251,7 @@ async def event_story(id: str, s: AsyncSession = Depends(get_session)) -> dict:
 async def status() -> dict:
     cfg = get_settings()
     return {"clock": clock.to_json(), "systems": await systems().status(), "sync": sync.status,
-            "agent": gateway().status(), "killSwitch": gate.kill_switch(),
+            "agent": gateway().status(), "killSwitch": gate.kill_switch(), "autopilot": autopilot.state(),
             "policy": {"autoApproveEtb": cfg.auto_approve_etb, "locateNameCap": cfg.locate_name_cap,
                        "bands": {"gcMaxFeeBps": cfg.gc_max_fee_bps, "gcMaxUtilPct": cfg.gc_max_util_pct,
                                  "hotMinFeeBps": cfg.hot_min_fee_bps, "hotMinUtilPct": cfg.hot_min_util_pct}}}

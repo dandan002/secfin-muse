@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { actor, bps, full, time } from "../lib/format";
 import { useKeys, useQuery } from "../lib/hooks";
 import { useDesk } from "../lib/store";
-import type { Action } from "../lib/types";
+import type { Action, AuditEvent } from "../lib/types";
 import { Empty, Figures, Kbd, Panel, State } from "../components/ui";
 
 interface AgentStatus {
@@ -143,7 +143,11 @@ export function Agent() {
         { label: "Flagged or Hot", value: pending.filter((a) => a.riskFlags.length || a.payload.tier === "HOT").length,
           tone: pending.some((a) => a.riskFlags.length || a.payload.tier === "HOT") ? "text-hot" : "" },
         { label: "Oldest", value: age == null ? "—" : `${Math.floor(age / 60)}:${String(Math.floor(age % 60)).padStart(2, "0")}` },
-        { label: "Approved today", value: todays.filter((a) => a.status === "APPROVED" || a.status === "EXECUTED").length },
+        { label: "Approved today", value: todays.filter((a) => a.status === "APPROVED" || a.status === "EXECUTED").length,
+          sub: (() => {
+            const auto = todays.filter((a) => (a.approver ?? "").startsWith("policy:")).length;
+            return auto ? `${auto} by autopilot` : undefined;
+          })() },
         { label: "Rejected today", value: todays.filter((a) => a.status === "REJECTED").length },
       ]} />
 
@@ -157,7 +161,7 @@ export function Agent() {
             </Empty>
           </div>
         ) : (
-          <Card a={cur} killed={killed} editing={editing} setEditing={setEditing}
+          <Card a={cur} killed={killed} editing={editing} setEditing={setEditing} passedOver={<PassedOver id={cur.id} />}
             onApprove={() => (editing ? approveEdited(cur) : act(cur, "approve"))} onEdit={() => startEdit(cur)}
             onReject={() => act(cur, "reject")} onTakeOver={() => act(cur, "take-over")} />
         )}
@@ -220,8 +224,9 @@ export function Agent() {
   );
 }
 
-function Card({ a, killed, editing, setEditing, onApprove, onEdit, onReject, onTakeOver }: {
+function Card({ a, killed, editing, setEditing, onApprove, onEdit, onReject, onTakeOver, passedOver }: {
   a: Action;
+  passedOver?: ReactNode;
   killed: boolean;
   editing: Record<string, string> | null;
   setEditing: (e: Record<string, string> | null) => void;
@@ -246,6 +251,7 @@ function Card({ a, killed, editing, setEditing, onApprove, onEdit, onReject, onT
         </span>
       </div>
       <div className="p-4 flex flex-col gap-1.5">
+        {passedOver}
         <span className="text-md font-semibold first-letter:uppercase">{a.title}</span>
         {a.rationale && <span className="text-dim whitespace-pre-line">{a.rationale}</span>}
       </div>
@@ -332,6 +338,15 @@ function Card({ a, killed, editing, setEditing, onApprove, onEdit, onReject, onT
       </div>
     </article>
   );
+}
+
+/** Why the autopilot left this card for a trader, when it looked at it. */
+function PassedOver({ id }: { id: string }) {
+  const { data } = useQuery<AuditEvent[]>(`/events?entity=autopilot&id=${id}&limit=1`, ["autopilot"]);
+  const e = data?.[0];
+  if (!e || e.type !== "passed_over") return null;
+  const why = String((e.after as { reason?: string } | null)?.reason ?? "");
+  return <span className="text-2xs text-hot">Autopilot left this for you: {why}</span>;
 }
 
 /** The card's trace: source, parse, tools, checks, escalation and proposal as readable steps; raw JSON on request. */

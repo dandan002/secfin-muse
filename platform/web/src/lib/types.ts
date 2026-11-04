@@ -228,6 +228,7 @@ export interface Status {
   sync: Record<string, { ok: boolean | null; error: string | null; lastRun: string | null }>;
   agent: { mode: string; budgetUsd: number; spentUsd: number; keyConfigured: boolean; models: Record<string, string> };
   killSwitch: { on: boolean; by: string | null; at: string | null };
+  autopilot: Autopilot;
   policy: { autoApproveEtb: boolean; locateNameCap: number };
 }
 
@@ -411,4 +412,17 @@ export interface LenderLadder {
 export interface OrderBatchResult {
   placed: Order[];
   failed: { line: number; instrument: string; counterparty: string | null; error: string }[];
+}
+
+export type AutopilotMode = "off" | "autopilot" | "danger";
+
+/** The desk approving its own cards: the mode, who set it, why the breaker tripped, and the limits in force. */
+export interface Autopilot {
+  mode: AutopilotMode;
+  by: string | null;
+  at: string | null;
+  tripped: string | null;
+  limits: { kinds: string[] | "all"; maxCardUsd: number; dayUsd: number; dayCount: number; minConfidence: number;
+    warnings: boolean; hot: boolean } | null;
+  today?: { count: number; notionalUsd: number };
 }
