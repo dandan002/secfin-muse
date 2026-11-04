@@ -5,7 +5,7 @@ variable "name" {
 
 variable "service" {
   type        = string
-  description = "Mock name: control, ib, gateway, ngt, wematch, sfp, custodian or analytics."
+  description = "System name: desk (the platform's API) or a mock (control, ib, gateway, ngt, wematch, sfp, custodian, analytics)."
 }
 
 variable "region" {
@@ -14,16 +14,17 @@ variable "region" {
 
 variable "hostname" {
   type        = string
-  description = "Public HTTPS hostname, e.g. ngt.mocks.example.com."
+  description = "Public HTTPS hostname its tunnel carries, e.g. mock-ngt.loandesk.dev (for the outputs; edge routes it)."
 }
 
-variable "zone_id" {
-  type = string
+variable "tunnel_token_parameter" {
+  type        = string
+  description = "ARN of the SSM parameter holding this service's Cloudflare Tunnel token (written by edge)."
 }
 
-variable "ingress_cidrs" {
-  type        = list(string)
-  description = "Who may reach this system's endpoints (operators, clients, mock-control's egress IP)."
+variable "cloudflared_image" {
+  type    = string
+  default = "cloudflare/cloudflared:2026.10.7"
 }
 
 variable "repository_prefix" {
@@ -45,6 +46,22 @@ variable "app_module" {
   description = "ASGI app, e.g. mock_ngt.app:app."
 }
 
+variable "database_url_env" {
+  type        = string
+  default     = "MOCK_DATABASE_URL"
+  description = "The variable the app reads its database URL from."
+}
+
+variable "cpu" {
+  type    = number
+  default = 256 # ~100 MB RSS per mock after the full demo
+}
+
+variable "memory" {
+  type    = number
+  default = 1024 # the smallest Fargate size with room for the app, Postgres and cloudflared
+}
+
 variable "environment" {
   type    = list(object({ name = string, value = string }))
   default = []
@@ -55,16 +72,10 @@ variable "secrets" {
   default = []
 }
 
-variable "fix" {
-  type        = object({ port = number, hostname = string })
+variable "ui" {
+  type        = object({ name = string, hostname = string, tunnel_token_parameter = string })
   default     = null
-  description = "Also expose a raw TCP port (the FIX session) on an NLB."
-}
-
-variable "desk_chat" {
-  type        = object({ hostname = string })
-  default     = null
-  description = "Also serve the Desk Chat UI (mock-ib's terminal) from this system."
+  description = "Also serve a static UI (the desk's web app, mock-ib's Desk Chat) as a second service with its own tunnel."
 }
 
 variable "postgres_image" {
@@ -78,16 +89,10 @@ variable "snapshot" {
   description = "Where Postgres saves itself when the task stops and restores from on the next start. null: start empty every time."
 }
 
-variable "nat_eip_allocation_id" {
-  type        = string
-  default     = null
-  description = "If set, tasks run in private subnets behind a NAT gateway with this Elastic IP (a fixed egress address)."
-}
-
 variable "running" {
   type        = bool
   default     = true
-  description = "false removes everything billed by the hour (load balancers, NAT, the task); the free base stays."
+  description = "false removes everything billed by the hour (the task and its service); the free base stays."
 }
 
 variable "log_retention_days" {

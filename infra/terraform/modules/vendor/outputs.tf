@@ -7,15 +7,11 @@ output "running" {
   value = var.running
 }
 
-output "fix_endpoint" {
-  value = var.fix == null ? null : "${var.fix.hostname}:${var.fix.port}"
-}
-
 output "cluster" {
   value = aws_ecs_cluster.this.name
 }
 
 output "ecr" {
-  description = "This system's image repositories: mock, and desk-chat for mock-ib."
+  description = "This system's image repositories: mock (the app), and ui for the desk and mock-ib."
   value       = { for k, r in aws_ecr_repository.this : k => r.repository_url }
 }

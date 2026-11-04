@@ -57,6 +57,10 @@ do), so a deep link to `/desk` or a Clerk step under `/sign-in/…` loads the ap
 Without the key the landing page says sign-in isn't configured and a production build never mounts the desk;
 `npm run dev` still offers "open the desk (dev, no sign-in)", and without the issuer the API stays open, as before. Set both for anything beyond your laptop.
 
+Hosted: `infra/up.sh demo desk` runs the web app at `https://desk.loandesk.dev` and the API at
+`https://api.loandesk.dev`, each behind its own Cloudflare Tunnel, with the issuer and publishable key from
+`infra/terraform/demo.tfvars` (see `infra/README.md`).
+
 ## What's built (spec module → code)
 
 | Spec | Backend | Screen |
@@ -73,7 +77,7 @@ Without the key the landing page says sign-in isn't configured and a production 
 | 5c. Buy-ins | `services/buyins.py`, `sync.sync_buy_ins`: shares bought in against us. A lender's, on a recall still not returned a business day after it was due: from the processor for a Venue A fill or a bilateral trade, or on the Venue B loan (which we then book at the processor as a `BUY_IN`). The bought-in shares come off the loan and off what's recalled; the return card for the recall is superseded, and one for whatever is still recalled is drafted again ("after a buy-in"); we owe the lender's cost over the collateral it kept. The buyer's at CNS, on a client fail still open three business days on: the fail is **bought in**, the name leaves the penalty box, the shares cover the client's short (on the short list and in lendable supply before the next stock record shows it), and the cost over the sale price is charged to the client (Rule 204(d)). The cash goes through the gate: a lender's buy-in gets a `payment` card (approved, the custodian pays the lender what's due, or expects the lender to pay back what the collateral it kept came to over its cost, and the buy-in follows the payment to settled); a CNS buy-in's cost is taken by NSCC's money settlement with no instruction from us, and a `charge` card, approved, posts it to the client's account at the gateway. `GET /buy-ins` | **Shorts**: bought-in panel (from whom, price, amount due, cash and client charge, what's still to settle and to charge); **Blotter**: bought in on the loan |
 | 6. Approval gate | `gate.py`: propose → approve / edit / reject / take over, executors per kind, kill switch | **Agent** (`5`): cards, diff, transcript, `space` `e` `x` `t` |
 | Paste anything | `ingest/paste.py`: sheet ranges, Bloomberg output, chat shorthand, per-cell confidence | **Paste** (`6`): preview, apply as locates / Venue B list / watchlist |
-| Chat ingest | `ingest/chat.py`, `sync.sync_chat`: every Desk Chat room the bot is in, both sides (a room seen for the first time starts at its end). Chat is where traders work borrows and loans, and it leans on context ("Any of these? META 24000…" / our "Maybe these META 0.15%" / "Send"), so Spark (`LOANDESK_PARSER_EFFORT` low) reads every message with the room's conversation over `LOANDESK_CHAT_CONTEXT_HOURS` (10): the 40 most recent messages plus any older request still open, each with its time. It returns the intent (RFQ, OFFER, IOI, QUOTE, COUNTER, ACCEPT, DECLINE, RECALL, RETURN, INTERNAL_BORROW), the lines worked out from context (fees as % a year → bps, GC), the message it answers and which side we'd be on. Theirs wait **open**; a trade either side accepted is **agreed**, to book; ours are kept as context. Locates belong to sales and the API (ignored in chat); injections are flagged by rules before any model; with the model off the rules read what they can and hand replies like "Send" to the trader. Nothing trades or replies on its own | **Chat** (`8`): needs you / open / agreed / all, both sides, the reading line by line, dismiss |
+| Chat ingest | `ingest/chat.py`, `sync.sync_chat`: every Desk Chat room the bot is in, both sides (a room seen for the first time starts at its end). Chat is where traders work borrows and loans, and it leans on context ("Any of these? META 24000…" / our "Maybe these META 0.15%" / "Send"), so Spark (`LOANDESK_PARSER_EFFORT` low) reads every message with the room's conversation over `LOANDESK_CHAT_CONTEXT_HOURS` (10): the 40 most recent messages plus any older request still open, each with its time. It returns the intent (RFQ, OFFER, IOI, QUOTE, COUNTER, ACCEPT, DECLINE, RECALL, RETURN, INTERNAL_BORROW), the lines worked out from context (fees as % a year → bps, GC), the message it answers and which side we'd be on. Theirs wait **open**; a trade either side accepted is **agreed**, to book; ours are kept as context. Locates belong to sales and the API (ignored in chat); injections are flagged by rules before any model (`guard.py`: normalised for width, invisible characters and spelled-out letters; see the red-team under Tests), and what gets past them reaches a model only fenced; with the model off the rules read what they can and hand replies like "Send" to the trader. Nothing trades or replies on its own | **Chat** (`8`): needs you / open / agreed / all, both sides, the reading line by line, dismiss |
 | Audit | `events.py`: append-only `events` table, pushed to the UI after commit | **Audit** (`7`) |
 
 `⌘K` / `ctrl+K` opens the command palette: `locate 500k VOD LN for KESTRELHF`, `borrow 100k AAPL @ 30 from HARBORAL`,
@@ -150,3 +154,20 @@ Spark in context, 40 conversations (81 labelled messages): 98.8% of intents righ
 acceptance ("Send", "Send HII, pass the rest", "Sure, send 500") with the right names, sizes and prices; quotes
 with sizes carried from the RFQ; one quote handed to the trader. About $0.0034 a message on low reasoning. The
 rules alone can't read replies (62% here) and hand them to the trader instead.
+
+Prompt-injection red-team (`ingest/redteam.py`): 52 counterparty messages, each with what the desk must do. 38
+attacks the rules must flag on sight (direct, reworded, claims our approvals were waived, injections riding on a real
+trade or recall, spelled out or hidden in full-width or invisible characters, closing the `<untrusted>` fence early,
+forged lines from our side, encoded payloads); 4 they may miss (another language, plain persuasion) but must not act
+on alone; and 10 look-alikes they must leave alone ("pls ignore last", an agent lender, the ticker AI). `--corpus`
+adds mock-ib's labelled set (every injection flagged, nothing else); `--model` has Spark read every attack fenced.
+Exits non-zero on any failure. `tests/test_redteam.py` drives every attack through intake with a parser model it
+fooled: flagged ones never reach the model; the rest get a pending order card with its failed checks, nothing sent,
+and no card at all with the kill switch on.
+
+```bash
+(cd platform/api && uv run python -m loandesk.ingest.redteam --corpus ../../mocks/ib/out/chat_corpus.jsonl)
+(cd platform/api && LOANDESK_AGENT_MODE=record uv run python -m loandesk.ingest.redteam --model)   # Spark
+```
+
+Rules: 52/52. The 300-conversation corpus: its 6 injections flagged, none of the other 410 counterparty messages.

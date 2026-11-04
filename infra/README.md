@@ -1,31 +1,48 @@
 # LoanDesk AI: AWS hosting
 
-Terraform for the spec's **market account**. Each mock is its own code project
-(`mocks/<name>`, with its own lockfile, Dockerfile and image) and is hosted the way the real
-external system would be: as a separate system with its own image registry, network, database,
-compute, endpoint and Terraform state. The systems share nothing at runtime. They meet only over public HTTPS (and
-FIX), with IP allowlists, the way a desk connects to its vendors.
+Terraform for the desk (the LoanDesk platform) and the spec's **market account** of mocks. Each system
+(`platform/api`, and each `mocks/<name>` with its own lockfile, Dockerfile and image) is hosted the way
+a real one would be: its own image registry, network, database, compute and Terraform state. The
+systems share nothing at runtime. They meet only over public HTTPS, the way a desk connects to its
+vendors.
+
+There are no load balancers, certificates or Route 53 zones. Everything public goes through
+**Cloudflare** (free plan) on `loandesk.dev`: each task runs a `cloudflared` container that dials out
+to its own Cloudflare Tunnel, and Cloudflare terminates HTTPS for the system's hostname and sends
+requests down the tunnel. No task opens an inbound port, and starting or stopping a system needs
+no Cloudflare credentials.
 
 Systems run **only during a session**: `infra/up.sh` starts the ones you name, `infra/down.sh` stops
 them, and an auto-stop inside AWS stops everything when the session's time is up or the month's
 spend crosses a guard. Each system saves its database as it stops and picks up where it left off
-on the next start. Standby costs about $1 a month.
+on the next start. Standby costs cents a month; the Cloudflare side is free.
 
 ```
- operators (allowed_cidrs)          LoanDesk platform, later (client_cidrs)
-        │                                         │
-        ▼                                         ▼
-┌──────────────────────┐   HTTPS from a fixed   ┌─────────────────────────────────────────────┐
-│ mock-control         │   egress IP (NAT+EIP)  │ ngt.<domain> (Venue A)    + fix.<domain>:9878│
-│  control.<domain>    │ ─────────────────────► │   own VPC · ALB + NLB · task (mock + pg)     │
-│  own VPC · ALB · task│   clock pushes, ticks, ├─────────────────────────────────────────────┤
-│  (mock + pg: clock)  │   resets, faults,      │ ib.<domain> + chat.<domain> (Desk Chat)      │
-└──────────────────────┘   scenario verbs       │   own VPC · ALB · 2 tasks (mock + pg, chat)  │
-                                                ├─────────────────────────────────────────────┤
-                                                │ gateway · wematch · sfp · custodian · analytics│
-                                                │   each: own VPC · ALB · task (mock + pg)     │
-                                                └─────────────────────────────────────────────┘
+ browser ──► desk.loandesk.dev, api.loandesk.dev ──┐
+ clients ──► mock-<name>.loandesk.dev ─────────────┤   Cloudflare (HTTPS, DNS)
+                                                   │
+                         one tunnel per ECS service, dialled out from the task
+                                                   ▼
+ ┌────────────────────────────────┐   ┌──────────────────────────────────────────────┐
+ │ desk (the platform)            │   │ control · ib (+ Desk Chat) · gateway · ngt ·  │
+ │  own VPC                       │   │ wematch · sfp · custodian · analytics          │
+ │  task: api + pg + cloudflared  │   │  each: own VPC · task: mock + pg + cloudflared │
+ │  task: web (nginx) + cloudflared│  │                                                │
+ └────────────────────────────────┘   └──────────────────────────────────────────────┘
 ```
+
+| Hostname | System |
+| --- | --- |
+| `desk.loandesk.dev` | the desk's web app (`platform/web`, nginx) |
+| `api.loandesk.dev` | the desk's API (`platform/api`), behind Clerk sign-in |
+| `mock-control`, `mock-ib`, `mock-chat`, `mock-gateway`, `mock-ngt`, `mock-wematch`, `mock-sfp`, `mock-custodian`, `mock-analytics` `.loandesk.dev` | the mocks (Desk Chat is `mock-chat`) |
+
+Hostnames sit one level under the domain because Cloudflare's free certificate covers `*.loandesk.dev`
+only. The catalog is `terraform/common/catalog.tf`.
+
+Also in the zone, outside Terraform: Clerk production's records (`clerk`, `accounts`, `clkmail` and two
+DKIM CNAMEs, DNS-only), and the apex `loandesk.dev`, a proxied placeholder whose redirect rule sends
+every path to `desk.loandesk.dev` (Clerk's paths, such as `/sign-in`, resolve against the apex).
 
 ## What made this possible
 
@@ -50,74 +67,81 @@ verbs), which goes to each system's public URL, as a simulator driving external 
 
 | Path | What | State |
 | --- | --- | --- |
-| `terraform/shared` | The simulator's admin token and API-key secret, mock-control's Elastic IP, an optional LLM key, the snapshot bucket, the Postgres image registry, and the auto-stop (CodeBuild job, Scheduler role, credit-guard budget). Nothing on a request path. | workspace `<env>`, e.g. `demo` |
-| `terraform/vendor` | One external system. The workspace picks which one. | workspace `<env>-<system>`, e.g. `demo-ngt` |
-| `terraform/modules/vendor` | The system: its own ECR repos, VPC (2 AZs), ECS cluster + Fargate service (the mock plus its own Postgres 16), HTTPS ALB with its own ACM cert and DNS name, an NLB for raw TCP (FIX), IAM, logs. | — |
+| `terraform/edge` | The public side, on Cloudflare: a tunnel and proxied DNS name per ECS service, and each tunnel's token in SSM for its task. Free; apply once with `infra/edge.sh`. (The `demo` environment's were made through the Cloudflare API with the same names and SSM paths; import them before managing them here.) | workspace `<env>` |
+| `terraform/shared` | The simulator's admin token and API-key secret, an optional LLM key, the snapshot bucket, the Postgres image registry, and the auto-stop (CodeBuild job, Scheduler role, credit-guard budget). Nothing on a request path. | workspace `<env>`, e.g. `demo` |
+| `terraform/vendor` | One system, the desk or a mock. The workspace picks which one. | workspace `<env>-<system>`, e.g. `demo-desk`, `demo-ngt` |
+| `terraform/modules/vendor` | The system: its own ECR repos, VPC (2 AZs, public subnets), ECS cluster + Fargate service (the app, its own Postgres 16 and `cloudflared`), a second service for its static UI if it has one, IAM, logs. | — |
+| `terraform/common` | Variables and the catalog of systems for every root (symlinked), so one `<env>.tfvars` drives everything. | — |
 | `postgres/` | The Postgres image every task runs: the official image plus the snapshot save/restore hooks. | — |
-| `up.sh`, `down.sh`, `status.sh` | Start systems for a session (and arm the auto-stop), stop them, show what's on. | — |
+| `edge.sh`, `up.sh`, `down.sh`, `status.sh` | Set up the Cloudflare side, start systems for a session (and arm the auto-stop), stop them, show what's on. | — |
 | `destroy.sh` | Remove systems entirely, base included. Rarely needed: `down.sh` already takes a system to ~$0. | — |
-| `terraform/common/variables.tf` | Variables for both roots (symlinked), so one `<env>.tfvars` drives everything. | — |
 
 Per-system design points:
 
-* **Exactly one task, stop-then-start deploys** (`min 0% / max 100%`). Each mock keeps its scheduler,
-  WebSocket hub, FIX sessions and faults in memory, so two copies would double-fire fills, persona
-  replies and settlements. A deploy means about a minute of downtime for that one system.
-* **Own Postgres, inside its task.** Each mock's task runs a `postgres:16` container next to it (0.25
-  vCPU / 1 GB for the pair). The mock waits for it to be healthy and reaches it over the task's
-  loopback; port 5432 is never opened. No RDS to create (~10 min) or pay for.
-* **Graceful stop, resumed sessions.** When a task stops, ECS stops the mock first, then gives
-  Postgres up to 120 s. It `pg_dump`s to `s3://loandesk-<env>-snapshots-<account>/<system>.sql.gz`
-  (seconds for a session's ~1000 trades) and shuts down. The next task restores that dump before it
-  accepts connections, and the mock sees its seed marker and carries on instead of reseeding.
-  `up.sh --fresh` discards a system's snapshot and starts it from the seed. The bucket is versioned,
-  so an older dump stays recoverable for 30 days. If a restore fails, the task fails rather than
-  starting empty and overwriting the snapshot at the next stop.
-* **On or off** (`running`). The base (VPC, security groups, certificate, ECR, logs, IAM) is free
-  and always there. Everything billed by the hour (ALB, NLB, NAT, task, public IPs, DNS records)
-  exists only while running, so a start is a ~5 minute apply and a stop leaves nothing billing.
-* **Ingress**:
-  * mock-control: `allowed_cidrs` only (it's the operators' console).
-  * Every other system: `allowed_cidrs` + `client_cidrs` + mock-control's Elastic IP.
-  * `0.0.0.0/0` is rejected.
-* **Egress**:
-  * mock-control runs in private subnets behind a NAT on the shared Elastic IP, an address vendors
-    can allowlist. `down.sh <env>` releases it once every system is stopped, and the next `up.sh`
-    allocates a new one. Each system allowlists the current address when it starts.
-  * Others run in public subnets with public IPs, with inbound traffic only from their own load
-    balancers. That covers LLM calls and webhooks to external callbacks.
-* mock-gateway calls its own simulated counterparties at `127.0.0.1`. Every other URL is public.
+* **Exactly one task, stop-then-start deploys** (`min 0% / max 100%`). Each system keeps its scheduler,
+  WebSocket hub and faults in memory, so two copies would double-fire fills, persona replies and
+  settlements. A deploy means about a minute of downtime for that one system.
+* **Own Postgres, inside its task.** Each task runs a `postgres:16` container next to the app. The app
+  waits for it to be healthy and reaches it over the task's loopback. No RDS to create or pay for.
+* **Graceful stop, resumed sessions.** When a task stops, ECS stops the app first, then gives Postgres
+  up to 120 s. It `pg_dump`s to `s3://loandesk-<env>-snapshots-<account>/<system>.sql.gz` and shuts
+  down. The next task restores that dump before it accepts connections. `up.sh --fresh` discards a
+  system's snapshot and starts it from the seed. The bucket is versioned, so an older dump stays
+  recoverable for 30 days. If a restore fails, the task fails rather than starting empty and
+  overwriting the snapshot at the next stop.
+* **On or off** (`running`). The base (VPC, security group, ECR, logs, IAM) is free and always there.
+  The task and its service exist only while running, so a start is a quick apply and a stop leaves
+  nothing billing but storage.
+* **In through the tunnel, nothing else.** The task's security group has no inbound rule. `cloudflared`
+  starts once the app's own health check (`/health`, run by ECS) passes, and carries the system's
+  hostname to `127.0.0.1:<port>`. While a system is stopped, its hostname answers with Cloudflare's 530.
+* **Access is by key, not by address.** There are no IP allowlists: every mock's business API needs
+  its API key and `/_admin` the admin token (see "Access" in `mocks/README.md`), and the desk's API
+  needs a Clerk session token (`clerk_issuer`; the desk won't start without one).
+* **Out through a public IP.** Tasks run in public subnets (no NAT to pay for) and reach Cloudflare,
+  ECR, S3 and each other's public hostnames directly. mock-gateway calls its own simulated
+  counterparties at `127.0.0.1`.
+* **FIX isn't hosted.** A tunnel carries HTTP; mock-ngt's FIX port stays inside its task. Use FIX
+  against the local stack.
 * **Own image, own version.** Each system has its own ECR repos (`loandesk-<env>/<name>`, plus
-  `ib-desk-chat`), built from `mocks/<name>/Dockerfile`. The image tag is the last commit
-  touching that project or the libs, so redeploying one system never rebuilds or restarts another.
+  `desk-web` and `ib-chat` for the UIs), built from its project's Dockerfiles (the desk's API from
+  `platform/api/Dockerfile` with the repo root as context; its web app from `platform/web`, with the
+  API's URL and Clerk's publishable key baked in). The image tag is the last commit touching that
+  project or the libs, so redeploying one system never rebuilds or restarts another.
 
 ## Sessions
 
-Prereqs: Terraform ≥ 1.11, Docker, zip, AWS CLI with credentials for the market account, a
-versioned S3 bucket for state, and a Route 53 public hosted zone.
+Prereqs: Terraform ≥ 1.11, Docker, zip, the AWS CLI with credentials for the account, a versioned
+S3 bucket for state, and a Cloudflare zone for the domain. Setting up the edge needs a Cloudflare API
+token with **Account: Cloudflare Tunnel Edit** and **Zone (the domain): DNS Edit**; sessions don't.
 
 ```bash
 cd infra/terraform
 cp backend.hcl.example backend.hcl     # bucket, region
-cp example.tfvars demo.tfvars          # zone, domain, allowed_cidrs, state_bucket
+cp example.tfvars demo.tfvars          # domain, state_bucket, Clerk issuer and publishable key
 cd ../..
 export AWS_PROFILE=...                 # aws login --profile ... first; credentials last 12 h
+export CLOUDFLARE_API_TOKEN=...        # only for edge.sh
 
-infra/up.sh demo                       # every system, auto-stop in 3 h
-infra/up.sh demo ngt ib control        # only the systems this session needs
+infra/edge.sh demo                     # once: tunnels, DNS names, tunnel tokens (free, stays put)
+infra/up.sh demo desk                  # the platform: API + web app, auto-stop in 3 h
+infra/up.sh demo                       # every system
+infra/up.sh demo ngt ib control        # only the mocks this session needs
 infra/up.sh demo --for 90m             # again later: moves the stop time (and starts any named systems)
 infra/up.sh demo --fresh sfp           # start sfp from the seed instead of its saved session
 infra/status.sh demo                   # what's on, its URLs, when it stops
 infra/down.sh demo ngt                 # stop one system
-infra/down.sh demo                     # stop everything, release the egress IP, cancel the auto-stop
+infra/down.sh demo                     # stop everything and cancel the auto-stop
 ```
 
 `up.sh` applies the shared stack, arms the auto-stop, builds the Postgres image if it changed, then
-starts the systems in parallel (logs in `infra/out/`). Docker runs with its own temporary config, so the ECR login never touches the macOS
-keychain. Per system it builds and pushes the image only if that version isn't in ECR yet, then
-applies with `running=true`. The first start of a system takes ~10 minutes (image build, certificate);
-later ones ~5. mock-control tolerates systems that are off: it reports them as unreachable and its
-5-second clock push catches each one up when it starts.
+starts the systems in parallel (logs in `infra/out/`). Docker runs with its own temporary config, so
+the ECR login never touches the macOS keychain. Per system it builds and pushes the image only if that
+version isn't in ECR yet, then applies with `running=true`. For the desk it also builds the web app's
+image (`VITE_API_URL=https://api.<domain>`, the Clerk publishable key from the tfvars). mock-control
+tolerates systems that are off: it reports them as unreachable and
+its 5-second clock push catches each one up when it starts. Set `desk_sync = true` once the mocks
+run, so the desk polls them.
 
 **Auto-stop** runs inside AWS, so it fires with the laptop shut. Both triggers start the same
 CodeBuild job, which runs `infra/down.sh <env>` against the copy of `infra/` that `up.sh` uploads
@@ -136,13 +160,13 @@ Drive it like the local stack:
 export MOCK_ADMIN_TOKEN=$(aws ssm get-parameter --with-decryption --query Parameter.Value --output text \
   --name "$(terraform -chdir=infra/terraform/shared output -raw admin_token_parameter)")
 # Each system's API keys: GET /_admin/credentials (admin token). Here, control's operator key.
-KEY=$(curl -s https://control.mocks.example.com/_admin/credentials -H "X-Admin-Token: $MOCK_ADMIN_TOKEN" | jq -r .operatorKey)
-curl -XPOST https://control.mocks.example.com/scenarios/demo/run -H "authorization: Bearer $KEY" \
+KEY=$(curl -s https://mock-control.loandesk.dev/_admin/credentials -H "X-Admin-Token: $MOCK_ADMIN_TOKEN" | jq -r .operatorKey)
+curl -XPOST https://mock-control.loandesk.dev/scenarios/demo/run -H "authorization: Bearer $KEY" \
   -H 'content-type: application/json' -d '{"mode":"live","speed":10}'
-cd mocks/harness && uv run python smoke.py --url-template 'https://{name}.mocks.example.com' --host fix.mocks.example.com
+cd mocks/harness && uv run python smoke.py --url-template 'https://mock-{name}.loandesk.dev'
 ```
 
-Desk Chat asks for its access key once: open `https://chat.mocks.example.com/?key=<deskKey>` with the
+Desk Chat asks for its access key once: open `https://mock-chat.loandesk.dev/?key=<deskKey>` with the
 `deskKey` from ib's `/_admin/credentials`.
 
 **API keys** (see "Access" in `mocks/README.md`): the bootstrap keys, webhook secrets and FIX password
@@ -153,29 +177,19 @@ the next session. To change every bootstrap key at once, replace the secret and 
 `terraform -chdir=infra/terraform/shared apply -replace=random_password.key_secret` (workspace `demo`),
 then `infra/up.sh demo`.
 
-The smoke script calls the systems directly, so run it from an address in `allowed_cidrs`. If your
-IP changes, update `allowed_cidrs` and run `up.sh` again.
-
-* **Offline checks** (no AWS needed), in each of `shared`, `vendor` and `modules/vendor`:
-  `terraform init -backend=false && terraform validate && terraform test` (in the `default` workspace).
+* **Offline checks** (no AWS or Cloudflare needed), in each of `shared`, `edge`, `vendor` and
+  `modules/vendor`: `terraform init -backend=false && TF_WORKSPACE=default terraform test`.
 
 ## Cost (us-east-2, approximate)
 
-Per hour **while running**:
+Per hour **while running**: Fargate (0.25 vCPU / 1 GB, ~$0.012) plus the task's public IPv4
+($0.005), so **~$0.017 per mock**, **~$0.03 for ib** (two tasks) and **~$0.04 for the desk** (0.5
+vCPU API plus its web task). Every system on is about **$0.20/hour** (a 3-hour session ≈ $0.60).
+Cloudflare (tunnels, DNS, HTTPS) is free.
 
-| System | Pieces | $/hour |
-| --- | --- | --- |
-| gateway, wematch, sfp, custodian, analytics | each: ALB ~0.025, its 2 public IPv4 0.01, Fargate 0.25 vCPU / 1 GB ~0.015, task IP 0.005 | each ~0.055 |
-| ib | the above + the Desk Chat task and its IP | ~0.075 |
-| ngt | the above + NLB and its 2 IPs | ~0.09 |
-| control | the above + NAT gateway, minus the task IP | ~0.095 |
-| **All eight** | | **~0.55** (a 3-hour session ≈ $1.65) |
-
-**While stopped:** ~$0.50–1/month. That's the hosted zone ($0.50) plus cents for ECR images, logs and
-snapshots. The admin token and key secret are SSM SecureStrings (free), and mock-control's Elastic IP exists only
-during a session. The auto-stop's CodeBuild runs, Lambda and Scheduler cost fractions of a cent per
-session. $100 of credits covers roughly 180 hours with every system on, or far more with a
-few.
+**While stopped:** cents a month for ECR images, logs and snapshots. The admin token, key secret and
+tunnel tokens are SSM SecureStrings (free). The auto-stop's CodeBuild runs, Lambda and Scheduler cost
+fractions of a cent per session.
 
 ## Mock audit (Oct 2026)
 
@@ -212,10 +226,9 @@ own project environment and database and the admin token enforced.
 9. ~~mock-control's own routes were open~~ (fixed Oct 28): `/reset`, `/clock`, `/faults` and
    `/scenarios` need an operator key (`sim:operate`); an observer key can only read.
 10. Desk Chat's human API now needs the desk key, but who you act as is still the `X-User` switcher:
-   one key plays every persona, which the demo wants. For per-person logins, put ALB + Cognito in front
-   of `chat` and `ib`.
-11. FIX is plaintext TCP with the password in tag 554. An NLB TLS listener is a small follow-up if the
-   client can speak TLS.
+   one key plays every persona, which the demo wants. For per-person logins, put Cloudflare Access in
+   front of `mock-chat` and `mock-ib`.
+11. FIX is plaintext TCP with the password in tag 554, and isn't hosted (a tunnel carries HTTP only).
 12. LLM `replay` mode has nothing to replay in the cloud: `mocks/ib/cassettes/` isn't in the repo or the
     image, and `record` writes to the task's ephemeral disk. Bake a cassette into the image (or use S3)
     before relying on LLM personas there.
@@ -224,7 +237,7 @@ own project environment and database and the admin token enforced.
 
 ## Not yet built (from the spec's cloud section)
 
-The second "firm" account (its NAT IPs go in `client_cidrs`), PrivateLink as an alternative to
-public allowlisted endpoints, API Gateway with mTLS and usage plans for counterparties, WAF, Cognito
-roles, MSK, SFTP (Transfer Family) for locate and EOD files, OTel to X-Ray, and GitHub Actions
-deploys via OIDC (running `up.sh`). Most of these belong with the platform, not the mocks.
+The second "firm" account, PrivateLink as an alternative to public endpoints, API Gateway with mTLS
+and usage plans for counterparties, MSK, SFTP (Transfer Family) for locate and EOD files, OTel to
+X-Ray, FIX over the internet (a tunnel carries HTTP only), and GitHub Actions deploys via OIDC
+(running `up.sh`).
