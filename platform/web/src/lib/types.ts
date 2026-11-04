@@ -441,6 +441,13 @@ export interface OrderBatchResult {
 
 export type AutopilotMode = "off" | "autopilot" | "danger";
 
+/** Who the desk thinks you are: a head of desk turns the autopilot on, releases the kill switch, sets policy. */
+export interface Me {
+  trader: string;
+  head: boolean;
+  signIn: boolean;
+}
+
 /** The desk approving its own cards: the mode, who set it, why the breaker tripped, and the limits in force. */
 export interface Autopilot {
   mode: AutopilotMode;

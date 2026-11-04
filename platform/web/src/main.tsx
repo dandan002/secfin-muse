@@ -2,7 +2,7 @@ import { ClerkProvider, useAuth } from "@clerk/react";
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
-import { CLERK_KEY, setTokenGetter } from "./lib/auth";
+import { CLERK_KEY, JWT_TEMPLATE, setTokenGetter } from "./lib/auth";
 import { isUnder, navigate, Redirect, ROUTES, usePath } from "./lib/router";
 import { Landing } from "./views/Landing";
 import { SignInPage } from "./views/SignInPage";
@@ -13,7 +13,15 @@ function SignedInDesk() {
   const { getToken } = useAuth();
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    setTokenGetter(() => getToken());
+    // The desk's template (trader name, email and role for the API); Clerk's default token if it isn't set up yet.
+    setTokenGetter(async () => {
+      if (JWT_TEMPLATE) {
+        try {
+          return await getToken({ template: JWT_TEMPLATE });
+        } catch { /* no such template on this instance */ }
+      }
+      return getToken();
+    });
     setReady(true);
     return () => setTokenGetter(null);
   }, [getToken]);

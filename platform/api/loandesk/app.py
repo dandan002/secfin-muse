@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     syncer = Syncer()
     if cfg.sync_enabled:
         syncer.start()
+    await autopilot.restore()
     autopilot.start()
     if autopilot.mode() != "off":
         log.warning("autopilot starts in %s mode: the desk approves its own cards within its limits", autopilot.mode())

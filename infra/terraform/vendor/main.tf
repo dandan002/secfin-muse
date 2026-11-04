@@ -52,6 +52,7 @@ locals {
     [{ name = "MOCK_SEED", value = tostring(var.seed) }],
     local.is.desk ? [
       { name = "LOANDESK_CLERK_ISSUER", value = var.clerk_issuer },
+      { name = "LOANDESK_TRADER_ROLES", value = jsonencode(var.desk_trader_roles) },
       { name = "LOANDESK_CORS_ORIGINS", value = jsonencode(["https://${local.tunnels.web.hostname}"]) },
       { name = "LOANDESK_SYNC_ENABLED", value = tostring(var.desk_sync) },
       { name = "LOANDESK_AGENT_MODE", value = "off" },

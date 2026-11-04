@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { actor, full, parseQty, qty, time } from "../lib/format";
 import { useQuery } from "../lib/hooks";
 import { useDesk } from "../lib/store";
-import type { Autopilot, Counterparty, DeskPolicy, Limits, Priority } from "../lib/types";
+import type { Autopilot, Counterparty, DeskPolicy, Limits, Me, Priority } from "../lib/types";
 import { Empty, Panel } from "../components/ui";
 
 const words = (s: string) => s.replace(/_/g, " ");
@@ -13,9 +13,14 @@ export function Policy() {
   const { data, reload } = useQuery<DeskPolicy>("/policy", ["policy"]);
   const { data: ap } = useQuery<Autopilot>("/autopilot", ["autopilot"], 15000);
   const { data: cps } = useQuery<Counterparty[]>("/counterparties");
+  const { data: me } = useQuery<Me>("/me");
   if (!data) return <Empty>Loading the desk's policy…</Empty>;
   return (
     <div className="h-full overflow-auto flex flex-col gap-4 pb-4">
+      {me && !me.head && (
+        <div className="panel px-4 py-3 text-dim shrink-0">Read only: a head of desk sets the desk's policy.</div>
+      )}
+      <fieldset disabled={!!me && !me.head} className="contents">
       <div className="flex flex-wrap gap-4 items-start shrink-0">
         {(["autopilot", "danger"] as const).map((m) => (
           <LimitsPanel key={m} mode={m} setting={data[m]} kinds={data.kinds} live={ap?.mode === m ? ap : null} onSaved={reload} />
@@ -23,6 +28,7 @@ export function Policy() {
         <BreakerPanel setting={data.breaker} onSaved={reload} />
       </div>
       <PriorityPanel setting={data.priority} cps={cps ?? []} onSaved={reload} />
+      </fieldset>
     </div>
   );
 }

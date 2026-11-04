@@ -41,12 +41,22 @@ reached the desk stays closed. The API checks every request itself; the page gat
 Whatever serves the built `dist/` must fall back to `index.html` for unknown paths (Vite's dev and preview servers
 do), so a deep link to `/desk` or a Clerk step under `/sign-in/…` loads the app.
 
-1. Create an application in the [Clerk dashboard](https://dashboard.clerk.com). Turn off sign-up (or restrict it)
-   so only invited traders get in.
-2. `platform/web/.env.local` (gitignored): `VITE_CLERK_PUBLISHABLE_KEY=pk_test_...`
+1. Create an application in the [Clerk dashboard](https://dashboard.clerk.com), then set it up for the desk with
+   `CLERK_SECRET_KEY=sk_... python3 infra/clerk_setup.py --head you@example.com --trader them@example.com`. It
+   restricts who can get in (Clerk's allowlist, or invitations with the role on them where sign-up is already
+   invitation only), creates the `loandesk` JWT template (claims `trader`, `email`, `role`) and sets each person's
+   `role` (`head` or `trader`) in their public metadata. Idempotent; `--revoke` takes someone off. With
+   `LOANDESK_TRADER_ROLES=["trader","head"]` the API refuses a token without one of those roles. A **head of desk**
+   (role `head`, or listed in `LOANDESK_HEADS`) is the only one who can release the kill switch, turn the autopilot
+   or danger mode on, or change the desk's policy; anyone can throw the switch or turn the autopilot off. `GET /me`
+   says who you are and whether you're a head; the UI greys out what you can't do.
+2. `platform/web/.env.local` (gitignored): `VITE_CLERK_PUBLISHABLE_KEY=pk_test_...` and
+   `VITE_CLERK_JWT_TEMPLATE=loandesk` (the web image defaults to it; without the template Clerk's default token is
+   used, which carries no role).
 3. The API (`.env` or the environment): `LOANDESK_CLERK_ISSUER=https://<your-instance>.clerk.accounts.dev`
    (the Frontend API URL on the dashboard's API keys page). Every route but `/health` then needs the session token
-   (`Authorization: Bearer`, `?token=` on the `/stream` WebSocket), checked against Clerk's JWKS for signature,
+   (`Authorization: Bearer`, `?token=` on the `/stream` WebSocket, which the browser renews as Clerk refreshes it;
+   the API closes a socket whose sign-in has lapsed), checked against Clerk's JWKS for signature,
    expiry, issuer and the site it was minted for (`azp`, from `LOANDESK_CLERK_AUTHORIZED_PARTIES`, default the CORS
    origins). The trader in the audit trail is the token's `trader` or `username` claim (add one under
    *Sessions → Customize session token*, e.g. `{"trader": "{{user.username}}"}`), else the Clerk user id; the
@@ -141,7 +151,8 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
 * `agent/models.py`: the model gateway. `LOANDESK_AGENT_MODE=off|replay|record|live`, OpenAI SDK against
   `api.meta.ai/v1`, a cassette for record/replay (keys ignore timestamps and generated ids), a per-model spend meter
   and a hard budget a day (`LOANDESK_BUDGET_USD`, New York day, kept across restarts; trade reviews stop at half of
-  it so locate reviews always have some).
+  it so locate reviews always have some). Calls in flight hold their expected cost, so parallel reviews can't
+  overshoot it together.
 * `autopilot.py`: who approves cards, switched at run time from the sidebar (`PUT /autopilot`; starts from
   `LOANDESK_AUTOPILOT_MODE`). **Manual** (default): every card waits for a trader. **Autopilot**: the agent starts
   its own reviews of Warm locates, and a locate, order or basket card approves itself when it carries no risk flag,
@@ -151,14 +162,17 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
   taken within 10% of our bid; $25m a card, $500m / 2,000 a day. In every mode a `BLOCKED` card never approves
   itself (nor one with a `HOLD:` flag, such as a counterparty's "done" on more size or a worse fee than we put up
   in that room), the executors keep every hard limit, the kill switch stops it all, and three failed auto-approvals in a
-  row turn it off (the breaker). Approvals are recorded as `policy:AUTOPILOT` / `policy:DANGER` with the notional
+  row turn it off (the breaker). The mode survives a restart, except danger: that comes back as off until a
+  head of desk turns it on again. Approvals are recorded as `policy:AUTOPILOT` / `policy:DANGER` with the notional
   counted; a card left for a trader says why on the card. `LOANDESK_AUTOPILOT_*` / `LOANDESK_DANGER_*` only start
   the limits: the desk sets them on the **Policy** screen (sidebar **Limits**).
 * `policy.py`: what the desk sets at run time (`GET /policy`, `PUT|DELETE /policy/{autopilot,danger,breaker,priority}`),
   kept in `desk_settings` and audited as `policy` events: each mode's limits and card kinds, the breaker, and
   counterparty priority. Two ordered lists: **returns** (whose borrows the short list gives back first, then the
   dearest) and **recalls** (whose loans of ours it recalls first, then the cheapest).
-* `observe.py`: Langfuse traces, on only with `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (`LANGFUSE_HOST`
+* `observe.py`: Langfuse traces (counterparty text, which a model only ever sees inside `<untrusted>` tags, is
+  redacted before it leaves; `LOANDESK_LANGFUSE_REDACT_UNTRUSTED=false` keeps it), on only with
+  `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (`LANGFUSE_HOST`
   defaults to Langfuse Cloud) and the agent in `record` or `live`; `off`, `replay` and CI never trace. Each model
   call through the gateway is a generation (model, messages, parameters, tokens, the desk's own cost; errors marked);
   each pass of an agent run is a trace in a session named for the run id, with LangGraph's nodes as spans and the

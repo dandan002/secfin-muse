@@ -25,6 +25,11 @@ export function useStream() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let closed = false;
     const { setClock, setConnected, bump } = useDesk.getState();
+    // The API closes a socket whose sign-in has lapsed: renew it as Clerk refreshes the session token.
+    const renew = setInterval(async () => {
+      const token = await sessionToken();
+      if (token && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "auth", token }));
+    }, 20_000);
 
     const connect = async () => {
       const token = await sessionToken();
@@ -52,6 +57,7 @@ export function useStream() {
     connect();
     return () => {
       closed = true;
+      clearInterval(renew);
       clearTimeout(timer);
       ws?.close();
     };

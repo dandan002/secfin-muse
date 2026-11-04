@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,12 +21,13 @@ from ..ingest import paste
 from ..models import Action, AgentRun, Counterparty, Event, PasteSession
 from ..services import locates
 from ..settings import get_settings
-from .deps import trader
+from .deps import head, require_head, trader
 
 if TYPE_CHECKING:
     from ..agent.runner import Runner
 
 router = APIRouter()
+STREAM_GRACE_S = 30  # a socket outlives its token by this much while the browser renews it
 
 
 # -- approval queue -------------------------------------------------------------------------------
@@ -87,7 +89,11 @@ class KillIn(BaseModel):
 
 
 @router.put("/kill-switch", tags=["gate"])
-async def kill_switch(body: KillIn, who: str = Depends(trader), s: AsyncSession = Depends(get_session)) -> dict:
+async def kill_switch(body: KillIn, request: Request, who: str = Depends(trader),
+                      s: AsyncSession = Depends(get_session)) -> dict:
+    """Anyone throws it; only a head of desk releases it."""
+    if not body.on:
+        require_head(request, "release the kill switch")
     out = await gate.save_kill_switch(s, body.on, who)
     await s.commit()
     return out
@@ -98,6 +104,12 @@ class AutopilotIn(BaseModel):
     confirm: str | None = Field(None, description='Danger mode only: "DANGER", to say it was meant')
 
 
+@router.get("/me", tags=["gate"])
+async def me(request: Request, who: str = Depends(trader)) -> dict:
+    """Who the desk thinks you are, and whether you're a head of desk (the UI greys out what you can't do)."""
+    return {"trader": who, "head": auth.is_head(getattr(request.state, "claims", None)), "signIn": auth.enabled()}
+
+
 @router.get("/autopilot", tags=["gate"])
 async def autopilot_state(s: AsyncSession = Depends(get_session)) -> dict:
     n, usd = await autopilot.used_today(s)
@@ -105,8 +117,11 @@ async def autopilot_state(s: AsyncSession = Depends(get_session)) -> dict:
 
 
 @router.put("/autopilot", tags=["gate"])
-async def set_autopilot(body: AutopilotIn, who: str = Depends(trader)) -> dict:
-    """Off, autopilot (limited kinds and sizes) or danger (end to end). Danger asks for ``confirm: "DANGER"``."""
+async def set_autopilot(body: AutopilotIn, request: Request, who: str = Depends(trader)) -> dict:
+    """Off, autopilot (limited kinds and sizes) or danger (end to end). Danger asks for ``confirm: "DANGER"``.
+    Anyone turns it off; only a head of desk turns it on."""
+    if body.mode != "off":
+        require_head(request, f"turn {body.mode} mode on")
     if body.mode == "danger" and body.confirm != "DANGER":
         raise HTTPException(422, 'danger mode lets the agent act end to end: send confirm "DANGER" to turn it on')
     return await autopilot.set_mode(body.mode, who)
@@ -125,7 +140,7 @@ async def get_policy() -> dict:
 
 @router.put("/policy/{key}", tags=["gate"])
 async def put_policy(key: Literal["autopilot", "danger", "breaker", "priority"], body: dict[str, Any],
-                     who: str = Depends(trader), s: AsyncSession = Depends(get_session)) -> dict:
+                     who: str = Depends(head), s: AsyncSession = Depends(get_session)) -> dict:
     """Set one policy. ``autopilot`` / ``danger``: the mode's limits; ``breaker``: ``{tripAfter}``; ``priority``:
     ``{returns, recalls}`` (counterparty codes, first first)."""
     try:
@@ -156,7 +171,7 @@ async def put_policy(key: Literal["autopilot", "danger", "breaker", "priority"],
 
 
 @router.delete("/policy/{key}", tags=["gate"])
-async def reset_policy(key: Literal["autopilot", "danger", "breaker", "priority"], who: str = Depends(trader),
+async def reset_policy(key: Literal["autopilot", "danger", "breaker", "priority"], who: str = Depends(head),
                        s: AsyncSession = Depends(get_session)) -> dict:
     """Back to where the settings start it."""
     out = await policy.put(s, key, None, who)
@@ -351,9 +366,10 @@ async def status() -> dict:
 @router.websocket("/stream")
 async def stream(ws: WebSocket) -> None:
     """Multiplexed pushes: locate, order, trade, break, action, market, clock. With sign-in on, ``?token=``."""
+    expires: list[float] = [float("inf")]  # when this socket's sign-in runs out (with sign-in on)
     if auth.enabled():
         try:
-            await auth.verify(ws.query_params.get("token") or "")
+            expires[0] = float((await auth.verify(ws.query_params.get("token") or ""))["exp"])
         except auth.AuthError:
             await ws.close(code=4401)
             return
@@ -362,17 +378,35 @@ async def stream(ws: WebSocket) -> None:
 
     async def ticker() -> None:
         while True:
+            if time.time() > expires[0] + STREAM_GRACE_S:  # signed out, or stopped renewing: no more pushes
+                await ws.close(code=4401)
+                return
             await ws.send_json({"topic": "clock", "data": clock.to_json()})
             await asyncio.sleep(1)
 
-    tick = asyncio.create_task(ticker())
-    try:
+    async def renewals() -> None:
+        """The browser sends ``{"type": "auth", "token": …}`` as Clerk refreshes the session; a sign-out stops it."""
         while True:
-            await ws.send_json(await q.get())
+            msg = await ws.receive_json()
+            if auth.enabled() and isinstance(msg, dict) and msg.get("type") == "auth":
+                try:
+                    expires[0] = float((await auth.verify(str(msg.get("token") or "")))["exp"])
+                except auth.AuthError:
+                    await ws.close(code=4401)
+                    return
+
+    tick = asyncio.create_task(ticker())
+    renew = asyncio.create_task(renewals())
+    try:
+        while not tick.done() and not renew.done():  # either ends the socket: closed, signed out, gone
+            with contextlib.suppress(TimeoutError):
+                await ws.send_json(await asyncio.wait_for(q.get(), 1.0))
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         tick.cancel()
-        with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
-            await tick
+        renew.cancel()
+        for t in (tick, renew):
+            with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError, Exception):
+                await t
         events.hub.unsubscribe(q)

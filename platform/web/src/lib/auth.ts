@@ -2,6 +2,8 @@
  *  carry its token, and the API verifies it (LOANDESK_CLERK_ISSUER). Without a key, local dev only. */
 export const CLERK_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 export const authEnabled = !!CLERK_KEY;
+/** The Clerk JWT template that carries the desk's claims (trader, email, role); unset: Clerk's default token. */
+export const JWT_TEMPLATE = import.meta.env.VITE_CLERK_JWT_TEMPLATE as string | undefined;
 
 let getter: (() => Promise<string | null>) | null = null;
 
