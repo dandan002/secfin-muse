@@ -4,84 +4,48 @@ mock_provider "aws" {
   override_during = plan # mock computed values at plan time, as the real provider knows these
 
   mock_data "aws_availability_zones" {
-    defaults = { names = ["us-east-1a", "us-east-1b", "us-east-1c"] }
-  }
-  mock_data "aws_route53_zone" {
-    defaults = { zone_id = "Z123" }
+    defaults = { names = ["us-east-2a", "us-east-2b", "us-east-2c"] }
   }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{}" }
   }
   mock_data "aws_ssm_parameter" {
-    defaults = { arn = "arn:aws:ssm:us-east-1:111111111111:parameter/loandesk-demo/admin-token" }
-  }
-  mock_data "aws_eips" {
-    defaults = { allocation_ids = ["eipalloc-0control"], public_ips = ["198.51.100.7"] }
+    defaults = { arn = "arn:aws:ssm:us-east-2:111111111111:parameter/loandesk-demo/x" }
   }
   mock_data "aws_caller_identity" {
     defaults = { account_id = "111111111111" }
   }
   mock_data "aws_ecr_repository" {
-    defaults = { repository_url = "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/postgres" }
+    defaults = { repository_url = "111111111111.dkr.ecr.us-east-2.amazonaws.com/loandesk-demo/postgres" }
   }
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::111111111111:role/x" }
   }
-  mock_resource "aws_lb_target_group" {
-    defaults = { arn = "arn:aws:elasticloadbalancing:us-east-1:111111111111:targetgroup/x/1" }
-  }
-  mock_resource "aws_acm_certificate" {
-    defaults = { arn = "arn:aws:acm:us-east-1:111111111111:certificate/x", domain_validation_options = [] }
-  }
 }
 
 variables {
-  hosted_zone_name = "example.com"
-  domain_name      = "mocks.example.com"
-  allowed_cidrs    = ["203.0.113.0/24"]
-  state_bucket     = "tfstate-example"
-  client_cidrs     = ["192.0.2.10/32"]
-  image_tag        = "abc123"
+  domain_name  = "example.com"
+  state_bucket = "tfstate-example"
+  image_tag    = "abc123"
+  clerk_issuer = "https://xyz.clerk.accounts.dev"
 }
 
-run "vendor_is_reachable_by_operators_clients_and_control" {
-  command = plan
-  variables {
-    stack = "demo-ngt"
-  }
-
-  assert {
-    condition     = local.ingress_cidrs == tolist(["203.0.113.0/24", "192.0.2.10/32", "198.51.100.7/32"])
-    error_message = "operators, clients and mock-control's egress IP"
-  }
-  assert {
-    condition     = output.urls == { ngt = "https://ngt.mocks.example.com" } && output.fix_endpoint == "fix.mocks.example.com:9878"
-    error_message = "endpoints"
-  }
-  assert {
-    condition     = output.cluster == "ld-demo-ngt"
-    error_message = "per-system naming"
-  }
-}
-
-run "control_is_operators_only_and_calls_vendors_publicly" {
+run "a_mock_has_its_own_hostname_and_calls_the_others_publicly" {
   command = plan
   variables {
     stack = "demo-control"
   }
-
   assert {
-    condition     = module.system.running && length(module.system.ecr) == 1
-    error_message = "control runs"
-  }
-
-  assert {
-    condition     = local.ingress_cidrs == tolist(["203.0.113.0/24"])
-    error_message = "only operators reach the simulator console"
+    condition     = output.urls == { control = "https://mock-control.example.com" } && output.cluster == "ld-demo-control"
+    error_message = "one level under the domain, per-system naming"
   }
   assert {
-    condition     = contains(local.environment, { name = "MOCK_SFP_URL", value = "https://sfp.mocks.example.com" })
+    condition     = contains(local.environment, { name = "MOCK_SFP_URL", value = "https://mock-sfp.example.com" })
     error_message = "control calls each system at its public URL"
+  }
+  assert {
+    condition     = keys(data.aws_ssm_parameter.tunnel) == ["control"]
+    error_message = "its own tunnel"
   }
 }
 
@@ -91,12 +55,12 @@ run "ib_serves_desk_chat" {
     stack = "demo-ib"
   }
   assert {
-    condition     = output.urls == { ib = "https://ib.mocks.example.com", chat = "https://chat.mocks.example.com" }
+    condition     = output.urls == { ib = "https://mock-ib.example.com", chat = "https://mock-chat.example.com" }
     error_message = "ib API and Desk Chat"
   }
   assert {
-    condition     = keys(output.ecr) == ["desk-chat", "mock"]
-    error_message = "ib owns both of its image registries"
+    condition     = keys(output.ecr) == ["mock", "ui"] && keys(data.aws_ssm_parameter.tunnel) == ["chat", "ib"]
+    error_message = "ib owns both of its image registries, and a tunnel per service"
   }
 }
 
@@ -111,13 +75,44 @@ run "gateway_calls_its_own_counterparties_locally" {
   }
 }
 
-run "rejects_open_internet" {
+run "the_desk_is_the_platform" {
   command = plan
   variables {
-    stack        = "demo-sfp"
-    client_cidrs = ["0.0.0.0/0"]
+    stack = "demo-desk"
   }
-  expect_failures = [var.client_cidrs]
+  assert {
+    condition     = output.urls == { desk = "https://api.example.com", web = "https://desk.example.com" } && keys(data.aws_ssm_parameter.tunnel) == ["desk", "web"]
+    error_message = "the API at api.<domain>, the web app at desk.<domain>, a tunnel each"
+  }
+  assert {
+    condition = (contains(local.environment, { name = "LOANDESK_CLERK_ISSUER", value = "https://xyz.clerk.accounts.dev" })
+      && contains(local.environment, { name = "LOANDESK_CORS_ORIGINS", value = "[\"https://desk.example.com\"]" })
+      && contains(local.environment, { name = "LOANDESK_SYNC_ENABLED", value = "false" })
+    && contains(local.environment, { name = "MOCK_NGT_URL", value = "https://mock-ngt.example.com" }))
+    error_message = "signs in through Clerk, trusts its web app, calls the mocks publicly (sync off by default)"
+  }
+  assert {
+    condition     = [for s in local.secrets : s.name] == ["MOCK_ADMIN_TOKEN"]
+    error_message = "the admin token only; no mock key secret"
+  }
+}
+
+run "the_desk_wont_run_without_sign_in" {
+  command = plan
+  variables {
+    stack        = "demo-desk"
+    clerk_issuer = ""
+  }
+  expect_failures = [terraform_data.desk_sign_in]
+}
+
+run "the_desk_can_stand_by_without_sign_in" {
+  command = plan
+  variables {
+    stack        = "demo-desk"
+    clerk_issuer = ""
+    running      = false
+  }
 }
 
 run "llm_personas_get_the_key" {
@@ -150,35 +145,7 @@ run "each_system_resumes_from_its_own_snapshot" {
   }
   assert {
     condition = (local.snapshot == { bucket = "loandesk-demo-snapshots-111111111111", key = "sfp.sql.gz" }
-    && local.postgres_image == "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/postgres:pg1")
+    && local.postgres_image == "111111111111.dkr.ecr.us-east-2.amazonaws.com/loandesk-demo/postgres:pg1")
     error_message = "the environment's Postgres image, saving to <system>.sql.gz"
   }
-}
-
-run "standby_without_an_egress_ip" {
-  command = plan
-  variables {
-    stack   = "demo-ngt"
-    running = false
-  }
-  override_data {
-    target = data.aws_eips.control_egress
-    values = { allocation_ids = [], public_ips = [] }
-  }
-  assert {
-    condition     = local.ingress_cidrs == tolist(["203.0.113.0/24", "192.0.2.10/32"])
-    error_message = "no stale IP while it's released"
-  }
-}
-
-run "control_needs_its_egress_ip_to_run" {
-  command = plan
-  variables {
-    stack = "demo-control"
-  }
-  override_data {
-    target = data.aws_eips.control_egress
-    values = { allocation_ids = [], public_ips = [] }
-  }
-  expect_failures = [terraform_data.egress_ip]
 }

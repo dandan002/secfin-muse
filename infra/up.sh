@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Start mock systems for a session, and arm the auto-stop.
+# Start systems for a session, and arm the auto-stop.
 #
 #   infra/up.sh demo                    # every system, stopping in 3 hours
-#   infra/up.sh demo ngt ib control     # just these
+#   infra/up.sh demo desk               # just the desk (the platform)
+#   infra/up.sh demo ngt ib control     # just these mocks
 #   infra/up.sh demo --for 90m          # running it again (any systems) moves the stop time
 #   infra/up.sh demo --fresh ngt        # discard Venue A's saved session and start from the seed
 #
 # Each system resumes from the snapshot its Postgres saved when it last stopped (infra/postgres).
 # Per system: create its image registry, build and push its project's image unless that version
 # (the last commit touching the project or the libs) is already there, then apply with
-# running=true. Systems start in parallel; logs go to infra/out/up-<env>-<system>.log.
+# running=true. Systems with a UI (the desk's web app, mock-ib's Desk Chat) build that image too.
+# Systems start in parallel; logs go to infra/out/up-<env>-<system>.log.
 # The stop runs inside AWS (see terraform/shared/autostop.tf), so it fires with the laptop shut.
-# Needs terraform, docker, zip and the AWS CLI (export AWS_PROFILE=... first).
+# Needs terraform, docker, zip and the AWS CLI (export AWS_PROFILE=... first), and the edge in place
+# (the Cloudflare Tunnels and their tokens, infra/edge.sh). No Cloudflare credentials.
 set -euo pipefail
 
 env="${1:?usage: up.sh <env> [--for 3h] [--fresh] [system ...]}"
@@ -59,8 +62,13 @@ path_tag() {  # <path>... -> the last commit touching them
   echo "$tag"
 }
 
-project_tag() {  # the system's project and the simulator libs it builds on
-  path_tag "$mocks/$1" "$mocks/libs"
+project_tag() {  # the system's project and the libs it builds on
+  if [[ "$1" == desk ]]; then
+    # The web app bakes in Clerk's publishable key, so a new key (say, dev to prod) is a new version too.
+    echo "$(path_tag "$root/platform/api" "$root/platform/web" "$mocks/libs")-$(tf_eval desk var.clerk_publishable_key | shasum | cut -c1-6)"
+  else
+    path_tag "$mocks/$1" "$mocks/libs"
+  fi
 }
 
 tf_eval() {  # <system> <expression>
@@ -87,11 +95,24 @@ up_system() {
     -var running=true -var "image_tag=$tag" -target=module.system.aws_ecr_repository.this
   repo="$(tf_eval "$system" 'module.system.ecr["mock"]')"
 
-  push_image "$repo" "$tag" -f "$mocks/$system/Dockerfile" "$mocks"
+  if [[ "$system" == desk ]]; then
+    push_image "$repo" "$tag" -f "$here/../platform/api/Dockerfile" "$here/.."
+  else
+    push_image "$repo" "$tag" -f "$mocks/$system/Dockerfile" "$mocks"
+  fi
   if [[ "$system" == ib ]]; then
     # The browser calls mock-ib directly, so its public URL is baked into the bundle.
-    push_image "$(tf_eval ib 'module.system.ecr["desk-chat"]')" "$tag" \
+    push_image "$(tf_eval ib 'module.system.ecr["ui"]')" "$tag" \
       --build-arg "VITE_IB_URL=https://$(tf_eval ib local.hostname)" "$mocks/ib/desk-chat"
+  fi
+  if [[ "$system" == desk ]]; then
+    # Likewise the desk's API, and Clerk's (public) publishable key.
+    local key
+    key="$(tf_eval desk var.clerk_publishable_key)"
+    [[ -n "$key" ]] || { echo "set clerk_publishable_key in $env.tfvars" >&2; return 1; }
+    push_image "$(tf_eval desk 'module.system.ecr["ui"]')" "$tag" \
+      --build-arg "VITE_API_URL=https://$(tf_eval desk local.hostname)" \
+      --build-arg "VITE_CLERK_PUBLISHABLE_KEY=$key" "$root/platform/web"
   fi
 
   TF_WORKSPACE="$env-$system" terraform -chdir="$tf/vendor" apply -input=false -auto-approve "$vars" \

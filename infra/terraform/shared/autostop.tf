@@ -67,33 +67,13 @@ data "aws_iam_policy_document" "autostop" {
   statement {
     sid = "StopHourlyResources"
     actions = [
-      "elasticloadbalancing:DeleteLoadBalancer",
-      "elasticloadbalancing:DeleteListener",
-      "elasticloadbalancing:DeleteRule",
-      "elasticloadbalancing:DeleteTargetGroup",
-      "elasticloadbalancing:DeregisterTargets",
-      "ec2:DeleteNatGateway",
-      "ec2:DeleteRouteTable", # the private route table points at the NAT, so it goes with it
-      "ec2:DisassociateRouteTable",
-      "ec2:DisassociateAddress", # control's egress IP, released once everything is stopped
-      "ec2:ReleaseAddress",
       "ecs:UpdateService",
       "ecs:DeleteService",
       "ecs:DeregisterTaskDefinition",
       "ecs:DeleteTaskDefinitions",
     ]
-    resources = ["*"] # the project holds only this simulator
+    resources = ["*"] # the project holds only these systems
   }
-  statement {
-    sid       = "DropDnsRecords"
-    actions   = ["route53:ChangeResourceRecordSets"]
-    resources = ["arn:aws:route53:::hostedzone/${data.aws_route53_zone.this.zone_id}"]
-  }
-}
-
-data "aws_route53_zone" "this" {
-  name         = var.hosted_zone_name
-  private_zone = false
 }
 
 resource "aws_iam_role_policy" "autostop" {

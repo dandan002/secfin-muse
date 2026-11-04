@@ -57,6 +57,10 @@ do), so a deep link to `/desk` or a Clerk step under `/sign-in/…` loads the ap
 Without the key the landing page says sign-in isn't configured and a production build never mounts the desk;
 `npm run dev` still offers "open the desk (dev, no sign-in)", and without the issuer the API stays open, as before. Set both for anything beyond your laptop.
 
+Hosted: `infra/up.sh demo desk` runs the web app at `https://desk.loandesk.dev` and the API at
+`https://api.loandesk.dev`, each behind its own Cloudflare Tunnel, with the issuer and publishable key from
+`infra/terraform/demo.tfvars` (see `infra/README.md`).
+
 ## What's built (spec module → code)
 
 | Spec | Backend | Screen |

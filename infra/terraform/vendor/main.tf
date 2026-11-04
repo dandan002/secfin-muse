@@ -1,11 +1,15 @@
-# One external system per state. The workspace names it: <env>-<service>, e.g. demo-ngt.
+# One system per state. The workspace names it: <env>-<system>, e.g. demo-ngt or demo-desk.
 #
 #   terraform workspace select -or-create demo-ngt
 #   terraform apply -var-file=../demo.tfvars
 #
-# Apply `shared` for the environment first (admin token, mock-control's egress IP, snapshots, the
-# Postgres image). Each system owns its image registry; infra/up.sh creates it, pushes the
-# project's image, then applies.
+# Apply `shared` (admin token, snapshots, the Postgres image) and `edge` (the Cloudflare Tunnels and
+# their tokens) for the environment first. Each system owns its image registry; infra/up.sh creates it,
+# pushes the project's image, then applies.
+#
+# The desk is the LoanDesk platform, hosted the same way as a mock: its API with its own VPC, Postgres
+# and tunnel, and its web app as a second service (as mock-ib serves Desk Chat). It calls the mocks at
+# their public URLs like any client.
 
 terraform {
   required_version = ">= 1.11"
@@ -19,54 +23,48 @@ terraform {
 variable "stack" {
   type        = string
   default     = null
-  description = "Overrides the workspace name (<env>-<service>); for tests."
+  description = "Overrides the workspace name (<env>-<system>); for tests."
 }
 
 locals {
   stack   = coalesce(var.stack, terraform.workspace)
-  parts   = regex("^(?P<env>[a-z0-9]{1,8})-(?P<service>control|ib|gateway|ngt|wematch|sfp|custodian|analytics)$", local.stack)
+  parts   = regex("^(?P<env>[a-z0-9]{1,8})-(?P<service>${join("|", keys(local.catalog))})$", local.stack)
   env     = local.parts.env
   service = local.parts.service
   prefix  = "loandesk-${local.env}"
+  is      = { for s in keys(local.catalog) : s => s == local.service }
 
-  catalog = {
-    control   = { port = 8000 }
-    ib        = { port = 8010 }
-    gateway   = { port = 8020 }
-    ngt       = { port = 8030 }
-    wematch   = { port = 8040 }
-    sfp       = { port = 8050 }
-    custodian = { port = 8060 }
-    analytics = { port = 8070 }
-  }
   port     = local.catalog[local.service].port
-  hostname = "${local.service}.${var.domain_name}"
-  is       = { for s in keys(local.catalog) : s => s == local.service }
+  hostname = local.tunnels[local.service].hostname
+  ui       = lookup(local.uis, local.service, null)
 
-  # Every system is reached at its public URL, like a real vendor. The exception is mock-gateway
-  # calling its own simulated counterparties, which stays inside its container.
+  # Every mock is reached at its public URL, like a real vendor. The exception is mock-gateway calling its
+  # own simulated counterparties, which stays inside its container.
   urls = {
-    for s, c in local.catalog : s => (
-      s == local.service && s == "gateway" ? "http://127.0.0.1:${c.port}" : "https://${s}.${var.domain_name}"
+    for s in local.mocks : s => (
+      s == local.service && s == "gateway" ? "http://127.0.0.1:${local.catalog[s].port}" : "https://${local.tunnels[s].hostname}"
     )
   }
 
+  # The desk reads the same MOCK_* names (settings.py accepts both) plus its own LOANDESK_* ones.
   environment = concat(
     [for s, url in local.urls : { name = "MOCK_${upper(s)}_URL", value = url }],
-    [
-      { name = "MOCK_SEED", value = tostring(var.seed) },
+    [{ name = "MOCK_SEED", value = tostring(var.seed) }],
+    local.is.desk ? [
+      { name = "LOANDESK_CLERK_ISSUER", value = var.clerk_issuer },
+      { name = "LOANDESK_CORS_ORIGINS", value = jsonencode(["https://${local.tunnels.web.hostname}"]) },
+      { name = "LOANDESK_SYNC_ENABLED", value = tostring(var.desk_sync) },
+      { name = "LOANDESK_AGENT_MODE", value = "off" },
+      ] : [
       { name = "MOCK_LLM_MODE", value = var.llm_mode },
     ],
-    local.is.ngt ? [
-      { name = "MOCK_NGT_FIX_HOST", value = "0.0.0.0" },
-      { name = "MOCK_NGT_FIX_PORT", value = "9878" },
-    ] : [],
     local.is.gateway ? [{ name = "MOCK_GATEWAY_DOWNSTREAM_URL", value = var.gateway_downstream_url }] : [],
   )
 
+  # The desk only needs the admin token (it asks each mock for its own keys); the mocks derive theirs.
   secrets = concat(
     [{ name = "MOCK_ADMIN_TOKEN", valueFrom = data.aws_ssm_parameter.admin_token.arn }],
-    [{ name = "MOCK_KEY_SECRET", valueFrom = data.aws_ssm_parameter.key_secret.arn }],
+    local.is.desk ? [] : [{ name = "MOCK_KEY_SECRET", valueFrom = data.aws_ssm_parameter.key_secret.arn }],
     [for p in data.aws_ssm_parameter.llm_key : { name = "META_AI_API", valueFrom = p.arn }],
   )
 
@@ -75,18 +73,6 @@ locals {
     bucket = "${local.prefix}-snapshots-${data.aws_caller_identity.this.account_id}"
     key    = "${local.service}.sql.gz"
   }
-
-  # Released while every system is stopped (see shared), so it may not exist; a running system
-  # always has one, as up.sh applies shared first.
-  control_egress = one(data.aws_eips.control_egress.allocation_ids) == null ? null : {
-    id = one(data.aws_eips.control_egress.allocation_ids), ip = one(data.aws_eips.control_egress.public_ips)
-  }
-
-  # mock-control is the operators' console. Everything else is an external system its clients
-  # (and mock-control, from its fixed egress IP) call into.
-  ingress_cidrs = local.is.control ? var.allowed_cidrs : distinct(concat(
-    var.allowed_cidrs, var.client_cidrs, local.control_egress == null ? [] : ["${local.control_egress.ip}/32"],
-  ))
 }
 
 provider "aws" {
@@ -100,11 +86,6 @@ provider "aws" {
       managed-by  = "terraform"
     }
   }
-}
-
-data "aws_route53_zone" "this" {
-  name         = var.hosted_zone_name
-  private_zone = false
 }
 
 data "aws_caller_identity" "this" {}
@@ -125,19 +106,23 @@ data "aws_ssm_parameter" "llm_key" {
   with_decryption = false
 }
 
-data "aws_eips" "control_egress" {
-  tags = { Name = "${local.prefix}-control-egress" }
+# Written by edge, one per ECS service.
+data "aws_ssm_parameter" "tunnel" {
+  for_each        = toset(concat([local.service], local.ui == null ? [] : [local.ui]))
+  name            = "/${local.prefix}/tunnel/${each.key}"
+  with_decryption = false
 }
 
 data "aws_ecr_repository" "postgres" {
   name = "${local.prefix}/postgres"
 }
 
-resource "terraform_data" "egress_ip" {
+# The desk's API is on the open internet; without sign-in anyone could trade on it.
+resource "terraform_data" "desk_sign_in" {
   lifecycle {
     precondition {
-      condition     = !(var.running && local.is.control && local.control_egress == null)
-      error_message = "mock-control's egress IP is missing: apply shared first (infra/up.sh does)."
+      condition     = !(var.running && local.is.desk && var.clerk_issuer == "")
+      error_message = "The desk needs clerk_issuer (its API is public behind the tunnel)."
     }
   }
 }
@@ -145,26 +130,25 @@ resource "terraform_data" "egress_ip" {
 module "system" {
   source = "../modules/vendor"
 
-  name              = "ld-${local.env}-${local.service}"
-  service           = local.service
-  region            = var.region
-  hostname          = local.hostname
-  zone_id           = data.aws_route53_zone.this.zone_id
-  repository_prefix = local.prefix
-  image_tag         = var.image_tag
-  port              = local.port
-  app_module        = "mock_${local.service}.app:app"
-  environment       = local.environment
-  secrets           = local.secrets
-  postgres_image    = local.postgres_image
-  snapshot          = local.snapshot
+  name                   = "ld-${local.env}-${local.service}"
+  service                = local.service
+  region                 = var.region
+  hostname               = local.hostname
+  tunnel_token_parameter = data.aws_ssm_parameter.tunnel[local.service].arn
+  repository_prefix      = local.prefix
+  image_tag              = var.image_tag
+  port                   = local.port
+  app_module             = local.is.desk ? "loandesk.app:app" : "mock_${local.service}.app:app"
+  database_url_env       = local.is.desk ? "LOANDESK_DATABASE_URL" : "MOCK_DATABASE_URL"
+  cpu                    = local.is.desk ? 512 : 256
+  environment            = local.environment
+  secrets                = local.secrets
+  postgres_image         = local.postgres_image
+  snapshot               = local.snapshot
 
-  ingress_cidrs = local.ingress_cidrs
-  # mock-control egresses through a NAT on the shared Elastic IP, so the others can allowlist it.
-  nat_eip_allocation_id = local.is.control ? try(local.control_egress.id, null) : null
-
-  fix       = local.is.ngt ? { port = 9878, hostname = "fix.${var.domain_name}" } : null
-  desk_chat = local.is.ib ? { hostname = "chat.${var.domain_name}" } : null
+  ui = local.ui == null ? null : {
+    name = local.ui, hostname = local.tunnels[local.ui].hostname, tunnel_token_parameter = data.aws_ssm_parameter.tunnel[local.ui].arn
+  }
 
   running            = var.running
   log_retention_days = var.log_retention_days
@@ -172,10 +156,6 @@ module "system" {
 
 output "urls" {
   value = module.system.urls
-}
-
-output "fix_endpoint" {
-  value = module.system.fix_endpoint
 }
 
 output "cluster" {

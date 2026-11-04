@@ -1,32 +1,20 @@
-# Offline plans of one external system against a mocked AWS provider:
+# Offline plans of one system against a mocked AWS provider:
 #   cd infra/terraform/modules/vendor && terraform init && terraform test
 
 mock_provider "aws" {
   override_during = plan # mock computed values at plan time, as the real provider knows these
 
   mock_data "aws_availability_zones" {
-    defaults = { names = ["us-east-1a", "us-east-1b", "us-east-1c"] }
-  }
-  mock_data "aws_route53_zone" {
-    defaults = { zone_id = "Z123" }
+    defaults = { names = ["us-east-2a", "us-east-2b", "us-east-2c"] }
   }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{}" }
   }
-  mock_data "aws_ecr_repository" {
-    defaults = { repository_url = "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/mocks" }
-  }
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::111111111111:role/x" }
   }
-  mock_resource "aws_lb_target_group" {
-    defaults = { arn = "arn:aws:elasticloadbalancing:us-east-1:111111111111:targetgroup/x/1" }
-  }
   mock_resource "aws_ecr_repository" {
-    defaults = { repository_url = "111111111111.dkr.ecr.us-east-1.amazonaws.com/repo" }
-  }
-  mock_resource "aws_acm_certificate" {
-    defaults = { arn = "arn:aws:acm:us-east-1:111111111111:certificate/x", domain_validation_options = [] }
+    defaults = { repository_url = "111111111111.dkr.ecr.us-east-2.amazonaws.com/repo" }
   }
 }
 
@@ -37,57 +25,54 @@ override_resource {
 }
 
 variables {
-  name              = "ld-demo-ngt"
-  service           = "ngt"
-  region            = "us-east-1"
-  hostname          = "ngt.mocks.example.com"
-  zone_id           = "Z123"
-  ingress_cidrs     = ["203.0.113.0/24", "198.51.100.7/32"]
-  repository_prefix = "loandesk-demo"
-  image_tag         = "abc123"
-  port              = 8030
-  app_module        = "mock_ngt.app:app"
-  environment       = [{ name = "MOCK_SEED", value = "20261027" }]
-  secrets           = [{ name = "MOCK_ADMIN_TOKEN", valueFrom = "arn:aws:ssm:us-east-1:111111111111:parameter/admin" }]
-  postgres_image    = "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/postgres:pg1"
-  snapshot          = { bucket = "snapshots", key = "ngt.sql.gz" }
-  fix               = { port = 9878, hostname = "fix.mocks.example.com" }
+  name                   = "ld-demo-ngt"
+  service                = "ngt"
+  region                 = "us-east-2"
+  hostname               = "mock-ngt.example.com"
+  tunnel_token_parameter = "arn:aws:ssm:us-east-2:111111111111:parameter/loandesk-demo/tunnel/ngt"
+  repository_prefix      = "loandesk-demo"
+  image_tag              = "abc123"
+  port                   = 8030
+  app_module             = "mock_ngt.app:app"
+  environment            = [{ name = "MOCK_SEED", value = "20261027" }]
+  secrets                = [{ name = "MOCK_ADMIN_TOKEN", valueFrom = "arn:aws:ssm:us-east-2:111111111111:parameter/admin" }]
+  postgres_image         = "111111111111.dkr.ecr.us-east-2.amazonaws.com/loandesk-demo/postgres:pg1"
+  snapshot               = { bucket = "snapshots", key = "ngt.sql.gz" }
 }
 
-run "system_with_fix" {
+run "system_behind_its_tunnel" {
   command = plan
 
   assert {
     condition = (
-      [for c in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions) : c.name] == ["ngt", "postgres"]
+      [for c in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions) : c.name] == ["ngt", "postgres", "cloudflared"]
       && jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].dependsOn == [{ containerName = "postgres", condition = "HEALTHY" }]
       && anytrue([for e in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].environment :
-      e.name == "MOCK_DATABASE_URL" && strcontains(e.value, "@127.0.0.1:5432/mock")])
+      e.name == "MOCK_DATABASE_URL" && strcontains(e.value, "@127.0.0.1:5432/app")])
     )
-    error_message = "its own Postgres, in the task, started first and reached over loopback"
+    error_message = "its own Postgres, in the task, started first and reached over loopback; then the tunnel"
   }
   assert {
-    condition     = !contains([for r in aws_vpc_security_group_ingress_rule.tasks : r.from_port], 5432)
-    error_message = "Postgres is never exposed"
+    condition = (
+      jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[2].secrets == [{ name = "TUNNEL_TOKEN", valueFrom = "arn:aws:ssm:us-east-2:111111111111:parameter/loandesk-demo/tunnel/ngt" }]
+      && jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[2].dependsOn == [{ containerName = "ngt", condition = "HEALTHY" }]
+      && jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[2].image == "cloudflare/cloudflared:2026.10.7"
+    )
+    error_message = "cloudflared carries the hostname in once the app is healthy"
   }
   assert {
-    condition     = length(aws_lb.fix) == 1 && length(aws_nat_gateway.this) == 0 && keys(aws_ecs_service.app) == ["ngt"]
-    error_message = "one service, NLB for FIX, no NAT"
+    condition     = strcontains(jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].healthCheck.command[1], "/health")
+    error_message = "with no load balancer, ECS watches /health itself"
   }
   assert {
-    condition     = length(aws_vpc_security_group_ingress_rule.lb) == 6 # 2 CIDRs x (80, 443, 9878)
-    error_message = "allowlisted ports"
+    condition     = aws_vpc_security_group_egress_rule.tasks.cidr_ipv4 == "0.0.0.0/0" && aws_vpc_security_group_egress_rule.tasks.ip_protocol == "-1"
+    error_message = "out to Cloudflare, ECR and S3; the module defines no ingress rule at all"
   }
   assert {
     condition = alltrue([for s in aws_ecs_service.app :
-    s.desired_count == 1 && s.deployment_maximum_percent == 100 && s.deployment_minimum_healthy_percent == 0 && s.network_configuration[0].assign_public_ip])
-    error_message = "exactly one task, never two during a deploy"
-  }
-  assert {
-    condition = jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].portMappings == [
-      { containerPort = 8030, protocol = "tcp" }, { containerPort = 9878, protocol = "tcp" },
-    ]
-    error_message = "REST and FIX ports"
+      s.desired_count == 1 && s.deployment_maximum_percent == 100 && s.deployment_minimum_healthy_percent == 0
+    && s.network_configuration[0].assign_public_ip && length(s.load_balancer) == 0])
+    error_message = "exactly one task, never two during a deploy, no load balancer"
   }
   assert {
     condition     = [for s in jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].secrets : s.name] == ["MOCK_ADMIN_TOKEN"]
@@ -98,6 +83,10 @@ run "system_with_fix" {
     && endswith(jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[0].image, "/repo:abc123"))
     error_message = "its own image registry, tagged with its project's version"
   }
+  assert {
+    condition     = output.urls == { ngt = "https://mock-ngt.example.com" }
+    error_message = "its hostname"
+  }
 }
 
 run "postgres_saves_and_restores_its_snapshot" {
@@ -105,7 +94,7 @@ run "postgres_saves_and_restores_its_snapshot" {
 
   assert {
     condition = (
-      jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].image == "111111111111.dkr.ecr.us-east-1.amazonaws.com/loandesk-demo/postgres:pg1"
+      jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].image == "111111111111.dkr.ecr.us-east-2.amazonaws.com/loandesk-demo/postgres:pg1"
       && contains(jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].environment, { name = "SNAPSHOT_URL", value = "s3://snapshots/ngt.sql.gz" })
       && jsondecode(aws_ecs_task_definition.app["ngt"].container_definitions)[1].stopTimeout == 120
     )
@@ -133,55 +122,52 @@ run "without_a_snapshot" {
   }
 }
 
-run "behind_nat_with_fixed_egress" {
+run "the_desk_reads_its_own_database_variable" {
   command = plan
   variables {
-    fix                   = null
-    nat_eip_allocation_id = "eipalloc-0control"
-  }
-
-  assert {
-    condition     = aws_nat_gateway.this[0].allocation_id == "eipalloc-0control" && !aws_ecs_service.app["ngt"].network_configuration[0].assign_public_ip
-    error_message = "private tasks behind the given EIP"
+    service          = "desk"
+    port             = 8100
+    app_module       = "loandesk.app:app"
+    database_url_env = "LOANDESK_DATABASE_URL"
+    cpu              = 512
   }
   assert {
-    condition     = length(aws_lb.fix) == 0 && length(aws_vpc_security_group_ingress_rule.lb) == 4
-    error_message = "no FIX"
+    condition = (anytrue([for e in jsondecode(aws_ecs_task_definition.app["desk"].container_definitions)[0].environment : e.name == "LOANDESK_DATABASE_URL"])
+    && aws_ecs_task_definition.app["desk"].cpu == "512")
+    error_message = "LOANDESK_DATABASE_URL, and more CPU"
   }
 }
 
-run "with_desk_chat" {
+run "with_a_ui" {
   command = plan
   variables {
-    fix       = null
-    desk_chat = { hostname = "chat.mocks.example.com" }
+    ui = { name = "chat", hostname = "mock-chat.example.com", tunnel_token_parameter = "arn:aws:ssm:us-east-2:111111111111:parameter/loandesk-demo/tunnel/chat" }
   }
 
   assert {
-    condition     = keys(aws_ecs_service.app) == ["chat", "ngt"] && aws_acm_certificate.this.subject_alternative_names == toset(["chat.mocks.example.com"])
-    error_message = "second service on the same ALB and cert"
+    condition     = keys(aws_ecs_service.app) == ["chat", "ngt"] && output.urls.chat == "https://mock-chat.example.com"
+    error_message = "a second service"
   }
   assert {
-    condition = (aws_ecr_repository.this["desk-chat"].name == "loandesk-demo/ngt-desk-chat"
+    condition = (aws_ecr_repository.this["ui"].name == "loandesk-demo/ngt-chat"
+      && [for c in jsondecode(aws_ecs_task_definition.app["chat"].container_definitions) : c.name] == ["chat", "cloudflared"]
       && !can(jsondecode(aws_ecs_task_definition.app["chat"].container_definitions)[0].secrets)
-    && length(jsondecode(aws_ecs_task_definition.app["chat"].container_definitions)) == 1)
-    error_message = "Desk Chat: static image, no secrets, no database"
+    && jsondecode(aws_ecs_task_definition.app["chat"].container_definitions)[1].secrets[0].valueFrom == "arn:aws:ssm:us-east-2:111111111111:parameter/loandesk-demo/tunnel/chat")
+    error_message = "the UI: static image, no secrets, no database, its own tunnel"
   }
 }
 
 run "stopped" {
   command = plan
   variables {
-    running               = false
-    nat_eip_allocation_id = "eipalloc-0control"
+    running = false
   }
   assert {
-    condition = (length(aws_lb.alb) + length(aws_lb.fix) + length(aws_nat_gateway.this) + length(aws_ecs_service.app)
-    + length(aws_ecs_task_definition.app) + length(aws_route53_record.app) + length(aws_route53_record.fix)) == 0
+    condition     = (length(aws_ecs_service.app) + length(aws_ecs_task_definition.app)) == 0
     error_message = "nothing billed by the hour while stopped"
   }
   assert {
-    condition     = aws_acm_certificate.this.domain_name == "ngt.mocks.example.com" && keys(aws_ecr_repository.this) == ["mock"] && aws_vpc.this.cidr_block == "10.40.0.0/16"
+    condition     = keys(aws_ecr_repository.this) == ["mock"] && aws_vpc.this.cidr_block == "10.40.0.0/16"
     error_message = "the free base stays, so the next start is quick"
   }
 }

@@ -1,7 +1,6 @@
-# Per-environment pieces that aren't any one system's: the simulator's admin token,
-# mock-control's egress IP (which every external system allowlists, the way vendors whitelist a
-# client's IPs), the session snapshots, the Postgres image and the auto-stop machinery. Nothing
-# here is on a request path.
+# Per-environment pieces that aren't any one system's: the simulator's admin token, the session
+# snapshots, the Postgres image and the auto-stop machinery. Nothing here is on a request path. (The
+# public side, Cloudflare Tunnels and DNS, is the edge root's.)
 #
 #   terraform workspace select -or-create demo   # the environment name
 
@@ -16,9 +15,8 @@ terraform {
 }
 
 locals {
-  env      = terraform.workspace
-  prefix   = "loandesk-${local.env}"
-  services = ["control", "ib", "gateway", "ngt", "wematch", "sfp", "custodian", "analytics"]
+  env    = terraform.workspace
+  prefix = "loandesk-${local.env}"
 }
 
 provider "aws" {
@@ -69,16 +67,8 @@ resource "aws_ssm_parameter" "llm_key" {
   value = var.meta_ai_api_key
 }
 
-# mock-control's NAT egresses on this address. An idle Elastic IP is billed by the hour, so
-# infra/down.sh releases it once every system is stopped and the next up.sh allocates a new one;
-# each system picks up the current address when it starts.
-resource "aws_eip" "control_egress" {
-  domain = "vpc"
-  tags   = { Name = "${local.prefix}-control-egress" }
-}
-
 # -- session snapshots --------------------------------------------------------------------------
-# Each mock's Postgres saves a dump here when its task stops and restores it on the next start
+# Each system's Postgres saves a dump here when its task stops and restores it on the next start
 # (infra/postgres), so a session picks up where it left off. Versioned, so a bad dump can be rolled
 # back; destroying the environment deletes them.
 resource "aws_s3_bucket" "snapshots" {
@@ -114,7 +104,7 @@ resource "aws_s3_bucket_public_access_block" "snapshots" {
   restrict_public_buckets = true
 }
 
-# The Postgres image every mock's task runs (infra/postgres): the official image plus the snapshot
+# The Postgres image every system's task runs (infra/postgres): the official image plus the snapshot
 # hooks. One per environment; infra/up.sh builds and pushes it.
 resource "aws_ecr_repository" "postgres" {
   name                 = "${local.prefix}/postgres"
@@ -134,25 +124,9 @@ resource "aws_ecr_lifecycle_policy" "postgres" {
   })
 }
 
-output "ib_url" {
-  description = "VITE_IB_URL for the Desk Chat build (the browser calls mock-ib directly)."
-  value       = "https://ib.${var.domain_name}"
-}
-
 output "urls" {
-  description = "Where each system will live once its vendor stack is applied (chat = Desk Chat UI)."
-  value = merge(
-    { for s in local.services : s => "https://${s}.${var.domain_name}" },
-    { chat = "https://chat.${var.domain_name}" },
-  )
-}
-
-output "fix_endpoint" {
-  value = "fix.${var.domain_name}:9878"
-}
-
-output "control_egress_ip" {
-  value = aws_eip.control_egress.public_ip
+  description = "Where each service answers while it's running (web = the desk's web app, chat = Desk Chat)."
+  value       = { for k, t in local.tunnels : k => "https://${t.hostname}" }
 }
 
 output "admin_token_parameter" {

@@ -3,7 +3,9 @@
 # system already costs ~$0. All mock data is derived from the seed, so nothing is lost either way.
 #
 #   infra/destroy.sh demo ngt          # just Venue A
-#   infra/destroy.sh demo              # every system, then the shared stack (token, EIP, auto-stop)
+#   infra/destroy.sh demo              # every system, then the shared stack (token, auto-stop)
+#
+# The edge (tunnels, DNS, the web app) is separate: terraform -chdir=infra/terraform/edge destroy.
 set -euo pipefail
 
 env="${1:?usage: destroy.sh <env> [system ...]}"

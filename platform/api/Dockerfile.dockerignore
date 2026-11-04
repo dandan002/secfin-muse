@@ -1,0 +1,12 @@
+# Context is the repo root; send only what the Dockerfile copies.
+*
+!mocks/libs
+!platform/api
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/*.db
+**/.env
+platform/api/tests
