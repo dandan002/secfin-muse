@@ -2,10 +2,10 @@ import { UserButton } from "@clerk/react";
 import { ReactNode, useState } from "react";
 import { api } from "../lib/api";
 import { authEnabled } from "../lib/auth";
-import { time } from "../lib/format";
+import { money, time } from "../lib/format";
 import { useKeys, useQuery } from "../lib/hooks";
 import { useDesk, VIEWS, workspaceOf, WORKSPACES } from "../lib/store";
-import type { Action, Status } from "../lib/types";
+import type { Action, Autopilot, AutopilotMode, Status } from "../lib/types";
 
 const SHORT: Record<string, string> = {
   control: "Sim",
@@ -24,6 +24,22 @@ export function Shell({ children }: { children: ReactNode }) {
   const toast = useDesk((s) => s.toast);
   const [confirming, setConfirming] = useState(false);
   const kill = !!st?.killSwitch.on;
+  // The autopilot's own endpoint is cheap (no calls out), so it follows every autopilot event: approvals, cards
+  // passed over, mode changes, the breaker.
+  const { data: ap, reload: reloadAp } = useQuery<Autopilot>("/autopilot", ["autopilot"], 15000);
+  const [seenTrip, setSeenTrip] = useState<string | null>(null);
+  const setMode = async (mode: AutopilotMode) => {
+    try {
+      await api.put("/autopilot", mode === "danger" ? { mode, confirm: "DANGER" } : { mode });
+      toast(mode === "off" ? "info" : "warn", mode === "off" ? "Autopilot off: every card waits for a trader"
+        : mode === "autopilot" ? "Autopilot on: cards inside the limits approve themselves"
+        : "Danger mode on: the agent acts end to end within its limits");
+      reloadAp();
+    } catch (e) {
+      toast("err", (e as Error).message);
+    }
+  };
+  const mode = ap?.mode ?? "off";
 
   const setKill = async (on: boolean) => {
     await api.put("/kill-switch", { on });
@@ -40,7 +56,7 @@ export function Shell({ children }: { children: ReactNode }) {
   }, [kill]);
 
   return (
-    <div className={`h-full flex flex-col ${kill ? "ring-2 ring-inset ring-down" : ""}`}>
+    <div className={`h-full flex flex-col ${kill ? "ring-2 ring-inset ring-down" : mode === "danger" ? "ring-2 ring-inset ring-hot" : ""}`}>
       {kill && (
         <div role="alert" className="shrink-0 flex items-center gap-3 px-6 h-10 bg-down text-bg">
           <span className="font-semibold">
@@ -58,8 +74,29 @@ export function Shell({ children }: { children: ReactNode }) {
           )}
         </div>
       )}
+      {!kill && mode !== "off" && ap && (
+        <div role="status" className={`shrink-0 flex items-center gap-3 px-6 h-8 ${
+          mode === "danger" ? "bg-hot text-bg" : "bg-soft text-ink border-b border-line"}`}>
+          <span className="font-semibold">{mode === "danger" ? "Danger mode" : "Autopilot"}</span>
+          <span className={mode === "danger" ? "" : "text-dim"}>
+            {mode === "danger" ? "The agent approves its own cards end to end, within wide limits." : "Cards inside the limits approve themselves; the rest wait for you."}
+            {ap.today && ap.limits && ` ${ap.today.count} today · $${money(ap.today.notionalUsd)} of $${money(ap.limits.dayUsd)}.`}
+          </span>
+          <span className="flex-1" />
+          <span className={mode === "danger" ? "" : "text-dim"}>⇧K stops everything</span>
+          <button className={`btn btn-sm ${mode === "danger" ? "border-bg text-bg hover:bg-bg/10" : ""}`} onClick={() => setMode("off")}>Turn off</button>
+        </div>
+      )}
+      {mode === "off" && ap?.tripped && ap.tripped !== seenTrip && (
+        <div role="alert" className="shrink-0 flex items-center gap-3 px-6 h-8 bg-soft border-b border-line">
+          <span className="font-semibold text-down">Autopilot turned itself off</span>
+          <span className="text-dim truncate">{ap.tripped}</span>
+          <span className="flex-1" />
+          <button className="btn-ghost btn-sm" onClick={() => setSeenTrip(ap.tripped)}>Dismiss</button>
+        </div>
+      )}
       <div className="flex-1 flex min-h-0">
-        <Sidebar st={st} kill={kill} onKill={() => (kill ? setConfirming(true) : setKill(true))} />
+        <Sidebar st={st} kill={kill} onKill={() => (kill ? setConfirming(true) : setKill(true))} mode={mode} onMode={setMode} />
         <div className="flex-1 min-w-0 flex flex-col">
           <Header />
           <main className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">{children}</main>
@@ -69,7 +106,14 @@ export function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-function Sidebar({ st, kill, onKill }: { st: Status | null; kill: boolean; onKill: () => void }) {
+function Sidebar({ st, kill, onKill, mode, onMode }: {
+  st: Status | null;
+  kill: boolean;
+  onKill: () => void;
+  mode: AutopilotMode;
+  onMode: (m: AutopilotMode) => void;
+}) {
+  const [dangerAsk, setDangerAsk] = useState(false);
   const view = useDesk((s) => s.view);
   const openWorkspace = useDesk((s) => s.openWorkspace);
   const setView = useDesk((s) => s.setView);
@@ -144,6 +188,30 @@ function Sidebar({ st, kill, onKill }: { st: Status | null; kill: boolean; onKil
             </span>
           </Row>
         )}
+        <div className="flex flex-col gap-1.5 mt-1">
+          <span className="text-faint">Approvals</span>
+          <div role="radiogroup" aria-label="Who approves cards" className="grid grid-cols-3 gap-0.5 p-0.5 rounded border border-line">
+            {([["off", "Manual"], ["autopilot", "Autopilot"], ["danger", "Danger"]] as const).map(([m, label]) => (
+              <button key={m} role="radio" aria-checked={mode === m}
+                title={m === "off" ? "Every card waits for a trader" : m === "autopilot"
+                  ? "Unflagged locate, order and basket cards inside the limits approve themselves"
+                  : "The agent acts end to end: every kind of card, Hot names, warnings, lender counters"}
+                onClick={() => (m === "danger" && mode !== "danger" ? setDangerAsk(true) : (setDangerAsk(false), onMode(m)))}
+                className={`h-6 rounded-sm font-medium ${mode === m
+                  ? m === "danger" ? "bg-hot text-bg" : m === "autopilot" ? "bg-accent text-on-accent" : "bg-raised text-ink"
+                  : "text-faint hover:text-ink"}`}>{label}</button>
+            ))}
+          </div>
+          {dangerAsk && (
+            <div className="flex flex-col gap-1.5 p-2 rounded border border-hot/40 bg-hot/10">
+              <span>The agent approves its own break fixes, recalls, chat bids and Hot names, and takes lender counters. Hard checks and the kill switch still hold.</span>
+              <span className="flex gap-1.5">
+                <button className="btn btn-sm border-hot text-hot hover:bg-hot/10" onClick={() => { setDangerAsk(false); onMode("danger"); }}>Turn on danger</button>
+                <button className="btn-ghost btn-sm" onClick={() => setDangerAsk(false)}>Cancel</button>
+              </span>
+            </div>
+          )}
+        </div>
         <button onClick={onKill} title="Freeze every agent action"
           className="btn justify-center mt-1 text-down border-down/25 hover:bg-down/10">
           {kill ? "Turn kill switch off" : "Kill switch"} <span className="kbd">⇧K</span>

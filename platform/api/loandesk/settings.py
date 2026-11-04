@@ -123,6 +123,20 @@ class Settings(BaseSettings):
     # Unset: the desk's own Postgres, or a sibling ``*.agent.db`` next to its SQLite file.
     agent_checkpoint_url: str | None = None
 
+    # -- autopilot: the desk approving its own cards, inside these limits (see autopilot.py) -------------
+    autopilot_mode: Literal["off", "autopilot", "danger"] = "off"  # where it starts; switched at run time
+    autopilot_kinds: list[str] = ["locate_decision", "order", "basket"]
+    autopilot_max_card_usd: float = 5_000_000
+    autopilot_day_usd: float = 50_000_000
+    autopilot_day_count: int = 200
+    autopilot_min_confidence: float = 0.85  # the agent's own confidence on its card
+    danger_max_card_usd: float = 25_000_000
+    danger_day_usd: float = 500_000_000
+    danger_day_count: int = 2_000
+    danger_counter_tolerance_pct: float = 10.0  # take a lender's counter within this of our bid
+    autopilot_trip_after: int = 3  # this many auto-approved cards failing in a row turns autopilot off
+    autopilot_max_reviews: int = 5  # agent reviews the autopilot keeps running at once
+
     # -- observability: Langfuse traces of model calls and agent runs (record/live only; see observe.py) ----------
     langfuse_public_key: str | None = Field(None, validation_alias=AliasChoices("LOANDESK_LANGFUSE_PUBLIC_KEY",
                                                                                "LANGFUSE_PUBLIC_KEY"))
