@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { actor, bps, full, parseQty, pct, qty, time } from "../lib/format";
 import { useKeys, useMulti, useQuery, useSelection } from "../lib/hooks";
 import { type BulkLine, useDesk } from "../lib/store";
+import { onPush } from "../lib/stream";
 import type { Counterparty, Locate } from "../lib/types";
 import { Empty, Figures, Kbd, Panel, PreBorrowTag, Stat, State, Tabs, TierBadge } from "../components/ui";
 
@@ -25,32 +26,112 @@ export function Locates() {
 /** The morning burst at a glance: how many came in, how many the policy cleared, how many sit with the agent or the
  *  trader, and a bar of how much is handled. */
 function Burst() {
-  const { data: open } = useQuery<Locate[]>("/locates?status=RECEIVED&limit=5000", ["locate"]);
-  const { data: done } = useQuery<Locate[]>("/locates?status=APPROVED,PARTIAL,REJECTED,EXPIRED,RELEASED,USED,INVALID", ["locate"]);
-  const waiting = open ?? [];
-  const decided = done ?? [];
-  const received = waiting.length + decided.length;
-  const auto = decided.filter((l) => (l.decidedBy ?? "").startsWith("policy")).length;
-  const agent = waiting.filter((l) => l.route === "REVIEW").length;
-  const you = waiting.filter((l) => l.route !== "REVIEW").length;
-  const handled = received ? decided.length / received : 0;
-  const withAgent = received ? agent / received : 0;
+  const { data: sm } = useQuery<{ received: number; waiting: number; withAgent: number; forYou: number; decided: number;
+    autoCleared: number }>("/locates/summary", ["locate"]);
+  const received = sm?.received ?? 0;
+  const handled = received ? (sm?.decided ?? 0) / received : 0;
+  const withAgent = received ? (sm?.withAgent ?? 0) / received : 0;
   return (
     <div className="shrink-0">
       <Figures items={[
-        { label: "Received", value: received },
-        { label: "Auto-cleared", value: auto },
-        { label: "Decided by hand or agent", value: decided.length - auto },
-        { label: "With agent", value: agent },
-        { label: "For you", value: you, tone: you ? "text-hot" : "" },
+        { label: "Received", value: sm ? received : "—" },
+        { label: "Auto-cleared", value: sm?.autoCleared ?? "—" },
+        { label: "Decided by hand or agent", value: sm ? sm.decided - sm.autoCleared : "—" },
+        { label: "With agent", value: sm?.withAgent ?? "—" },
+        { label: "For you", value: sm?.forYou ?? "—", tone: sm?.forYou ? "text-hot" : "" },
       ]} />
-      <span role="img" aria-label={`${decided.length} of ${received} handled`} className="flex h-0.5 -mt-0.5 mx-px bg-line rounded-b overflow-hidden">
+      <span role="img" aria-label={`${sm?.decided ?? 0} of ${received} handled`} className="flex h-0.5 -mt-0.5 mx-px bg-line rounded-b overflow-hidden">
         <span className="block bg-ink" style={{ width: `${handled * 100}%` }} />
         <span className="block bg-accent" style={{ width: `${withAgent * 100}%` }} />
       </span>
     </div>
   );
 }
+
+/** Every waiting line, kept live from the stream rather than refetched. One full read to start (and on reconnect,
+ *  and every 30 s to pick up market moves in the enrichment); after that each locate push is folded in: a decided
+ *  line drops out at once, a new or changed one is fetched by id, a few hundred milliseconds' worth at a time. */
+function useWaiting() {
+  const [byId, setById] = useState<Map<string, Locate> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // A full read can be overtaken by pushes while it's in flight. A line never goes back to waiting once it's
+  // left, so lines seen leaving stay out of any read that lands later, and lines streamed in after a read began
+  // stay in even if that read didn't have them.
+  const gone = useRef(new Set<string>());
+  const arrived = useRef(new Map<string, number>());
+  const load = useCallback(async () => {
+    const t0 = Date.now();
+    try {
+      const list = await api.get<Locate[]>("/locates?status=RECEIVED&limit=5000");
+      setById((old) => {
+        const n = new Map(list.filter((l) => !gone.current.has(l.id)).map((l) => [l.id, l]));
+        old?.forEach((l, id) => {
+          if (!n.has(id) && (arrived.current.get(id) ?? 0) >= t0) n.set(id, l);
+        });
+        return n;
+      });
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30_000);
+    const off = onPush("open", load);
+    return () => { clearInterval(t); off(); };
+  }, [load]);
+  useEffect(() => {
+    let pending = new Set<string>();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const flush = async () => {
+      const ids = [...pending];
+      pending = new Set();
+      timer = undefined;
+      for (let k = 0; k < ids.length; k += 150) {
+        const chunk = ids.slice(k, k + 150);
+        try {
+          const got = await api.get<Locate[]>(`/locates?limit=1000&ids=${chunk.join(",")}`);
+          setById((m) => {
+            if (!m) return m;
+            const n = new Map(m);
+            chunk.forEach((id) => n.delete(id));
+            for (const l of got) {
+              if (l.status !== "RECEIVED") gone.current.add(l.id);
+              else if (!gone.current.has(l.id)) {
+                n.set(l.id, l);
+                arrived.current.set(l.id, Date.now());
+              }
+            }
+            return n;
+          });
+        } catch { /* the 30 s read catches up */ }
+      }
+    };
+    const off = onPush("locate", (d: { id?: string; data?: { status?: string } }) => {
+      if (!d?.id) return;
+      if (d.data?.status && d.data.status !== "RECEIVED") {
+        pending.delete(d.id);
+        gone.current.add(d.id);
+        setById((m) => {
+          if (!m?.has(d.id!)) return m;
+          const n = new Map(m);
+          n.delete(d.id!);
+          return n;
+        });
+        return;
+      }
+      pending.add(d.id);
+      timer ??= setTimeout(flush, 400);
+    });
+    return () => { off(); clearTimeout(timer); };
+  }, []);
+  const list = useMemo(() => (byId ? [...byId.values()] : null), [byId]);
+  return { data: list, error };
+}
+
+type Item = { kind: "head"; cp: string } | { kind: "row"; l: Locate; i: number };
+const HEAD = 32;  // the sticky column headers above the rows
 
 function NewLocate() {
   const { data: cps } = useQuery<Counterparty[]>("/counterparties");
@@ -84,7 +165,7 @@ function NewLocate() {
 }
 
 function Inbox() {
-  const { data, error } = useQuery<Locate[]>("/locates?status=RECEIVED&limit=5000", ["locate", "market"]);
+  const { data, error } = useWaiting();
   const toast = useDesk((s) => s.toast);
   const openTicket = useDesk((s) => s.openTicket);
   // Group by requester, oldest request first within each.
@@ -93,13 +174,45 @@ function Inbox() {
       a.counterparty.localeCompare(b.counterparty) || a.receivedAt.localeCompare(b.receivedAt) || a.lineNo - b.lineNo);
     return list;
   }, [data]);
-  // A burst can leave thousands waiting: draw them a page at a time so live updates stay quick.
-  const [limit, setLimit] = useState(400);
-  const shown = useMemo(() => rows.slice(0, limit), [rows, limit]);
-  const [sel, setSel] = useSelection(shown.length);
-  const cur = shown[sel];
-  const multi = useMulti(shown.map((r) => r.id), cur?.id);
-  const picked = shown.filter((r) => multi.picked.has(r.id));
+  const [sel, setSel] = useSelection(rows.length);
+  const cur = rows[sel];
+  const multi = useMulti(rows.map((r) => r.id), cur?.id);
+  const picked = rows.filter((r) => multi.picked.has(r.id));
+
+  // All lines are held, but only those in view (plus a margin) are drawn: thousands scroll like dozens.
+  const items = useMemo(() => {
+    const out: Item[] = [];
+    rows.forEach((l, i) => {
+      if (l.counterparty !== (out.length ? rows[i - 1]?.counterparty : undefined)) out.push({ kind: "head", cp: l.counterparty });
+      out.push({ kind: "row", l, i });
+    });
+    return out;
+  }, [rows]);
+  const itemOf = useMemo(() => new Map(items.flatMap((it, k) => (it.kind === "row" ? [[it.i, k] as const] : []))), [items]);
+  const scroller = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState({ top: 0, height: 800 });
+  const [rowH, setRowH] = useState(36);
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setView((v) => ({ ...v, height: el.clientHeight })));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [rows.length > 0]);
+  useLayoutEffect(() => {  // rows are one height; read it off a drawn one so the spacers line up exactly
+    const h = scroller.current?.querySelector("tr[data-row]")?.getBoundingClientRect().height;
+    if (h && Math.abs(h - rowH) > 0.5) setRowH(h);
+  });
+  const first = Math.max(0, Math.floor((view.top - HEAD) / rowH) - 15);
+  const last = Math.min(items.length, Math.ceil((view.top + view.height) / rowH) + 15);
+  useEffect(() => {  // keep the line in focus on screen as J/K or the arrows move it
+    const el = scroller.current;
+    const k = itemOf.get(sel);
+    if (!el || k == null) return;
+    const y = HEAD + k * rowH;
+    if (y - HEAD < el.scrollTop) el.scrollTop = y - HEAD;
+    else if (y + rowH > el.scrollTop + el.clientHeight) el.scrollTop = y + rowH - el.clientHeight;
+  }, [sel, itemOf, rowH]);
   const [confirm, setConfirm] = useState<"approve" | "reject" | null>(null);
   useEffect(() => { if (!picked.length) setConfirm(null); }, [picked.length]);
 
@@ -187,78 +300,84 @@ function Inbox() {
     </span>
   );
 
-  let lastCp = "";
   return (
     <div className="flex-1 min-h-[420px] grid grid-cols-[minmax(0,1fr)_340px] gap-4">
       <Panel
         title={<>Waiting <span className="label">{rows.length}</span></>}
         right={picked.length ? <BulkBar /> : <span className="kbd">Space tick · A approve · P partial · X reject · ⇧A all ETB · B borrow</span>}
-        bodyClass="overflow-auto"
+        bodyClass="flex flex-col"
       >
-        {error && <Empty>{error}</Empty>}
-        {!error && !rows.length && <Empty>Inbox clear. Locates arrive from the gateway, chat, paste or the form above; ETB names under the cap clear themselves.</Empty>}
+        {error && !data && <Empty>{error}</Empty>}
+        {!data && !error && <Empty>Loading the waiting lines…</Empty>}
+        {data && !rows.length && <Empty>Inbox clear. Locates arrive from the gateway, chat, paste or the form above; ETB names under the cap clear themselves.</Empty>}
         {!!rows.length && (
-          <table className="w-full text-xs">
-            <thead>
-              <tr>
-                <th className="th w-8"><input type="checkbox" aria-label="Tick all" checked={multi.all}
-                  onChange={(e) => multi.setAll(e.target.checked)} /></th>
-                {["time", "name", "tier", "requested", "internal", "street", "cover", "suggest", "fee", "util.", "with", "why"].map((h) => (
-                  <th key={h} className={`th ${["requested", "internal", "street", "suggest", "fee", "util."].includes(h) ? "text-right" : ""}`}>{h}</th>
+          <div ref={scroller} className="flex-1 min-h-0 overflow-auto"
+            onScroll={(e) => { const top = e.currentTarget.scrollTop; setView((v) => (v.top === top ? v : { ...v, top })); }}>
+            <table className="w-full text-xs">
+              <thead>
+                <tr>
+                  <th className="th w-8"><input type="checkbox" aria-label="Tick all" checked={multi.all}
+                    onChange={(e) => multi.setAll(e.target.checked)} /></th>
+                  {["time", "name", "tier", "requested", "internal", "street", "cover", "suggest", "fee", "util.", "with", "why"].map((h) => (
+                    <th key={h} className={`th ${["requested", "internal", "street", "suggest", "fee", "util."].includes(h) ? "text-right" : ""}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {first > 0 && <tr aria-hidden style={{ height: first * rowH }} />}
+                {items.slice(first, last).map((it) => it.kind === "head" ? (
+                  <tr key={it.cp + "-h"} data-row className="row hover:bg-transparent">
+                    <td colSpan={13} className="td text-xs font-medium text-dim">
+                      <button className="hover:text-ink" title="Tick this client's lines"
+                        onClick={() => rows.forEach((r) => r.counterparty === it.cp && !multi.picked.has(r.id) && multi.toggle(r.id))}>
+                        {it.cp}</button></td>
+                  </tr>
+                ) : (
+                  <LocateRow key={it.l.id} l={it.l} on={it.i === sel} ticked={multi.picked.has(it.l.id)}
+                    onFocus={() => setSel(it.i)} onTick={(range) => multi.toggle(it.l.id, range)} />
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((l, i) => {
-                const head = l.counterparty !== lastCp;
-                lastCp = l.counterparty;
-                return [
-                  head && (
-                    <tr key={l.counterparty + "-h"}>
-                      <td colSpan={13} className="td pt-4 pb-1.5 text-xs font-medium text-dim">
-                        <button className="hover:text-ink" title="Tick this client's lines"
-                          onClick={() => shown.forEach((r) => r.counterparty === l.counterparty && !multi.picked.has(r.id) && multi.toggle(r.id))}>
-                          {l.counterparty}</button></td>
-                    </tr>
-                  ),
-                  <tr key={l.id} onClick={() => setSel(i)}
-                    className={`row cursor-default ${i === sel ? "row-sel" : multi.picked.has(l.id) ? "bg-raised" : ""}`}>
-                    <td className="td w-8" onClick={(e) => { e.stopPropagation(); multi.toggle(l.id, e.shiftKey); }}>
-                      <input type="checkbox" readOnly checked={multi.picked.has(l.id)} aria-label={`Tick ${l.instrument?.composite ?? l.identifier}`} />
-                    </td>
-                    <td className="td text-faint">{time(l.receivedAt)}</td>
-                    <td className="td">
-                      <span className="text-ink">{l.instrument?.composite ?? l.identifier}</span>
-                      {l.preBorrow && <span className="ml-2"><PreBorrowTag /></span>}
-                      <span className="text-faint ml-2 hidden xl:inline">{l.instrument?.name.slice(0, 22)}</span>
-                    </td>
-                    <td className="td"><TierBadge tier={l.instrument?.tier ?? l.tier} /></td>
-                    <td className="td text-right">{qty(l.qtyRequested)}</td>
-                    <td className="td text-right text-dim">{qty(l.availableBy?.internal)}</td>
-                    <td className="td text-right text-dim">{qty(l.availableBy?.street)}</td>
-                    <td className="td"><Cover l={l} /></td>
-                    <td className="td text-right font-medium">{qty(l.suggestedQty)}</td>
-                    <td className={`td text-right ${l.feeLimitBps != null && (l.feeBps ?? 0) > l.feeLimitBps ? "text-hot" : ""}`}
-                      title={`market ${bps(l.instrument?.feeBps)}, floor ${bps(l.feeFloorBps)}${l.feeLimitBps != null ? `, client's limit ${bps(l.feeLimitBps)}` : ""}`}>
-                      {bps(l.feeBps)}</td>
-                    <td className="td text-right text-dim">{pct(l.instrument?.utilPct, 0)}</td>
-                    <td className={`td ${l.route === "REVIEW" ? "text-dim" : "text-hot"}`}>{l.route === "REVIEW" ? "◇ Agent" : l.route === "HOLD" ? "You · hold" : "You"}</td>
-                    <td className="td text-faint max-w-[220px] truncate" title={`${l.routeReasons.join(" · ")} · via ${l.channel.toLowerCase()}`}>{l.routeReasons.join(" · ")}</td>
-                  </tr>,
-                ];
-              })}
-            </tbody>
-          </table>
-        )}
-        {rows.length > shown.length && (
-          <div className="flex items-center gap-3 px-4 py-3 border-t border-line">
-            <span className="text-dim flex-1">Showing {shown.length} of {rows.length}, oldest first per client.</span>
-            <button className="btn btn-sm" onClick={() => setLimit((n) => n + 400)}>Show 400 more</button>
+                {last < items.length && <tr aria-hidden style={{ height: (items.length - last) * rowH }} />}
+              </tbody>
+            </table>
           </div>
         )}
       </Panel>
       <LocateDetail l={cur} onDecide={decide} />
     </div>
+  );
+}
+
+function LocateRow({ l, on, ticked, onFocus, onTick }: {
+  l: Locate;
+  on: boolean;
+  ticked: boolean;
+  onFocus: () => void;
+  onTick: (range: boolean) => void;
+}) {
+  return (
+    <tr data-row onClick={onFocus} className={`row cursor-default ${on ? "row-sel" : ticked ? "bg-raised" : ""}`}>
+      <td className="td w-8" onClick={(e) => { e.stopPropagation(); onTick(e.shiftKey); }}>
+        <input type="checkbox" readOnly checked={ticked} aria-label={`Tick ${l.instrument?.composite ?? l.identifier}`} />
+      </td>
+      <td className="td text-faint">{time(l.receivedAt)}</td>
+      <td className="td">
+        <span className="text-ink">{l.instrument?.composite ?? l.identifier}</span>
+        {l.preBorrow && <span className="ml-2"><PreBorrowTag /></span>}
+        <span className="text-faint ml-2 hidden xl:inline">{l.instrument?.name.slice(0, 22)}</span>
+      </td>
+      <td className="td"><TierBadge tier={l.instrument?.tier ?? l.tier} /></td>
+      <td className="td text-right">{qty(l.qtyRequested)}</td>
+      <td className="td text-right text-dim">{qty(l.availableBy?.internal)}</td>
+      <td className="td text-right text-dim">{qty(l.availableBy?.street)}</td>
+      <td className="td"><Cover l={l} /></td>
+      <td className="td text-right font-medium">{qty(l.suggestedQty)}</td>
+      <td className={`td text-right ${l.feeLimitBps != null && (l.feeBps ?? 0) > l.feeLimitBps ? "text-hot" : ""}`}
+        title={`market ${bps(l.instrument?.feeBps)}, floor ${bps(l.feeFloorBps)}${l.feeLimitBps != null ? `, client's limit ${bps(l.feeLimitBps)}` : ""}`}>
+        {bps(l.feeBps)}</td>
+      <td className="td text-right text-dim">{pct(l.instrument?.utilPct, 0)}</td>
+      <td className={`td ${l.route === "REVIEW" ? "text-dim" : "text-hot"}`}>{l.route === "REVIEW" ? "◇ Agent" : l.route === "HOLD" ? "You · hold" : "You"}</td>
+      <td className="td text-faint max-w-[220px] truncate" title={`${l.routeReasons.join(" · ")} · via ${l.channel.toLowerCase()}`}>{l.routeReasons.join(" · ")}</td>
+    </tr>
   );
 }
 
