@@ -36,10 +36,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await policy.load(s)
     if n:
         log.info("security master: loaded %d instruments", n)
+    await agent.start()  # before the syncer: cards it drafts at start-up get their trade review as they're proposed
     syncer = Syncer()
     if cfg.sync_enabled:
         syncer.start()
-    await agent.start()
     autopilot.start()
     if autopilot.mode() != "off":
         log.warning("autopilot starts in %s mode: the desk approves its own cards within its limits", autopilot.mode())

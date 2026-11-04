@@ -156,6 +156,8 @@ async def verdict(s: Any, a: Action, m: Mode) -> tuple[str | None, float]:
         return "a hard check failed (BLOCKED)", 0.0
     if flags and not env.allow_warnings:
         return f"risk flag: {flags[0]}", 0.0
+    if (why := _reviewer(a)) is not None:
+        return why, 0.0
     conf = (a.payload or {}).get("confidence")
     if isinstance(conf, (int, float)) and conf < env.min_confidence:
         return f"agent confidence {conf:.2f} under {env.min_confidence:g}", 0.0
@@ -173,6 +175,22 @@ async def verdict(s: Any, a: Action, m: Mode) -> tuple[str | None, float]:
     return None, usd
 
 
+def _reviewer(a: Action) -> str | None:
+    """The trade reviewer's say, in every mode: a card it's still reading waits for its read (the worker looks
+    again when the read lands), and one it holds or would amend waits for a trader."""
+    from .agent import trade
+
+    r = (a.review or {}).get("verdict")
+    if r in ("HOLD", "AMEND"):
+        return f"the trade reviewer would {'hold' if r == 'HOLD' else 'amend'} it: {a.review.get('notes', '')}"[:200]
+    if r is None and trade.on() and trade.reviewable(a):
+        return READING
+    return None
+
+
+READING = "the trade reviewer is reading it"
+
+
 async def consider(action_id: str) -> Action | None:
     """Approve one pending card if the current mode allows it. Returns the card if it was approved."""
     global _failures
@@ -185,7 +203,7 @@ async def consider(action_id: str) -> Action | None:
             return None
         why, usd = await verdict(s, a, m)
         if why is not None:
-            if a.status == "PENDING":
+            if a.status == "PENDING" and why != READING:  # a card being read is looked at again when it's read
                 events.record(s, ENTITY, a.id, "passed_over", {"reason": why, "mode": m}, actor=ACTOR[m])
                 await s.commit()
             return None
@@ -293,7 +311,7 @@ class Worker:
         if m == "off" or not isinstance(d, dict):
             return
         body = d.get("data") or {}
-        if topic == "action" and d.get("type") == "proposed":
+        if topic == "action" and d.get("type") in ("proposed", "reviewed"):
             await self._safe(consider(d["id"]))
         elif topic == "locate" and d.get("type") == "received" and body.get("status") == "RECEIVED":
             if body.get("route") == "REVIEW" or (m == "danger" and body.get("route") == "HOLD"):
@@ -311,7 +329,8 @@ class Worker:
             if r is None or mode() == "off" or get_settings().agent_mode == "off":
                 self._reviews.clear()
                 continue
-            while self._reviews and len(r._tasks) < get_settings().autopilot_max_reviews:
+            while self._reviews and r.lanes["review_locate"].waiting == 0 \
+                    and r.lanes["review_locate"].running < get_settings().autopilot_max_reviews:
                 await self._safe(r.review_locate(self._reviews.popleft()))
 
     @staticmethod

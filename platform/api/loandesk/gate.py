@@ -51,7 +51,8 @@ def action_json(a: Action) -> dict[str, Any]:
     return {"id": a.id, "kind": a.kind, "title": a.title, "payload": a.payload, "original": a.original,
             "proposedBy": a.proposed_by, "rationale": a.rationale, "riskFlags": a.risk_flags, "status": a.status,
             "approver": a.approver, "decidedAt": clock.iso(a.decided_at), "result": a.result,
-            "transcript": a.transcript, "sourceRef": a.source_ref, "createdAt": clock.iso(a.created_at)}
+            "transcript": a.transcript, "sourceRef": a.source_ref, "createdAt": clock.iso(a.created_at),
+            "review": a.review}
 
 
 async def propose(s: AsyncSession, *, kind: str, title: str, payload: dict[str, Any], proposed_by: str,

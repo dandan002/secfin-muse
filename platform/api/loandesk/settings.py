@@ -122,6 +122,15 @@ class Settings(BaseSettings):
     # Where agent runs keep their checkpoints: "memory", a sqlite path, or a postgres URL.
     # Unset: the desk's own Postgres, or a sibling ``*.agent.db`` next to its SQLite file.
     agent_checkpoint_url: str | None = None
+    # The agent team (see agent/__init__.py): sub-agents run concurrently, each kind in its own lane.
+    agent_locate_workers: int = 6  # locate reviews at once
+    agent_trade_workers: int = 4  # trade reviews at once
+    agent_review_trades: bool = True  # a second pair of eyes on every rule-drafted order, basket, return and recall
+    agent_plan_every_s: float = 300  # re-plan when the queue changed, at most this often (0: on demand only)
+    agent_plan_max_cards: int = 150  # cards the planner reads (the oldest first); the rest wait for the next plan
+    agent_plan_locate_reviews: int = 20  # locate reviews one plan may start
+    agent_plan_wait_s: float = 120  # how long the planner waits for the trade reviews it started before it plans
+    agent_plan_trade_reviews: int = 40  # trade reviews one plan may start (the backlog; new cards are read anyway)
 
     # -- autopilot: the desk approving its own cards, inside these limits (see autopilot.py) -------------
     autopilot_mode: Literal["off", "autopilot", "danger"] = "off"  # where it starts; switched at run time

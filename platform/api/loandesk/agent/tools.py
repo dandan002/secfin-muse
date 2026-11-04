@@ -126,7 +126,7 @@ async def _locate(s: AsyncSession, a: dict[str, Any], ctx: Ctx) -> Any:
     loc = await s.get(Locate, a["locateId"])
     if loc is None:
         return {"error": "unknown locate"}
-    rows = [r for r in await locates.listing(s, limit=2000) if r["id"] == loc.id]
+    rows = await locates.listing(s, ids=[loc.id], limit=1)  # by id: a busy desk holds thousands of lines
     return rows[0] if rows else locates.locate_json(loc)
 
 

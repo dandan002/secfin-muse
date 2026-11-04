@@ -7,6 +7,11 @@ lives in the checkpointer: the desk's Postgres in production, a sibling SQLite f
 A run that pauses at the gate is resumed by ``action_decided()`` once the trader's verdict is committed.
 On start-up ``recover()`` continues runs a restart interrupted, including ones whose card was decided
 while the desk was down.
+
+The team: locate reviews (``graph.py``), trade reviews (``trade.py``) and the queue planner (``queue.py``) each
+run in a lane of their own, so a burst of one kind never starves the others and the model spend comes in at a
+bounded rate. A lane runs up to its size at once; the rest wait their turn (still ``RUNNING`` in the index).
+New rule-drafted cards get a trade review as they're proposed; the planner re-plans when the queue has changed.
 """
 
 from __future__ import annotations
@@ -25,6 +30,9 @@ from .. import clock, db, events, observe
 from ..models import Action, AgentRun
 from ..settings import Settings, get_settings
 from .graph import review_graph
+from .queue import plan_graph
+from .trade import on as trade_on
+from .trade import reviewable, trade_graph
 
 log = logging.getLogger("loandesk.agent")
 _DONE = object()
@@ -54,11 +62,45 @@ def run_json(r: AgentRun, state: dict[str, Any] | None = None) -> dict[str, Any]
     return out
 
 
+class Lane:
+    """Up to ``size`` runs of one kind at once."""
+
+    def __init__(self, size: int) -> None:
+        self.size, self.running, self.waiting = size, 0, 0
+        self._sem = asyncio.Semaphore(size)
+
+    @contextlib.asynccontextmanager
+    async def slot(self) -> Any:
+        self.waiting += 1
+        try:
+            await self._sem.acquire()
+        finally:
+            self.waiting -= 1
+        self.running += 1
+        try:
+            yield
+        finally:
+            self.running -= 1
+            self._sem.release()
+
+    def json(self) -> dict[str, int]:
+        return {"size": self.size, "running": self.running, "waiting": self.waiting}
+
+
 class Runner:
     def __init__(self) -> None:
+        cfg = get_settings()
         self._stack = contextlib.AsyncExitStack()
         self._tasks: dict[str, asyncio.Task[None]] = {}
-        self.graph: Any = None
+        self._loops: list[asyncio.Task[None]] = []
+        self.graphs: dict[str, Any] = {}
+        self.lanes = {"review_locate": Lane(cfg.agent_locate_workers), "review_trade": Lane(cfg.agent_trade_workers),
+                      "plan_queue": Lane(1)}
+        self._planned: tuple[float, frozenset[str]] = (0.0, frozenset())
+
+    @property
+    def graph(self) -> Any:  # the locate review graph (the API's run view, tests)
+        return self.graphs["review_locate"]
 
     async def start(self) -> None:
         url = checkpoint_url(get_settings())
@@ -73,10 +115,19 @@ class Runner:
             from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
             saver = await self._stack.enter_async_context(AsyncSqliteSaver.from_conn_string(url))
-        self.graph = review_graph().compile(checkpointer=saver)
+        self.graphs = {"review_locate": review_graph().compile(checkpointer=saver),
+                       "review_trade": trade_graph().compile(checkpointer=saver),
+                       "plan_queue": plan_graph().compile(checkpointer=saver)}
         await self.recover()
+        self._loops = [asyncio.create_task(self._watch(), name="agent-team-watch"),
+                       asyncio.create_task(self._planner(), name="agent-team-planner")]
 
     async def stop(self) -> None:
+        for t in self._loops:
+            t.cancel()
+        for t in self._loops:
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
         for t in self._tasks.values():
             t.cancel()
         for t in list(self._tasks.values()):
@@ -91,15 +142,69 @@ class Runner:
 
     # -- starting and resuming -------------------------------------------------------------------
     async def review_locate(self, locate_id: str) -> AgentRun:
-        cfg = get_settings()
+        return await self._start("review_locate", locate_id, get_settings().reviewer_model)
+
+    async def review_trade(self, action_id: str) -> AgentRun:
+        """A second pair of eyes on a rule-drafted card; its read lands on the card."""
+        return await self._start("review_trade", action_id, get_settings().reviewer_model)
+
+    async def plan_queue(self) -> AgentRun:
+        """Read the whole queue: dispatch sub-agents, then rank, batch and note it."""
+        return await self._start("plan_queue", "queue", get_settings().orchestrator_model)
+
+    def busy(self, task: str) -> bool:
+        lane = self.lanes[task]
+        return lane.running + lane.waiting > 0
+
+    def status(self) -> dict[str, Any]:
+        return {task: lane.json() for task, lane in self.lanes.items()}
+
+    async def _start(self, task: str, subject: str, model: str) -> AgentRun:
         async with db.session() as s:
-            r = AgentRun(id=events.new_id("run"), task="review_locate", subject=locate_id, status="RUNNING",
-                         model=cfg.reviewer_model, created_at=clock.now(), updated_at=clock.now())
+            r = AgentRun(id=events.new_id("run"), task=task, subject=subject, status="RUNNING", model=model,
+                         created_at=clock.now(), updated_at=clock.now())
             s.add(r)
             events.record(s, "agent_run", r.id, "started", run_json(r), actor=f"agent:{r.model}")
             await s.commit()
         self._spawn(r.id, self._initial(r))
         return r
+
+    # -- the team's own triggers ------------------------------------------------------------------
+    async def _watch(self) -> None:
+        """A trade review for each rule-drafted card as it's proposed."""
+        q = events.hub.subscribe()
+        try:
+            while True:
+                msg = await q.get()
+                d = msg.get("data") if isinstance(msg, dict) else None
+                if (msg.get("topic") != "action" or not isinstance(d, dict) or d.get("type") != "proposed"
+                        or not trade_on()):
+                    continue
+                try:
+                    async with db.session() as s:
+                        a = await s.get(Action, d.get("id"))
+                    if a is not None and reviewable(a):
+                        await self.review_trade(a.id)
+                except Exception:  # one card never stops the watch
+                    log.exception("agent team: couldn't start a trade review")
+        finally:
+            events.hub.unsubscribe(q)
+
+    async def _planner(self) -> None:
+        """Re-plan when the queue has changed, at most every ``agent_plan_every_s``."""
+        while True:
+            await asyncio.sleep(15)
+            every = get_settings().agent_plan_every_s
+            if every <= 0 or self.busy("plan_queue") or asyncio.get_running_loop().time() - self._planned[0] < every:
+                continue
+            try:
+                async with db.session() as s:
+                    ids = frozenset((await s.execute(select(Action.id).where(Action.status == "PENDING"))).scalars())
+                if ids and ids != self._planned[1]:
+                    self._planned = (asyncio.get_running_loop().time(), ids)
+                    await self.plan_queue()
+            except Exception:
+                log.exception("agent team: couldn't start the queue planner")
 
     async def action_decided(self, action: Action) -> None:
         """The trader decided a card: resume the run waiting on it, if any."""
@@ -114,7 +219,9 @@ class Runner:
             runs = (await s.execute(select(AgentRun).where(AgentRun.status.in_(("RUNNING", "WAITING"))))).scalars()
             todo: list[tuple[str, Any]] = []
             for r in runs:
-                snap = await self.graph.aget_state(_config(r.id))
+                if r.task not in self.graphs:
+                    continue
+                snap = await self.graphs[r.task].aget_state(_config(r.id))
                 if r.status == "RUNNING":  # continue from the last checkpoint (or from the top if there is none)
                     todo.append((r.id, None if snap.values else self._initial(r)))
                 elif r.action_id and (a := await s.get(Action, r.action_id)) and a.status != "PENDING":
@@ -125,6 +232,10 @@ class Runner:
 
     @staticmethod
     def _initial(r: AgentRun) -> dict[str, Any]:
+        if r.task == "review_trade":
+            return {"run_id": r.id, "action_id": r.subject, "model": r.model}
+        if r.task == "plan_queue":
+            return {"run_id": r.id, "model": r.model}
         return {"run_id": r.id, "locate_id": r.subject, "model": r.model}
 
     def _spawn(self, run_id: str, inp: Any) -> None:
@@ -135,24 +246,31 @@ class Runner:
         t.add_done_callback(lambda _: self._tasks.pop(run_id, None))
 
     async def _drive(self, run_id: str, inp: Any) -> None:
-        cfg = _config(run_id)
         async with db.session() as s:
             known = await s.get(AgentRun, run_id)
-        task, subject, action = (known.task, known.subject, known.action_id) if known else ("agent_run", None, None)
+        task, subject, action = (known.task, known.subject, known.action_id) if known else ("review_locate", None, None)
+        graph = self.graphs[task]
+        lane = self.lanes.get(task)
+        async with lane.slot() if lane else contextlib.nullcontext():
+            await self._steps(run_id, graph, task, subject, action, inp)
+
+    async def _steps(self, run_id: str, graph: Any, task: str, subject: str | None, action: str | None,
+                     inp: Any) -> None:
+        cfg = _config(run_id)
         while inp is not _DONE:
             error: str | None = None
             try:
                 # Each pass (the first, and each resume after the gate) is one trace in the run's session.
                 async with observe.run(task, run_id, subject=subject, actionId=action,
                                        resumed="yes" if isinstance(inp, Command) else None) as callbacks:
-                    async for update in self.graph.astream(inp, {**cfg, "callbacks": callbacks} if callbacks else cfg,
+                    async for update in graph.astream(inp, {**cfg, "callbacks": callbacks} if callbacks else cfg,
                                                            stream_mode="updates"):
                         for node in update:
                             events.hub.publish("agent_run", {"type": "step", "id": run_id, "node": node})
             except Exception as e:  # a bug in a node: the run is marked failed and the locate stays with the trader
                 log.exception("agent run %s failed", run_id)
                 error = f"{type(e).__name__}: {e}"
-            snap = await self.graph.aget_state(cfg)
+            snap = await graph.aget_state(cfg)
             values = snap.values or {}
             error = error or values.get("error")
             status = "FAILED" if error else "WAITING" if snap.next else "DONE"
@@ -163,9 +281,17 @@ class Runner:
                     return
                 r.status, r.error, r.updated_at = status, error, clock.now()
                 r.model = values.get("model", r.model)
-                r.action_id = values.get("action_id", r.action_id)
+                if task == "review_locate":  # a trade review's action_id is the card it read, not one it made
+                    r.action_id = values.get("action_id", r.action_id)
                 action = r.action_id
                 events.record(s, "agent_run", r.id, status.lower(), run_json(r), actor=f"agent:{r.model}")
+                if task == "review_trade" and status == "FAILED" and (a := await s.get(Action, r.subject)) \
+                        and a.status == "PENDING" and a.review is None:  # unread: say so, so nothing waits on it
+                    a.review = {"verdict": "UNREAD", "notes": f"the trade reviewer couldn't read it: {error}"[:240],
+                                "model": r.model, "at": clock.iso(clock.now()), "runId": r.id}
+                    from ..gate import action_json
+
+                    events.record(s, "action", a.id, "reviewed", action_json(a), actor=f"agent:{r.model}")
                 await s.commit()
                 # The trader may have decided the card while this driver was still settling (so action_decided
                 # found it busy): resume now rather than leave the run waiting on a decided action.
@@ -174,7 +300,10 @@ class Runner:
                         inp = Command(resume=_verdict(a))
 
     async def state(self, run_id: str) -> dict[str, Any]:
-        return (await self.graph.aget_state(_config(run_id))).values or {}
+        async with db.session() as s:
+            r = await s.get(AgentRun, run_id)
+        g = self.graphs.get(r.task if r else "review_locate", self.graph)
+        return (await g.aget_state(_config(run_id))).values or {}
 
 
 def _config(run_id: str) -> dict[str, Any]:
