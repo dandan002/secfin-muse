@@ -172,6 +172,7 @@ export interface Action {
   approver: string | null;
   result: Record<string, unknown> | null;
   transcript: unknown[];
+  sourceRef?: string | null; // what it came from: a chat message, a locate
   createdAt: string;
 }
 

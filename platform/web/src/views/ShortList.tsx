@@ -51,7 +51,7 @@ export function ShortListView() {
 
   return (
     <div className="h-full flex flex-col gap-3 min-h-0">
-      <div className="grid grid-cols-3 md:grid-cols-8 gap-3">
+      <div className="panel grid grid-cols-3 md:grid-cols-8 gap-4 px-4 py-3.5">
         <Stat label="stock record" value={data?.tradeDate ?? "—"} />
         <Stat label="settles" value={data?.settlementDate ?? "—"} />
         <Stat label="names short" value={full(sum.short)} tone={sum.short ? "text-hot" : ""} />
@@ -68,11 +68,11 @@ export function ShortListView() {
       {!!events?.some((e) => e.atRisk || e.clientShort) && <CorpActionsPanel rows={events.filter((e) => e.atRisk || e.clientShort)} />}
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-3">
         <Panel
-          title={<>short list <span className="text-dim normal-case tracking-normal">{rows.length}</span></>}
+          title={<>short list <span className="label">{rows.length}</span></>}
           right={<div className="flex items-center gap-2 text-2xs text-faint">
             <span><Kbd>d</Kbd> draft covers &amp; returns</span><span><Kbd>b</Kbd> borrow</span>
-            <button className="btn h-6" onClick={refresh}>refresh</button>
-            <button className="btn-accent h-6" onClick={draft}>draft</button>
+            <button className="btn btn-sm" onClick={refresh}>Refresh</button>
+            <button className="btn-accent btn-sm" onClick={draft}>Draft</button>
           </div>}
           bodyClass="overflow-auto"
         >
@@ -151,7 +151,7 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
         <Stat label="market bps" value={bps(l.feeBps)} />
       </div>
       <div className="border-t rule pt-3">
-        <div className="label mb-1.5">clients</div>
+        <div className="label mb-1.5">Clients</div>
         <table className="w-full text-xs">
           <thead><tr>{["client", "short", "sold", "bought back"].map((h) =>
             <th key={h} className={`th ${h === "client" ? "" : "text-right"}`}>{h}</th>)}</tr></thead>
@@ -169,14 +169,14 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
       </div>
       {(!!l.cnsFails || l.preBorrow) && (
         <div className="border-t rule pt-3">
-          <div className="label mb-1.5">rule 204</div>
+          <div className="label mb-1.5">Rule 204</div>
           {l.closeOutBy && <div className="text-xs text-hot">· {full(l.cnsFails)} failed to deliver at CNS: close out by {when(l.closeOutBy)} New York, by borrowing or buying the shares</div>}
           {!l.closeOutBy && !!l.cnsFails && <div className="text-xs text-dim">· {full(l.cnsFails)} closed out; delivered against the fail once the shares settle</div>}
           {l.preBorrow && <div className="text-xs text-down">· a close-out was missed: pre-borrow (Rule 204(b)) until the fail delivers. A locate in the name needs shares we hold</div>}
         </div>
       )}
       <div className="border-t rule pt-3">
-        <div className="label mb-1.5">covers</div>
+        <div className="label mb-1.5">Covers</div>
         {!l.drafted.length && !l.working && <div className="text-xs text-faint">{l.shortfall ? "none working" : "none needed"}</div>}
         {!!l.working && <div className="text-xs text-dim">· {full(l.working)} on open borrow orders</div>}
         <ul className="text-xs text-dim space-y-1">
@@ -185,7 +185,7 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
       </div>
       {(!!l.excess || !!l.returnedSinceBox) && (
         <div className="border-t rule pt-3">
-          <div className="label mb-1.5">returns</div>
+          <div className="label mb-1.5">Returns</div>
           {!!l.excess && <div className="text-xs text-dim">· {full(l.excess)} more than the clients need, about ${full(Math.round(l.excessCostUsd))} a day at {bps(l.feeBps)} bps</div>}
           {!!l.returnedSinceBox && <div className="text-xs text-dim">· {full(l.returnedSinceBox)} returned since the box was read</div>}
           <ul className="text-xs text-dim space-y-1">
@@ -195,8 +195,8 @@ function LineDetail({ l, onBorrow }: { l: ShortListLine | undefined; onBorrow: (
         </div>
       )}
       <div className="flex flex-wrap gap-2">
-        {!!(l.drafted.length || l.returning.length) && <button className="btn-accent" onClick={() => setView("agent")}>review cards</button>}
-        {!!l.uncovered && <button className="btn" onClick={() => onBorrow(l)}>borrow {qty(l.uncovered)} by hand</button>}
+        {!!(l.drafted.length || l.returning.length) && <button className="btn-accent" onClick={() => setView("agent")}>Review cards</button>}
+        {!!l.uncovered && <button className="btn" onClick={() => onBorrow(l)}>Borrow {qty(l.uncovered)} by hand</button>}
       </div>
     </Panel>
   );
@@ -224,7 +224,7 @@ function FailsPanel({ fails, onDone }: { fails: DeliveryFail[]; onDone: () => vo
     }
   };
   return (
-    <Panel title={<>failed at CNS · rule 204 <span className="text-dim normal-case tracking-normal">{fails.length}</span></>}
+    <Panel title={<>failed at CNS · rule 204 <span className="label">{fails.length}</span></>}
       right={<span className="text-2xs text-faint">closed out by borrowing or buying before the open; delivered once the shares settle</span>}
       bodyClass="overflow-auto max-h-40">
       <table className="w-full text-xs">
@@ -243,8 +243,8 @@ function FailsPanel({ fails, onDone }: { fails: DeliveryFail[]; onDone: () => vo
                 <td className="td text-dim">{when(f.deadline)}</td>
                 <td className={`td ${f.missed ? "text-down" : due ? "text-hot" : "text-faint"}`}>{f.missed ? "missed" : due || "—"}</td>
                 <td className="td"><State s={f.status} /></td>
-                <td className="td text-right"><button className="btn h-6" onClick={() => deliver(f)}
-                  title="Deliver shares we hold against the fail (the CNS-DELIVER policy does this once they settle)">deliver</button></td>
+                <td className="td text-right"><button className="btn btn-sm" onClick={() => deliver(f)}
+                  title="Deliver shares we hold against the fail (the CNS-DELIVER policy does this once they settle)">Deliver</button></td>
               </tr>
             );
           })}
@@ -262,10 +262,10 @@ function BuyInsPanel({ rows }: { rows: BuyIn[] }) {
   const toCharge = rows.filter((b) => b.chargeStatus === "TO_CHARGE").reduce((a, b) => a + b.amountDueUsd, 0);
   const cards = rows.some((b) => b.cashStatus === "TO_PAY" || b.cashStatus === "TO_RECEIVE" || b.chargeStatus === "TO_CHARGE");
   return (
-    <Panel title={<>bought in <span className="text-dim normal-case tracking-normal">{rows.length} · {money(open)} to settle · {money(toCharge)} to charge clients</span></>}
+    <Panel title={<>bought in <span className="label">{rows.length} · {money(open)} to settle · {money(toCharge)} to charge clients</span></>}
       right={<div className="flex items-center gap-2 text-2xs text-faint">
         <span>a lender's on a recall not returned in time; the buyer's at CNS on a client fail, charged to the client</span>
-        {cards && <button className="btn-accent h-6" onClick={() => setView("agent")}>review cards</button>}
+        {cards && <button className="btn-accent btn-sm" onClick={() => setView("agent")}>Review cards</button>}
       </div>}
       bodyClass="overflow-auto max-h-32">
       <table className="w-full text-xs">
@@ -295,7 +295,7 @@ function BuyInsPanel({ rows }: { rows: BuyIn[] }) {
 /** Dividends and votes ahead: the borrows a lender may recall to get them, and what the clients would be short. */
 function CorpActionsPanel({ rows }: { rows: CorpActionExposure[] }) {
   return (
-    <Panel title={<>corporate actions ahead <span className="text-dim normal-case tracking-normal">{rows.length}</span></>}
+    <Panel title={<>corporate actions ahead <span className="label">{rows.length}</span></>}
       right={<span className="text-2xs text-faint">lenders recall to have their shares back by the record date: from a few days before it</span>}
       bodyClass="overflow-auto max-h-36">
       <table className="w-full text-xs">

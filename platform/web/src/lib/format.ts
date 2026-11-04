@@ -70,4 +70,9 @@ export function parseQty(s: string): number | null {
   return Math.round(parseFloat(m[1]) * mult);
 }
 
-export const actor = (a: string | null | undefined) => (a ?? "—").replace(/^trader:/, "").replace(/^policy:/, "⚙ ");
+/** Who did it: a named trader, a standing policy (⚙), or the agent (◇). */
+export const actor = (a: string | null | undefined) => {
+  if (!a) return "—";
+  if (/^(agent|chat)[:+]?/.test(a)) return "◇ Agent";
+  return a.replace(/^trader:/, "").replace(/^(policy|rules):/, "⚙ ");
+};

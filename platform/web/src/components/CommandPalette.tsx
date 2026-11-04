@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, qs } from "../lib/api";
 import { parseQty } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
-import { useDesk, VIEWS } from "../lib/store";
+import { useDesk, VIEWS, WORKSPACES } from "../lib/store";
 import type { Instrument, Locate } from "../lib/types";
 import { Kbd, TierBadge } from "./ui";
 
@@ -97,7 +97,8 @@ export function CommandPalette() {
     const lower = t.toLowerCase();
     for (const v of VIEWS) {
       if (!t || v.label.toLowerCase().startsWith(lower) || `go ${v.id}`.startsWith(lower)) {
-        out.push({ id: "view-" + v.id, label: `Go to ${v.label}`, hint: v.key, run: () => d.setView(v.id) });
+        out.push({ id: "view-" + v.id, label: `Go to ${v.label}`, hint: WORKSPACES.find((w) => w.id === v.workspace)?.label,
+          run: () => d.setView(v.id) });
       }
     }
     if (!t || "theme".startsWith(lower)) out.push({ id: "theme", label: "Toggle theme", run: d.toggleTheme });
@@ -117,10 +118,10 @@ export function CommandPalette() {
   };
 
   return (
-    <div className="fixed inset-0 z-40 bg-black/40 flex items-start justify-center pt-[14vh]" onClick={() => setOpen(false)}>
-      <div className="panel bg-panel w-[620px] shadow-2xl shadow-black/40" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2 px-3 h-11 border-b border-line/60">
-          <span className="text-accent">›</span>
+    <div className="fixed inset-0 z-40 bg-black/30 flex items-start justify-center pt-[14vh]" onClick={() => setOpen(false)}>
+      <div className="panel w-[620px] shadow-pop overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 px-4 h-12 border-b border-line">
+          <span className="text-faint">⌘K</span>
           <input
             ref={input}
             value={text}
@@ -132,7 +133,7 @@ export function CommandPalette() {
               else if (e.key === "Enter") run(cmds[sel]);
             }}
             placeholder="locate 500k VOD LN for KESTRELHF · borrow 100k AAPL @ 30 · show hot names"
-            className="flex-1 bg-transparent text-sm focus:outline-none placeholder:text-faint"
+            className="flex-1 bg-transparent text-md focus:outline-none placeholder:text-faint"
           />
           <Kbd>esc</Kbd>
         </div>
@@ -140,8 +141,8 @@ export function CommandPalette() {
           {cmds.map((c, i) => (
             <li key={c.id}>
               <button onMouseEnter={() => setSel(i)} onClick={() => run(c)}
-                className={`w-full h-8 px-3 flex items-center gap-3 text-left text-xs ${
-                  i === sel ? "bg-raised text-ink" : "text-dim"}`}>
+                className={`w-full h-9 px-4 flex items-center gap-3 text-left text-sm ${
+                  i === sel ? "bg-soft text-ink" : "text-dim"}`}>
                 <span className="truncate">{c.label}</span>
                 <span className="ml-auto">
                   {c.hint === "GC" || c.hint === "WARM" || c.hint === "HOT" ? <TierBadge tier={c.hint} />

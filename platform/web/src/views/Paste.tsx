@@ -62,8 +62,8 @@ export function Paste() {
   return (
     <div className="h-full grid grid-rows-[auto_1fr] gap-3 min-h-0">
       <Panel title="paste anything" right={<>
-        <button className="btn" onClick={() => { setText(SAMPLE); parse(SAMPLE); }}>sample sheet</button>
-        <button className="btn-accent" onClick={() => parse()}>preview</button>
+        <button className="btn" onClick={() => { setText(SAMPLE); parse(SAMPLE); }}>Sample sheet</button>
+        <button className="btn-accent" onClick={() => parse()}>Preview</button>
       </>} bodyClass="p-3">
         <textarea value={text} onChange={(e) => setText(e.target.value)}
           onPaste={(e) => { const t = e.clipboardData.getData("text"); setTimeout(() => parse(t), 0); }}
@@ -72,7 +72,7 @@ export function Paste() {
       </Panel>
 
       <Panel bodyClass="overflow-auto"
-        title={prev ? <>preview · {prev.kind.toLowerCase()} <span className="text-dim normal-case tracking-normal">{prev.resolved}/{prev.total} resolved</span></> : "preview"}
+        title={prev ? <>preview · {prev.kind.toLowerCase()} <span className="label">{prev.resolved}/{prev.total} resolved</span></> : "preview"}
         right={prev && <>
           <Tabs value={target} onChange={setTarget} options={[{ id: "locates", label: "as locates" },
             { id: "interest_list", label: "as venue B list" }, { id: "watchlist", label: "as watchlist" }]} />
@@ -81,7 +81,7 @@ export function Paste() {
               {cps?.filter((c) => c.kind === "HEDGE_FUND").map((c) => <option key={c.code}>{c.code}</option>)}
             </select>
           )}
-          <button className="btn-accent" onClick={apply}>apply</button>
+          <button className="btn-accent" onClick={apply}>Apply</button>
         </>}>
         {!prev ? <Empty>Deterministic parsers run first and shade each cell by confidence. Lines they can't read are listed for the parser model.</Empty> : (
           <>
@@ -107,7 +107,7 @@ export function Paste() {
             </table>
             {!!prev.unparsed.length && (
               <div className="m-3 p-3 border border-dashed border-line rounded-soft text-xs">
-                <div className="label mb-1.5">not understood · for the parser model</div>
+                <div className="label mb-1.5">Not understood · for the parser model</div>
                 {prev.unparsed.map((u, i) => <div key={i} className="text-faint">{u}</div>)}
               </div>
             )}

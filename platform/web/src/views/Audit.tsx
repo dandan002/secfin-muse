@@ -15,7 +15,7 @@ export function Audit() {
   const rows = data ?? [];
   return (
     <Panel className="h-full" bodyClass="overflow-auto"
-      title={<>audit trail <span className="text-dim normal-case tracking-normal">{rows.length}</span></>}
+      title={<>audit trail <span className="label">{rows.length}</span></>}
       right={<>
         <input value={id} onChange={(e) => setId(e.target.value.trim())} placeholder="entity id" className="input w-48 h-6" />
         <Tabs value={entity} onChange={setEntity} options={["all", "locate", "order", "trade", "action"].map((x) => ({ id: x, label: x }))} />

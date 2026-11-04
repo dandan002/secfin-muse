@@ -122,7 +122,7 @@ export function Ticket() {
         {preview && (
           <div className="border-t rule pt-3 space-y-3">
             <div className="text-xs">
-              <span className="label">route</span>
+              <span className="label">Route</span>
               <div className="mt-1 text-ink">{preview.venue.replace("_", " ").toLowerCase()} · {preview.type.toLowerCase().replace("_", " ")}</div>
               <div className="text-faint">{preview.routeReason}</div>
             </div>
@@ -139,7 +139,7 @@ export function Ticket() {
 
         {preview && (
           <div className="border-t rule pt-3">
-            <div className="label mb-2">pre-trade checks</div>
+            <div className="label mb-2">Pre-trade checks</div>
             <ul className="space-y-1.5 text-xs">
               {preview.checks.map((c) => (
                 <li key={c.name} className="flex gap-2">
@@ -160,7 +160,7 @@ export function Ticket() {
         {previewErr && <div className="text-xs text-down">{previewErr}</div>}
 
         <button className="btn-accent h-9 justify-center mt-auto" disabled={!preview || !!blocking.length || busy || (!!warnings.length && !override)} onClick={send}>
-          {blocking.length ? "blocked by checks" : `send ${side.toLowerCase()} to ${preview?.venue.replace("_", " ").toLowerCase() ?? "venue"}`}
+          {blocking.length ? "Blocked by checks" : `Send ${side.toLowerCase()} to ${preview?.venue.replace("VENUE_", "Venue ") ?? "venue"}`}
         </button>
       </Panel>
 
@@ -253,7 +253,7 @@ function InstrumentCard({ inst, mkt }: { inst: Instrument | undefined; mkt: Mark
               <Row k="venue A" v={mkt.venueA ? `${qty(mkt.venueA.qty)} · ${bps(mkt.venueA.fee)} bps · ${mkt.venueA.lenders} lenders` : "no feed"} />
               <Row k="venue B" v={mkt.venueB ? `${qty(mkt.venueB.qty)} · ${bps(mkt.venueB.fee)} bps` : "interest lists only"} />
               <Row k="held by locates" v={full(mkt.held)} />
-              <Row k="live available" v={<span className="text-accent">{full(mkt.available)}</span>} />
+              <Row k="live available" v={<span className="font-medium">{full(mkt.available)}</span>} />
               <div className="flex items-center gap-3 pt-2"><span className="label">5d fee</span><Sparkline values={mkt.trend} w={160} h={24} /></div>
             </>
           )}

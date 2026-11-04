@@ -10,6 +10,10 @@ export default {
         panel: token("panel"),
         raised: token("raised"),
         line: token("line"),
+        rule: token("rule"),
+        strong: token("strong"),
+        soft: token("soft"),
+        "on-accent": token("on-accent"),
         ink: token("ink"),
         dim: token("dim"),
         faint: token("faint"),
@@ -22,14 +26,16 @@ export default {
         info: token("info"),
       },
       fontFamily: {
-        mono: ["'JetBrains Mono'", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        sans: ["'Instrument Sans'", "'Helvetica Neue'", "Arial", "sans-serif"],
       },
       fontSize: {
-        "2xs": ["10.5px", "14px"],
-        xs: ["11.5px", "16px"],
-        base: ["13px", "20px"],
+        "2xs": ["11px", "14px"],  // caption
+        xs: ["12px", "16px"],     // label
+        sm: ["13px", "18px"],     // body
+        base: ["13px", "18px"],
+        md: ["14px", "20px"],     // heading
       },
-      borderRadius: { soft: "10px" },
+      borderRadius: { soft: "6px" },
     },
   },
   plugins: [],
