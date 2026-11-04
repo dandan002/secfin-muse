@@ -41,7 +41,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import clock, events, guard, secmaster
+from .. import clock, events, guard, observe, secmaster
 from ..models import ChatMessage, Counterparty
 from ..settings import get_settings
 from . import paste
@@ -254,7 +254,8 @@ async def ingest(s: AsyncSession, msg: dict[str, Any]) -> ChatMessage | None:
         pass  # flagged on sight: no model reads it
     elif cfg.chat_parser == "model":
         try:
-            reading = await read_model(s, msg, side, cp, context)
+            with observe.read(msg["streamId"], mid, cp.code if cp else None):
+                reading = await read_model(s, msg, side, cp, context)
         except Exception as e:  # off, no recording, budget spent, API down: fall back on the rules
             reading.note = "; ".join(x for x in (reading.note, f"parser model unavailable: {e}") if x)
     if side == "US" and reading.intent == "INJECTION":

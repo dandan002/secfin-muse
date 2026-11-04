@@ -123,6 +123,15 @@ class Settings(BaseSettings):
     # Unset: the desk's own Postgres, or a sibling ``*.agent.db`` next to its SQLite file.
     agent_checkpoint_url: str | None = None
 
+    # -- observability: Langfuse traces of model calls and agent runs (record/live only; see observe.py) ----------
+    langfuse_public_key: str | None = Field(None, validation_alias=AliasChoices("LOANDESK_LANGFUSE_PUBLIC_KEY",
+                                                                               "LANGFUSE_PUBLIC_KEY"))
+    langfuse_secret_key: str | None = Field(None, validation_alias=AliasChoices("LOANDESK_LANGFUSE_SECRET_KEY",
+                                                                               "LANGFUSE_SECRET_KEY"))
+    langfuse_host: str = Field("https://cloud.langfuse.com",
+                               validation_alias=AliasChoices("LOANDESK_LANGFUSE_HOST", "LANGFUSE_HOST"))
+    langfuse_environment: str = "local"  # Langfuse's environment tag: local, demo, ...
+
 
 @lru_cache
 def get_settings() -> Settings:

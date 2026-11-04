@@ -27,12 +27,15 @@ agent = [
     "openai>=1.50",
     "psycopg[binary]>=3.2",
 ]
+# Langfuse traces of model calls and agent runs (on only with LANGFUSE_* keys and the agent in record or live).
+observe = ["langfuse>=3"]
 
 [tool.uv.sources]
 loandesk-refdata = { path = "../../mocks/libs/refdata" }
 
 [dependency-groups]
 dev = [
+    "langfuse>=3",
     "langgraph>=1.2",
     "langgraph-checkpoint-sqlite>=3.1",
     "pytest>=8",

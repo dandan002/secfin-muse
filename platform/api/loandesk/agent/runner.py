@@ -21,7 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from sqlalchemy import select
 
-from .. import clock, db, events
+from .. import clock, db, events, observe
 from ..models import Action, AgentRun
 from ..settings import Settings, get_settings
 from .graph import review_graph
@@ -45,7 +45,7 @@ def checkpoint_url(cfg: Settings) -> str:
 def run_json(r: AgentRun, state: dict[str, Any] | None = None) -> dict[str, Any]:
     out = {"id": r.id, "task": r.task, "subject": r.subject, "status": r.status, "model": r.model,
            "actionId": r.action_id, "error": r.error, "createdAt": clock.iso(r.created_at),
-           "updatedAt": clock.iso(r.updated_at)}
+           "updatedAt": clock.iso(r.updated_at), "traceUrl": observe.trace_urls.get(r.id)}
     if state is not None:
         out.update(escalated=state.get("escalated", False), decision=state.get("decision"),
                    checks=state.get("checks"), concerns=state.get("concerns"), advisories=state.get("advisories"),
@@ -136,12 +136,19 @@ class Runner:
 
     async def _drive(self, run_id: str, inp: Any) -> None:
         cfg = _config(run_id)
+        async with db.session() as s:
+            known = await s.get(AgentRun, run_id)
+        task, subject, action = (known.task, known.subject, known.action_id) if known else ("agent_run", None, None)
         while inp is not _DONE:
             error: str | None = None
             try:
-                async for update in self.graph.astream(inp, cfg, stream_mode="updates"):
-                    for node in update:
-                        events.hub.publish("agent_run", {"type": "step", "id": run_id, "node": node})
+                # Each pass (the first, and each resume after the gate) is one trace in the run's session.
+                async with observe.run(task, run_id, subject=subject, actionId=action,
+                                       resumed="yes" if isinstance(inp, Command) else None) as callbacks:
+                    async for update in self.graph.astream(inp, {**cfg, "callbacks": callbacks} if callbacks else cfg,
+                                                           stream_mode="updates"):
+                        for node in update:
+                            events.hub.publish("agent_run", {"type": "step", "id": run_id, "node": node})
             except Exception as e:  # a bug in a node: the run is marked failed and the locate stays with the trader
                 log.exception("agent run %s failed", run_id)
                 error = f"{type(e).__name__}: {e}"
@@ -157,6 +164,7 @@ class Runner:
                 r.status, r.error, r.updated_at = status, error, clock.now()
                 r.model = values.get("model", r.model)
                 r.action_id = values.get("action_id", r.action_id)
+                action = r.action_id
                 events.record(s, "agent_run", r.id, status.lower(), run_json(r), actor=f"agent:{r.model}")
                 await s.commit()
                 # The trader may have decided the card while this driver was still settling (so action_decided

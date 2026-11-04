@@ -124,6 +124,14 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
 * `agent/models.py`: the model gateway. `LOANDESK_AGENT_MODE=off|replay|record|live`, OpenAI SDK against
   `api.meta.ai/v1`, a cassette for record/replay (keys ignore timestamps and generated ids), a per-model spend meter
   and a hard budget.
+* `observe.py`: Langfuse traces, on only with `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (`LANGFUSE_HOST`
+  defaults to Langfuse Cloud) and the agent in `record` or `live`; `off`, `replay` and CI never trace. Each model
+  call through the gateway is a generation (model, messages, parameters, tokens, the desk's own cost; errors marked);
+  each pass of an agent run is a trace in a session named for the run id, with LangGraph's nodes as spans and the
+  locate and card ids as metadata; each chat message the parser reads is a trace in a session per room. Approvals
+  links a card to its trace (Trace → Langfuse ↗). `uv sync --extra observe` installs it. Counterparty chat text goes
+  to Langfuse with the prompts: fine for synthetic data; for real data, self-host or add a mask. The audit trail of
+  record is still the desk's own event log.
 * `agent/tools.py`: the spec's tool list over the same services the screens use.
 * `uv sync --extra agent` installs LangGraph and the SDK; without it the desk runs and the agent endpoints say so.
   API: `POST /agent/locates/{id}/review` (202, runs in the background), `GET /agent/runs`, `GET /agent/runs/{id}`.
