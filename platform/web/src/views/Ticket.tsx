@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
+import { allocate, bestFor } from "../lib/allocate";
 import { api, qs } from "../lib/api";
 import { bps, full, money, parseQty, pct, px, qty, time } from "../lib/format";
 import { useDebounced, useQuery } from "../lib/hooks";
 import { useDesk } from "../lib/store";
-import type { Counterparty, Instrument, MarketRow, Order, Preview } from "../lib/types";
-import { Empty, Kbd, Panel, Sparkline, Stat, Tabs, TierBadge } from "../components/ui";
+import type { Counterparty, Instrument, LenderLadder, MarketRow, Order, OrderBatchResult, Preview } from "../lib/types";
+import { Empty, Kbd, Panel, Sparkline, Stat, State, Tabs, TierBadge } from "../components/ui";
 
 export function Ticket() {
   const prefill = useDesk((s) => s.ticket);
@@ -23,11 +24,15 @@ export function Ticket() {
   const [previewErr, setPreviewErr] = useState<string | null>(null);
   const [mkt, setMkt] = useState<MarketRow | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ladder, setLadder] = useState<LenderLadder | null>(null);
+  // The fee fills itself in from the best indicative rate until the trader types one.
+  const [feeAuto, setFeeAuto] = useState(true);
 
   useEffect(() => {
     if (prefill.instrument) setIdent(prefill.instrument);
     if (prefill.side) setSide(prefill.side);
     if (prefill.quantity) setQ(String(prefill.quantity));
+    setFeeAuto(prefill.feeBps === undefined);
     if (prefill.feeBps !== undefined) setFee(String(prefill.feeBps));
     if (prefill.counterparty) setCp(prefill.counterparty);
   }, [prefill]);
@@ -56,6 +61,19 @@ export function Ticket() {
         setPreviewErr((e as Error).message);
       });
   }, [key]);
+
+  const instId = preview?.instrument.id;
+  useEffect(() => {
+    setLadder(null);
+    if (!instId || side !== "BORROW") return;
+    api.get<LenderLadder>(`/instruments/${instId}/lenders`).then(setLadder).catch(() => setLadder(null));
+  }, [instId, side]);
+  // Borrowing: the cheapest lender who can fill the size, at their indicative. Lending: the market's fee.
+  const best = side === "BORROW" && ladder?.ok ? bestFor(parseQty(q) ?? 0, ladder.lenders) : undefined;
+  const indicative = side === "BORROW" ? best?.feeBps ?? mkt?.bestFeeBps ?? mkt?.feeBps : mkt?.feeBps;
+  useEffect(() => {
+    if (feeAuto && indicative != null && instId) setFee(String(Math.round(indicative * 10) / 10));
+  }, [feeAuto, indicative, instId]);
 
   const send = async () => {
     if (!preview) return;
@@ -88,21 +106,29 @@ export function Ticket() {
   const lenders = cps?.filter((c) => (side === "BORROW" ? c.kind === "AGENT_LENDER" : c.kind !== "AGENT_LENDER" && c.kind !== "INTERNAL"));
 
   return (
-    <div className="h-full grid grid-cols-[400px_1fr] gap-3 min-h-0">
+    <div className="h-full grid grid-cols-[400px_minmax(0,1fr)] gap-4 min-h-0">
       <Panel title="trade ticket" right={<span className="text-2xs text-faint"><Kbd>ctrl</Kbd>+<Kbd>↵</Kbd> send</span>}
         bodyClass="p-4 flex flex-col gap-4 overflow-auto">
         <Tabs value={side} onChange={setSide} options={[{ id: "BORROW", label: "borrow" }, { id: "LEND", label: "lend" }]} />
         <IdentifierField value={ident} onChange={setIdent} />
         <div className="grid grid-cols-2 gap-3">
           <Field label="quantity"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="250k" className="input text-right" /></Field>
-          <Field label={side === "BORROW" ? "fee bps (max)" : "fee bps (min)"}>
-            <input value={fee} onChange={(e) => setFee(e.target.value)} placeholder={preview ? bps(preview.lastFeeBps) : "bps"} className="input text-right" />
+          <Field label={<>{side === "BORROW" ? "Fee bps (max)" : "Fee bps (min)"}
+            {feeAuto && fee !== "" && <span className="text-accent" title={side === "BORROW" && best
+              ? `${best.counterparty}'s indicative on Venue A` : "The market's indicative fee"}> · auto</span>}</>}>
+            <input value={fee} onChange={(e) => { setFee(e.target.value); setFeeAuto(false); }}
+              placeholder={preview ? bps(preview.lastFeeBps) : "bps"} className="input text-right" />
           </Field>
           <Field label={side === "BORROW" ? "lender" : "borrower"}>
             <select value={cp} onChange={(e) => setCp(e.target.value)} className="input">
               <option value="">best available</option>
               {lenders?.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
             </select>
+            {best && cp !== best.counterparty && (
+              <button type="button" className="text-2xs text-accent text-left"
+                onClick={() => { setCp(best.counterparty); setVenue("VENUE_A"); setType("BID"); setFee(String(best.feeBps)); setFeeAuto(false); }}>
+                Best: {best.counterparty} at {bps(best.feeBps)}, shows {qty(best.quantity)} · use</button>
+            )}
           </Field>
           <Field label="venue">
             <select value={venue} onChange={(e) => setVenue(e.target.value as typeof venue)} className="input">
@@ -164,12 +190,18 @@ export function Ticket() {
         </button>
       </Panel>
 
-      <InstrumentCard inst={preview?.instrument} mkt={mkt} />
+      <div className="flex flex-col gap-3 min-h-0 overflow-auto">
+        {side === "BORROW" && preview && (
+          <BestLenders ladder={ladder} instrument={preview.instrument.composite} total={parseQty(q) ?? 0}
+            maxFee={fee === "" ? null : parseFloat(fee)} />
+        )}
+        <InstrumentCard inst={preview?.instrument} mkt={mkt} />
+      </div>
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: ReactNode; children: ReactNode }) {
   return <label className="flex flex-col gap-1"><span className="label">{label}</span>{children}</label>;
 }
 
@@ -271,6 +303,112 @@ function InstrumentCard({ inst, mkt }: { inst: Instrument | undefined; mkt: Mark
         </Panel>
       </div>
     </div>
+  );
+}
+
+/** Venue A's lenders in the name, cheapest first. Split the ticket's size across the best of them (up to the
+ *  ticket's max fee) or tick lenders by hand, adjust each bid, and send them all as bids naming each lender. */
+function BestLenders({ ladder, instrument, total, maxFee }: {
+  ladder: LenderLadder | null;
+  instrument: string;
+  total: number;
+  maxFee: number | null;
+}) {
+  const toast = useDesk((s) => s.toast);
+  const [alloc, setAlloc] = useState<Record<string, { qty: string; fee: string }>>({});
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<OrderBatchResult | null>(null);
+  useEffect(() => { setAlloc({}); setResult(null); setConfirming(false); }, [instrument]);
+
+  const split = () => {
+    if (!ladder) return;
+    const { lines, short } = allocate(total, ladder.lenders, maxFee);
+    setAlloc(Object.fromEntries(lines.map((l) => [l.counterparty, { qty: String(l.quantity), fee: String(l.feeBps) }])));
+    setResult(null);
+    if (short) toast("warn", `the ladder${maxFee != null ? ` at or under ${bps(maxFee)} bps` : ""} covers ${qty(total - short)} of ${qty(total)}`);
+  };
+  const lines = Object.entries(alloc).map(([counterparty, a]) => ({ counterparty, quantity: parseQty(a.qty) ?? 0,
+    feeBps: parseFloat(a.fee) })).filter((l) => l.quantity > 0 && Number.isFinite(l.feeBps));
+  const sum = lines.reduce((n, l) => n + l.quantity, 0);
+
+  const send = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post<OrderBatchResult>("/orders/batch", { orders: lines.map((l) => ({
+        side: "BORROW", instrument, quantity: l.quantity, feeBps: l.feeBps, counterparty: l.counterparty,
+        venue: "VENUE_A", type: "BID" })) });
+      setResult(r);
+      toast(r.failed.length ? "warn" : "ok", `${r.placed.length} bid${r.placed.length === 1 ? "" : "s"} sent on ${instrument}`
+        + (r.failed.length ? `; ${r.failed.length} blocked: ${r.failed[0].error}` : ""));
+      if (!r.failed.length) setAlloc({});
+    } catch (e) {
+      toast("err", (e as Error).message);
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <Panel title={<>Best lenders <span className="label">Venue A · cheapest first</span></>}
+      right={ladder?.ok && !!ladder.lenders.length && (
+        <button className="btn btn-sm" disabled={total <= 0} onClick={split}>Split {total > 0 ? qty(total) : ""} across best</button>
+      )}>
+      {!ladder ? <p className="px-4 py-4 text-faint">Loading the ladder…</p>
+        : !ladder.ok ? <p className="px-4 py-4 text-hot">Venue A didn't answer ({ladder.error}). The ticket still routes to the best available.</p>
+        : !ladder.lenders.length ? <p className="px-4 py-4 text-faint">No lender shows this name on Venue A.</p> : (
+          <table className="w-full">
+            <thead><tr>{["", "lender", "shows", "indicative", "bid qty", "bid bps"].map((h, i) =>
+              <th key={i} className={`th ${["shows", "indicative", "bid qty", "bid bps"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+            <tbody>
+              {ladder.lenders.map((l) => {
+                const a = alloc[l.counterparty];
+                const set = (patch: Partial<{ qty: string; fee: string }>) => setAlloc((m) => ({ ...m,
+                  [l.counterparty]: { qty: m[l.counterparty]?.qty ?? "", fee: m[l.counterparty]?.fee ?? String(l.feeBps), ...patch } }));
+                const placed = result?.placed.find((o) => o.counterparty === l.counterparty);
+                return (
+                  <tr key={l.counterparty} className={`row ${a ? "bg-raised" : ""}`}>
+                    <td className="td w-8">
+                      <input type="checkbox" checked={!!a} aria-label={`Bid ${l.counterparty}`} onChange={(e) => e.target.checked
+                        ? set({ qty: total - sum > 0 ? String(Math.min(total - sum, Math.floor(l.quantity / 100) * 100)) : "" })
+                        : setAlloc(({ [l.counterparty]: _, ...rest }) => rest)} />
+                    </td>
+                    <td className="td"><span className="font-medium">{l.counterparty}</span> <span className="text-faint">{l.name}</span></td>
+                    <td className="td text-right text-dim">{qty(l.quantity)}</td>
+                    <td className={`td text-right ${maxFee != null && l.feeBps > maxFee ? "text-faint" : ""}`}>{bps(l.feeBps)}</td>
+                    <td className="td text-right">
+                      {placed ? <State s={placed.status} /> : a
+                        ? <input value={a.qty} onChange={(e) => set({ qty: e.target.value })} aria-label={`${l.counterparty} quantity`} className="input w-24 text-right" />
+                        : ""}
+                    </td>
+                    <td className="td text-right">
+                      {a && !placed && <input value={a.fee} onChange={(e) => set({ fee: e.target.value })} aria-label={`${l.counterparty} fee`} className="input w-20 text-right" />}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      {!!lines.length && (
+        <div className="flex items-center gap-3 px-4 py-3 border-t border-line">
+          {confirming ? (
+            <>
+              <span className="flex-1">Send {lines.length} bid{lines.length === 1 ? "" : "s"} for {full(sum)} {instrument}, each naming its lender?</span>
+              <button className="btn-accent btn-sm" disabled={busy} onClick={send}>Send {lines.length}</button>
+              <button className="btn-ghost btn-sm" onClick={() => setConfirming(false)}>Back</button>
+            </>
+          ) : (
+            <>
+              <span className={`flex-1 ${sum !== total && total > 0 ? "text-hot" : "text-dim"}`}>
+                {full(sum)} across {lines.length} lender{lines.length === 1 ? "" : "s"}{total > 0 && sum !== total ? ` · ticket is ${full(total)}` : ""}</span>
+              <button className="btn-accent btn-sm" onClick={() => setConfirming(true)}>Send {lines.length} targeted bid{lines.length === 1 ? "" : "s"}</button>
+            </>
+          )}
+        </div>
+      )}
+    </Panel>
   );
 }
 

@@ -139,6 +139,10 @@ body {
   }
 }
 
+input[type="checkbox"] {
+  accent-color: rgb(var(--accent));
+}
+
 :focus-visible {
   outline: 2px solid rgb(var(--accent));
   outline-offset: 2px;

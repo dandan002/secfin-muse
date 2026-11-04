@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { actor, bps, full, parseQty, pct, qty, time } from "../lib/format";
-import { useKeys, useQuery, useSelection } from "../lib/hooks";
-import { useDesk } from "../lib/store";
+import { useKeys, useMulti, useQuery, useSelection } from "../lib/hooks";
+import { type BulkLine, useDesk } from "../lib/store";
 import type { Counterparty, Locate } from "../lib/types";
 import { Empty, Figures, Kbd, Panel, PreBorrowTag, Stat, State, Tabs, TierBadge } from "../components/ui";
 
@@ -93,8 +93,49 @@ function Inbox() {
       a.counterparty.localeCompare(b.counterparty) || a.receivedAt.localeCompare(b.receivedAt) || a.lineNo - b.lineNo);
     return list;
   }, [data]);
-  const [sel, setSel] = useSelection(rows.length);
-  const cur = rows[sel];
+  // A burst can leave thousands waiting: draw them a page at a time so live updates stay quick.
+  const [limit, setLimit] = useState(400);
+  const shown = useMemo(() => rows.slice(0, limit), [rows, limit]);
+  const [sel, setSel] = useSelection(shown.length);
+  const cur = shown[sel];
+  const multi = useMulti(shown.map((r) => r.id), cur?.id);
+  const picked = shown.filter((r) => multi.picked.has(r.id));
+  const [confirm, setConfirm] = useState<"approve" | "reject" | null>(null);
+  useEffect(() => { if (!picked.length) setConfirm(null); }, [picked.length]);
+
+  // Each ticked line at its own suggested size (in full where we can cover it, partial where we can't) and its
+  // own quoted fee. A line with nothing to give is left for the trader rather than approved at zero.
+  const givable = picked.filter((l) => (l.suggestedQty ?? 0) > 0);
+  const bulkDecide = async (decision: "APPROVED" | "REJECTED") => {
+    const lines = decision === "APPROVED"
+      ? givable.map((l) => ({ id: l.id, quantity: l.suggestedQty, feeBps: l.feeBps ?? undefined }))
+      : picked.map((l) => ({ id: l.id }));
+    setConfirm(null);
+    if (!lines.length) return toast("info", "nothing to give on the ticked lines");
+    try {
+      const r = await api.post<{ decided: string[]; failed: { id: string; error: string }[] }>("/locates/decisions",
+        { decision, lines });
+      toast(r.failed.length ? "warn" : "ok", `${decision === "APPROVED" ? "approved" : "rejected"} ${r.decided.length}`
+        + (r.failed.length ? `; ${r.failed.length} not: ${r.failed[0].error}${r.failed.length > 1 ? " …" : ""}` : ""));
+      multi.clear();
+    } catch (e) {
+      toast("err", (e as Error).message);
+    }
+  };
+  // What the ticked lines still need from the street: requested less what we hold, per name, in round lots.
+  const borrowShortfall = () => {
+    const need = new Map<string, BulkLine>();
+    for (const l of picked) {
+      const short = l.qtyRequested - (l.availableBy?.internal ?? 0);
+      if (short <= 0 || !l.instrumentId) continue;
+      const cur = need.get(l.instrumentId);
+      need.set(l.instrumentId, { instrumentId: l.instrumentId, composite: l.instrument?.composite ?? l.identifier,
+        quantity: (cur?.quantity ?? 0) + Math.ceil(short / 100) * 100,
+        why: [cur?.why, `${l.counterparty} ${qty(l.qtyRequested)}`].filter(Boolean).join(" · ") });
+    }
+    if (!need.size) return toast("info", "the ticked lines are covered from our own books");
+    useDesk.getState().openBulkBorrow([...need.values()]);
+  };
 
   const decide = async (l: Locate, decision: "APPROVED" | "PARTIAL" | "REJECTED", quantity?: number, extra = {}) => {
     try {
@@ -114,21 +155,44 @@ function Inbox() {
 
   useKeys((e) => {
     if (!cur) return;
-    if (e.key === "A" && e.shiftKey) approveEtb();
+    if (e.key === "A" && e.shiftKey) (picked.length ? setConfirm("approve") : approveEtb());
     else if (e.key === "a") decide(cur, "APPROVED");
     else if (e.key === "p") decide(cur, "PARTIAL", cur.suggestedQty);
     else if (e.key === "J" || e.key === "x") decide(cur, "REJECTED");
     else if (e.key === "b") openTicket({ instrument: cur.instrument?.composite ?? cur.identifier, quantity: cur.qtyRequested });
     else return;
     e.preventDefault();
-  }, [cur, rows]);
+  }, [cur, rows, picked]);
+
+  const full_ = givable.filter((l) => l.suggestedQty === l.qtyRequested).length;
+  const BulkBar = () => confirm ? (
+    <span className="flex items-center gap-2">
+      <span>{confirm === "approve"
+        ? !givable.length ? "None of the ticked lines has anything to give (limits or supply)."
+        : `Approve ${givable.length}: ${full_} in full, ${givable.length - full_} partial${picked.length > givable.length ? `, ${picked.length - givable.length} with nothing to give stay` : ""}?`
+        : `Reject ${picked.length}?`}</span>
+      <button className="btn-accent btn-sm" disabled={confirm === "approve" && !givable.length}
+        onClick={() => bulkDecide(confirm === "approve" ? "APPROVED" : "REJECTED")}>
+        {confirm === "approve" ? "Approve" : "Reject"}</button>
+      <button className="btn-ghost btn-sm" onClick={() => setConfirm(null)}>Back</button>
+    </span>
+  ) : (
+    <span className="flex items-center gap-2">
+      <span className="font-medium">{picked.length} ticked</span>
+      <span className="label">{qty(picked.reduce((n, l) => n + l.qtyRequested, 0))} requested</span>
+      <button className="btn-accent btn-sm" onClick={() => setConfirm("approve")}>Approve at suggested <Kbd>⇧A</Kbd></button>
+      <button className="btn btn-sm" onClick={borrowShortfall}>Borrow shortfall…</button>
+      <button className="btn-ghost btn-sm" onClick={() => setConfirm("reject")}>Reject</button>
+      <button className="btn-ghost btn-sm" onClick={multi.clear}>Clear <Kbd>Esc</Kbd></button>
+    </span>
+  );
 
   let lastCp = "";
   return (
     <div className="flex-1 min-h-[420px] grid grid-cols-[minmax(0,1fr)_340px] gap-4">
       <Panel
         title={<>Waiting <span className="label">{rows.length}</span></>}
-        right={<span className="kbd">A approve · P partial · X reject · ⇧A all ETB · B borrow</span>}
+        right={picked.length ? <BulkBar /> : <span className="kbd">Space tick · A approve · P partial · X reject · ⇧A all ETB · B borrow</span>}
         bodyClass="overflow-auto"
       >
         {error && <Empty>{error}</Empty>}
@@ -137,22 +201,31 @@ function Inbox() {
           <table className="w-full text-xs">
             <thead>
               <tr>
+                <th className="th w-8"><input type="checkbox" aria-label="Tick all" checked={multi.all}
+                  onChange={(e) => multi.setAll(e.target.checked)} /></th>
                 {["time", "name", "tier", "requested", "internal", "street", "cover", "suggest", "fee", "util.", "with", "why"].map((h) => (
                   <th key={h} className={`th ${["requested", "internal", "street", "suggest", "fee", "util."].includes(h) ? "text-right" : ""}`}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((l, i) => {
+              {shown.map((l, i) => {
                 const head = l.counterparty !== lastCp;
                 lastCp = l.counterparty;
                 return [
                   head && (
                     <tr key={l.counterparty + "-h"}>
-                      <td colSpan={12} className="td pt-4 pb-1.5 text-xs font-medium text-dim">{l.counterparty}</td>
+                      <td colSpan={13} className="td pt-4 pb-1.5 text-xs font-medium text-dim">
+                        <button className="hover:text-ink" title="Tick this client's lines"
+                          onClick={() => shown.forEach((r) => r.counterparty === l.counterparty && !multi.picked.has(r.id) && multi.toggle(r.id))}>
+                          {l.counterparty}</button></td>
                     </tr>
                   ),
-                  <tr key={l.id} onClick={() => setSel(i)} className={`row cursor-default ${i === sel ? "row-sel" : ""}`}>
+                  <tr key={l.id} onClick={() => setSel(i)}
+                    className={`row cursor-default ${i === sel ? "row-sel" : multi.picked.has(l.id) ? "bg-raised" : ""}`}>
+                    <td className="td w-8" onClick={(e) => { e.stopPropagation(); multi.toggle(l.id, e.shiftKey); }}>
+                      <input type="checkbox" readOnly checked={multi.picked.has(l.id)} aria-label={`Tick ${l.instrument?.composite ?? l.identifier}`} />
+                    </td>
                     <td className="td text-faint">{time(l.receivedAt)}</td>
                     <td className="td">
                       <span className="text-ink">{l.instrument?.composite ?? l.identifier}</span>
@@ -176,6 +249,12 @@ function Inbox() {
               })}
             </tbody>
           </table>
+        )}
+        {rows.length > shown.length && (
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-line">
+            <span className="text-dim flex-1">Showing {shown.length} of {rows.length}, oldest first per client.</span>
+            <button className="btn btn-sm" onClick={() => setLimit((n) => n + 400)}>Show 400 more</button>
+          </div>
         )}
       </Panel>
       <LocateDetail l={cur} onDecide={decide} />

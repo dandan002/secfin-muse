@@ -34,6 +34,14 @@ export interface TicketPrefill {
   counterparty?: string;
 }
 
+/** A line for the bulk borrow sheet: a name and how many shares to borrow. */
+export interface BulkLine {
+  instrumentId: string;
+  composite: string;
+  quantity: number;
+  why?: string;
+}
+
 export interface Toast {
   id: number;
   tone: "ok" | "warn" | "err" | "info";
@@ -75,6 +83,9 @@ interface DeskState {
   toasts: Toast[];
   toast: (tone: Toast["tone"], text: string) => void;
   dismiss: (id: number) => void;
+  /** The bulk borrow sheet's lines, or null when it's closed. */
+  bulkBorrow: BulkLine[] | null;
+  openBulkBorrow: (lines: BulkLine[] | null) => void;
   paletteOpen: boolean;
   setPalette: (open: boolean) => void;
   theme: "dark" | "light";
@@ -142,6 +153,8 @@ export const useDesk = create<DeskState>((set, get) => ({
     setTimeout(() => get().dismiss(id), tone === "err" ? 7000 : 3500);
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  bulkBorrow: null,
+  openBulkBorrow: (bulkBorrow) => set({ bulkBorrow }),
   paletteOpen: false,
   setPalette: (paletteOpen) => set({ paletteOpen }),
   theme: load<"dark" | "light">("loandesk.theme", "dark"),

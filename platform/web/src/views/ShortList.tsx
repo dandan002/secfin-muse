@@ -1,6 +1,6 @@
 import { api } from "../lib/api";
 import { actor, bps, full, money, qty, when } from "../lib/format";
-import { useKeys, useQuery, useSelection } from "../lib/hooks";
+import { useKeys, useMulti, useQuery, useSelection } from "../lib/hooks";
 import { useDesk } from "../lib/store";
 import type { BuyIn, CorpActionExposure, DeliveryFail, ShortList, ShortListLine } from "../lib/types";
 import { Empty, Kbd, Panel, PreBorrowTag, Stat, State, TierBadge } from "../components/ui";
@@ -20,6 +20,13 @@ export function ShortListView() {
   const [sel, setSel] = useSelection(rows.length);
   const cur = rows[sel];
   const sum = data?.summary ?? {};
+  // Only names still uncovered can be ticked: they're what a bulk borrow is for.
+  const open = rows.filter((l) => l.uncovered > 0);
+  const multi = useMulti(open.map((l) => l.instrumentId), cur?.uncovered ? cur.instrumentId : undefined);
+  const picked = open.filter((l) => multi.picked.has(l.instrumentId));
+  const borrowPicked = () => useDesk.getState().openBulkBorrow(picked.map((l) => ({ instrumentId: l.instrumentId,
+    composite: l.composite, quantity: Math.ceil(l.uncovered / 100) * 100,
+    why: `short by ${qty(l.shortfall)}${l.closeOutBy ? ` · Rule 204 by ${when(l.closeOutBy)}` : ""}` })));
 
   const draft = async () => {
     try {
@@ -44,10 +51,11 @@ export function ShortListView() {
 
   useKeys((e) => {
     if (e.key === "d") draft();
+    else if (e.key === "b" && picked.length) borrowPicked();
     else if (e.key === "b" && cur?.uncovered) borrow(cur);
     else return;
     e.preventDefault();
-  }, [cur]);
+  }, [cur, picked]);
 
   return (
     <div className="h-full flex flex-col gap-3 min-h-0">
@@ -69,11 +77,21 @@ export function ShortListView() {
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-3">
         <Panel
           title={<>short list <span className="label">{rows.length}</span></>}
-          right={<div className="flex items-center gap-2 text-2xs text-faint">
-            <span><Kbd>d</Kbd> draft covers &amp; returns</span><span><Kbd>b</Kbd> borrow</span>
-            <button className="btn btn-sm" onClick={refresh}>Refresh</button>
-            <button className="btn-accent btn-sm" onClick={draft}>Draft</button>
-          </div>}
+          right={picked.length ? (
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{picked.length} ticked</span>
+              <span className="label">{qty(picked.reduce((n, l) => n + l.uncovered, 0))} to borrow</span>
+              <button className="btn-accent btn-sm" onClick={borrowPicked}>Borrow at best rates… <Kbd>B</Kbd></button>
+              <button className="btn-ghost btn-sm" onClick={multi.clear}>Clear <Kbd>Esc</Kbd></button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-2xs text-faint">
+              <span><Kbd>Space</Kbd> tick</span><span><Kbd>d</Kbd> draft covers &amp; returns</span><span><Kbd>b</Kbd> borrow</span>
+              <button className="btn btn-sm" onClick={() => multi.setAll(true)} disabled={!open.length}>Tick all uncovered</button>
+              <button className="btn btn-sm" onClick={refresh}>Refresh</button>
+              <button className="btn-accent btn-sm" onClick={draft}>Draft</button>
+            </div>
+          )}
           bodyClass="overflow-auto"
         >
           {error && <Empty>{error}</Empty>}
@@ -83,6 +101,8 @@ export function ShortListView() {
             <table className="w-full text-xs">
               <thead>
                 <tr>
+                  <th className="th w-8"><input type="checkbox" aria-label="Tick all uncovered" checked={multi.all}
+                    disabled={!open.length} onChange={(e) => multi.setAll(e.target.checked)} /></th>
                   {["name", "tier", "clients", "client short", "sold", "box", "fail in", "fail out", "recalled", "short by", "working", "to borrow", "excess", "status"].map((h) => (
                     <th key={h} className={`th ${["name", "tier", "status"].includes(h) ? "" : "text-right"}`}>{h}</th>
                   ))}
@@ -90,7 +110,12 @@ export function ShortListView() {
               </thead>
               <tbody>
                 {rows.map((l, i) => (
-                  <tr key={l.instrumentId} onClick={() => setSel(i)} className={`row cursor-default ${i === sel ? "row-sel" : ""}`}>
+                  <tr key={l.instrumentId} onClick={() => setSel(i)}
+                    className={`row cursor-default ${i === sel ? "row-sel" : multi.picked.has(l.instrumentId) ? "bg-raised" : ""}`}>
+                    <td className="td w-8" onClick={(e) => { e.stopPropagation(); if (l.uncovered) multi.toggle(l.instrumentId, e.shiftKey); }}>
+                      <input type="checkbox" readOnly disabled={!l.uncovered} checked={multi.picked.has(l.instrumentId)}
+                        aria-label={`Tick ${l.composite}`} />
+                    </td>
                     <td className="td">
                       <span className="text-ink">{l.composite}</span>
                       {l.preBorrow && <span className="ml-2"><PreBorrowTag /></span>}
