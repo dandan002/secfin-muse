@@ -387,3 +387,28 @@ export interface ShortList {
     shortfall?: number; uncovered?: number; uncoveredNotional?: number; excess?: number; excessNotional?: number;
     excessCostUsd?: number; toReturn?: number; cnsFails?: number; closeOut?: number; preBorrow?: number };
 }
+
+/** One Venue A lender's indicative offer in a name. */
+export interface LenderQuote {
+  counterparty: string; // our code where we know them, else the venue's
+  name: string | null;
+  venueCode: string;
+  agreement: string | null;
+  quantity: number;
+  feeBps: number;
+  asOf?: string;
+}
+
+/** Venue A's lenders in one name, cheapest first; ok false (with why) when the venue couldn't answer. */
+export interface LenderLadder {
+  instrumentId: string;
+  composite: string;
+  ok: boolean;
+  error: string | null;
+  lenders: LenderQuote[];
+}
+
+export interface OrderBatchResult {
+  placed: Order[];
+  failed: { line: number; instrument: string; counterparty: string | null; error: string }[];
+}

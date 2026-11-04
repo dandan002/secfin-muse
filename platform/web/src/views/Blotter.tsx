@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { actor, bps, full, money, qty, time } from "../lib/format";
-import { useKeys, useQuery, useSelection } from "../lib/hooks";
+import { useKeys, useMulti, useQuery, useSelection } from "../lib/hooks";
 import { useDesk } from "../lib/store";
 import type { Order, Trade } from "../lib/types";
 import { Empty, Figures, Kbd, Panel, Pipeline, State, Tabs } from "../components/ui";
@@ -80,6 +80,20 @@ export function BlotterView() {
   [data, filter, cp]);
   const [sel, setSel] = useSelection(orders.length);
   const cur = orders[sel];
+  const live = orders.filter((o) => OPEN.includes(o.status));
+  const multi = useMulti(live.map((o) => o.id), cur && OPEN.includes(cur.status) ? cur.id : undefined);
+  const picked = live.filter((o) => multi.picked.has(o.id));
+  const countered = picked.filter((o) => o.status === "COUNTERED");
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  useEffect(() => { if (!picked.length) setConfirmCancel(false); }, [picked.length]);
+  const bulk = async (list: Order[], c: "accept" | "cancel") => {
+    setConfirmCancel(false);
+    const res = await Promise.allSettled(list.map((o) => api.post<Order>(`/orders/${o.id}/${c}`)));
+    const bad = res.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+    toast(bad.length ? "warn" : "ok", `${c === "accept" ? "accepted" : "cancelled"} ${list.length - bad.length} of ${list.length}`
+      + (bad.length ? `: ${(bad[0].reason as Error).message}` : ""));
+    multi.clear();
+  };
 
   const cmd = async (o: Order, c: "accept" | "cancel" | "counter", body?: object) => {
     try {
@@ -118,18 +132,37 @@ export function BlotterView() {
 
       <Panel bodyClass="overflow-auto max-h-[44vh]"
         title={<>Orders <span className="label">{orders.length}</span></>}
-        right={<>
-          <span className="kbd mr-2">A accept counter · R counter · X cancel</span>
+        right={picked.length ? (
+          <span className="flex items-center gap-2">
+            {confirmCancel ? <>
+              <span>Cancel {picked.length} open order{picked.length === 1 ? "" : "s"}?</span>
+              <button className="btn-accent btn-sm" onClick={() => bulk(picked, "cancel")}>Cancel them</button>
+              <button className="btn-ghost btn-sm" onClick={() => setConfirmCancel(false)}>Back</button>
+            </> : <>
+              <span className="font-medium">{picked.length} ticked</span>
+              <button className="btn btn-sm" disabled={!countered.length} onClick={() => bulk(countered, "accept")}>
+                Accept {countered.length || ""} counter{countered.length === 1 ? "" : "s"}</button>
+              <button className="btn btn-sm" onClick={() => setConfirmCancel(true)}>Cancel…</button>
+              <button className="btn-ghost btn-sm" onClick={multi.clear}>Clear <Kbd>Esc</Kbd></button>
+            </>}
+          </span>
+        ) : <>
+          <span className="kbd mr-2">Space tick · A accept counter · R counter · X cancel</span>
           <input value={cp} onChange={(e) => setCp(e.target.value)} placeholder="Counterparty" className="input w-28 h-6" />
           <Tabs value={filter} onChange={setFilter} options={[{ id: "all", label: "All" }, { id: "open", label: "Open" }, { id: "done", label: "Done" }]} />
         </>}>
         {!orders.length ? <p className="px-4 py-6 text-faint">No orders yet. Send one from the Ticket, or ⌘K "borrow 100k AAPL @ 30".</p> : (
           <table className="w-full">
-            <thead><tr>{["time", "side", "name", "type", "quantity", "fee", "counter", "filled", "counterparty", "venue", "lifecycle", "status", "by", "note", ""].map((h) =>
+            <thead><tr><th className="th w-8"><input type="checkbox" aria-label="Tick all open" checked={multi.all} disabled={!live.length}
+              onChange={(e) => multi.setAll(e.target.checked)} /></th>
+              {["time", "side", "name", "type", "quantity", "fee", "counter", "filled", "counterparty", "venue", "lifecycle", "status", "by", "note", ""].map((h) =>
               <th key={h} className={`th ${["quantity", "fee", "counter", "filled"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
             <tbody>
               {orders.map((o, i) => [
-                <tr key={o.id} onClick={() => setSel(i)} className={`row ${i === sel ? "row-sel" : ""}`}>
+                <tr key={o.id} onClick={() => setSel(i)} className={`row ${i === sel ? "row-sel" : multi.picked.has(o.id) ? "bg-raised" : ""}`}>
+                  <td className="td w-8" onClick={(e) => { e.stopPropagation(); if (OPEN.includes(o.status)) multi.toggle(o.id, e.shiftKey); }}>
+                    <input type="checkbox" readOnly disabled={!OPEN.includes(o.status)} checked={multi.picked.has(o.id)} aria-label={`Tick ${o.composite}`} />
+                  </td>
                   <td className="td text-faint">{time(o.createdAt)}</td>
                   <td className="td text-dim">{o.side === "BORROW" ? "Borrow" : "Lend"}</td>
                   <td className="td font-semibold">{o.composite}</td>
@@ -153,7 +186,7 @@ export function BlotterView() {
                     </>}
                   </td>
                 </tr>,
-                ask?.id === o.id && <AskRow key={o.id + "-ask"} ask={ask} cols={15} onClose={() => setAsk(null)} />,
+                ask?.id === o.id && <AskRow key={o.id + "-ask"} ask={ask} cols={16} onClose={() => setAsk(null)} />,
               ])}
             </tbody>
           </table>

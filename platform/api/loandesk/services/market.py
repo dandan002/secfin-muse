@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import clock, secmaster
-from ..models import Availability, Instrument, Locate, Print
+from ..models import Availability, Counterparty, Instrument, Locate, Print
 from ..settings import get_settings
 
 INTERNAL = "INTERNAL"  # our own books, netted (see services/inventory.py)
@@ -164,3 +164,38 @@ async def market_for(s: AsyncSession, inst: Instrument) -> dict[str, Any]:
 
         row["internal"]["byBook"] = await for_instrument(s, inst.id)
     return row
+
+
+async def lenders(s: AsyncSession, insts: list[Instrument]) -> dict[str, dict[str, Any]]:
+    """Venue A's lenders in each name, cheapest first: who has it, how much, at what indicative fee. Read live from
+    the venue (we keep only its aggregate), one call per name. A name the venue can't answer for says why."""
+    import asyncio
+
+    from ..adapters import AdapterError, systems
+
+    va = systems().venue_a
+    answers = await asyncio.gather(*[va.availability(instrument=i.isin) for i in insts], return_exceptions=True)
+    codes = {x["lenderCode"] for a in answers if isinstance(a, dict) for x in a.get("byLender") or []}
+    found = await s.execute(select(Counterparty).where(Counterparty.ngt_code.in_(codes)))
+    cps = {c.ngt_code: c for c in found.scalars()}
+    out: dict[str, dict[str, Any]] = {}
+    for inst, a in zip(insts, answers, strict=True):
+        if isinstance(a, BaseException):
+            if not isinstance(a, AdapterError):
+                raise a
+            out[inst.id] = {"instrumentId": inst.id, "composite": inst.composite, "ok": False, "error": str(a),
+                            "lenders": []}
+            continue
+        rows = []
+        for x in a.get("byLender") or []:
+            if x["quantity"] <= 0:
+                continue
+            cp = cps.get(x["lenderCode"])
+            rows.append({"counterparty": cp.code if cp else x["lenderCode"],
+                         "name": cp.name if cp else x.get("lenderName"), "venueCode": x["lenderCode"],
+                         "agreement": cp.agreement if cp else None,
+                         "quantity": x["quantity"], "feeBps": x["indicativeFeeBps"], "asOf": x.get("asOf")})
+        rows.sort(key=lambda r: (r["feeBps"], -r["quantity"]))
+        out[inst.id] = {"instrumentId": inst.id, "composite": inst.composite, "ok": True, "error": None,
+                        "lenders": rows}
+    return out

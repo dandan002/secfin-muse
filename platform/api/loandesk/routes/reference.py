@@ -32,6 +32,24 @@ async def instrument_market(instrument_id: str, s: AsyncSession = Depends(get_se
     return {"instrument": secmaster.instrument_json(inst), "market": await market.market_for(s, inst)}
 
 
+@router.get("/instruments/{instrument_id}/lenders")
+async def instrument_lenders(instrument_id: str, s: AsyncSession = Depends(get_session)) -> dict:
+    """Venue A's lender ladder for one name, cheapest first: the best counterparties to bid."""
+    inst = await s.get(Instrument, instrument_id)
+    if inst is None:
+        raise HTTPException(404, "unknown instrument")
+    return (await market.lenders(s, [inst]))[inst.id]
+
+
+@router.get("/lenders")
+async def lenders(ids: str = Query(..., description="Comma-separated instrument ids, at most 50"),
+                  s: AsyncSession = Depends(get_session)) -> dict[str, dict]:
+    """The lender ladder for several names at once: a bulk borrow fills each line from its best lender."""
+    wanted = [x for x in ids.split(",") if x][:50]
+    insts = list((await s.execute(select(Instrument).where(Instrument.id.in_(wanted)))).scalars())
+    return await market.lenders(s, insts)
+
+
 @router.get("/counterparties")
 async def counterparties(s: AsyncSession = Depends(get_session)) -> list[dict]:
     rows = (await s.execute(select(Counterparty).order_by(Counterparty.code))).scalars()

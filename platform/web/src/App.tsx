@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { BulkBorrow } from "./components/BulkBorrow";
 import { Shell, Toasts } from "./components/Chrome";
 import { CommandPalette } from "./components/CommandPalette";
 import { useKeys } from "./lib/hooks";
@@ -42,6 +43,7 @@ export function App() {
           <Screen />
         </div>
       </Shell>
+      <BulkBorrow />
       <CommandPalette />
       <Toasts />
     </>
