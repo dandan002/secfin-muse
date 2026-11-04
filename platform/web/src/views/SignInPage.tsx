@@ -33,7 +33,7 @@ export function SignInPage() {
             }}
             className="flex items-baseline gap-2"
           >
-            <span className="text-sm font-medium tracking-[0.22em]">LOANDESK</span>
+            <span className="text-[16px] font-semibold tracking-[-0.02em]">LoanDesk</span>
             <span className="text-2xs text-faint">sec lending desk</span>
           </a>
         </header>

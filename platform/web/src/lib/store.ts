@@ -83,6 +83,9 @@ interface DeskState {
   toasts: Toast[];
   toast: (tone: Toast["tone"], text: string) => void;
   dismiss: (id: number) => void;
+  /** The id Audit opens on: set by "Full story" links elsewhere. */
+  auditFocus: string;
+  openAudit: (id: string) => void;
   /** The bulk borrow sheet's lines, or null when it's closed. */
   bulkBorrow: BulkLine[] | null;
   openBulkBorrow: (lines: BulkLine[] | null) => void;
@@ -153,6 +156,11 @@ export const useDesk = create<DeskState>((set, get) => ({
     setTimeout(() => get().dismiss(id), tone === "err" ? 7000 : 3500);
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  auditFocus: "",
+  openAudit: (auditFocus) => {
+    set({ auditFocus });
+    get().setView("audit");
+  },
   bulkBorrow: null,
   openBulkBorrow: (bulkBorrow) => set({ bulkBorrow }),
   paletteOpen: false,

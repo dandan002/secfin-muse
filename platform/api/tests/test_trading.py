@@ -15,8 +15,8 @@ import pytest
 from sqlalchemy import select
 
 from loandesk import db, sync
-from loandesk.adapters import systems
-from loandesk.models import Action, Counterparty, Trade
+from loandesk.adapters import AdapterError, systems
+from loandesk.models import Action, Counterparty, Event, Trade
 from loandesk.services import booking, lifecycle, orders
 from refdata.counterparties import OUR_FIRM
 
@@ -213,6 +213,44 @@ async def test_a_break_drafts_its_fix_for_the_gate(client: httpx.AsyncClient, po
     assert r["status"] == "EXECUTED" and r["result"]["compareStatus"] == "MATCHED"
     assert post_trade.processor.calls[-1][0] == "amend"
     assert post_trade.custodian.sent[-1]["txId"].startswith(t.id)  # matched now, so it settles
+
+
+async def test_a_refused_amend_says_why(client: httpx.AsyncClient, post_trade: SimpleNamespace,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The processor doesn't know the contract (e.g. it was reset): the card and the button say so, not
+    "still unmatched"."""
+    post_trade.processor.break_next = {"feeBps": 30.0}
+    t = await _venue_a_fill(fee=25.0)
+
+    async def refuse(contract_id: str, fields: dict[str, Any], reason: str) -> dict[str, Any]:
+        raise AdapterError("processor", 404, f"no contract {contract_id}")
+
+    monkeypatch.setattr(systems().processor, "amend", refuse)
+    r = await client.post(f"/trades/{t.id}/amend")
+    assert r.status_code == 502 and "no contract" in r.json()["detail"]
+    async with db.session() as s:
+        a = (await s.execute(select(Action).where(Action.source_ref == t.id))).scalar_one()
+        assert (await s.execute(select(Event).where(Event.entity_id == t.id, Event.type == "amend_failed"))).first()
+    r = (await client.post(f"/actions/{a.id}/approve")).json()
+    assert r["status"] == "FAILED"
+    assert "refused the amend" in r["result"]["error"] and "no contract" in r["result"]["error"]
+
+
+async def test_a_trades_story_follows_it_to_its_fix(client: httpx.AsyncClient, post_trade: SimpleNamespace) -> None:
+    """From the trade alone: its fill, booking and break, the fix card and its approval, in time order."""
+    post_trade.processor.break_next = {"feeBps": 30.0}
+    t = await _venue_a_fill(fee=25.0)
+    async with db.session() as s:
+        a = (await s.execute(select(Action).where(Action.source_ref == t.id))).scalar_one()
+    await client.post(f"/actions/{a.id}/approve", headers={"x-trader": "sam"})
+    st = (await client.get("/events/story", params={"id": t.id})).json()
+    assert {t.id, a.id} <= set(st["ids"])
+    seen = [(e["entity"], e["type"]) for e in st["events"]]
+    assert ("trade", "executed") in seen and ("action", "proposed") in seen and ("action", "executed") in seen
+    assert seen.index(("trade", "executed")) < seen.index(("action", "proposed")) < seen.index(("action", "executed"))
+    assert [e["ts"] for e in st["events"]] == sorted(e["ts"] for e in st["events"])
+    back = (await client.get("/events/story", params={"id": a.id})).json()  # and from the card, the same story
+    assert set(back["ids"]) == set(st["ids"])
 
 
 # -- Venue B and failover -----------------------------------------------------------------------------

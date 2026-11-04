@@ -43,8 +43,8 @@ export function Landing({ signedIn = false, onDevEnter }: { signedIn?: boolean; 
       <div className="max-w-5xl mx-auto px-4 sm:px-8">
         <header className="h-14 flex items-center justify-between">
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-medium tracking-[0.22em]">LOANDESK</span>
-            <span className="text-2xs text-faint">sec lending desk</span>
+            <span className="text-[16px] font-semibold tracking-[-0.02em]">LoanDesk</span>
+            <span className="label">Securities lending desk</span>
           </div>
           {authEnabled && (signedIn
             ? <Go to={ROUTES.desk} className="btn">Desk</Go>

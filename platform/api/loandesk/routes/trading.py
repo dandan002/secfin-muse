@@ -325,6 +325,9 @@ async def trade_command(trade_id: str, cmd: Literal["book", "compare", "amend", 
             return {**booking.trade_json(t), "mark": mark}
     except lifecycle.LifecycleError as e:
         raise HTTPException(409, str(e)) from e
+    except booking.AmendError as e:
+        await s.commit()  # keep the amend_failed event: the audit trail says what was tried
+        raise HTTPException(502, str(e)) from e
     await s.commit()
     return booking.trade_json(t)
 
