@@ -16,6 +16,7 @@ interface AgentStatus {
   actionKinds: string[];
   killSwitch: { on: boolean };
   graphs: string;
+  tracing?: { langfuse: "on" | "off"; host: string | null };
 }
 
 interface AgentRun {
@@ -27,6 +28,7 @@ interface AgentRun {
   actionId: string | null;
   error: string | null;
   updatedAt: string;
+  traceUrl?: string | null; // its last Langfuse trace, when tracing is on
 }
 
 type Step = { step?: string; ts?: string } & Record<string, unknown>;
@@ -159,7 +161,7 @@ export function Agent() {
             onApprove={() => (editing ? approveEdited(cur) : act(cur, "approve"))} onEdit={() => startEdit(cur)}
             onReject={() => act(cur, "reject")} onTakeOver={() => act(cur, "take-over")} />
         )}
-        <Trace a={cur} />
+        <Trace a={cur} traceUrl={(runs ?? []).find((r) => r.actionId && r.actionId === cur?.id)?.traceUrl} />
       </div>
 
       {pending.length > 1 && (
@@ -333,13 +335,15 @@ function Card({ a, killed, editing, setEditing, onApprove, onEdit, onReject, onT
 }
 
 /** The card's trace: source, parse, tools, checks, escalation and proposal as readable steps; raw JSON on request. */
-function Trace({ a }: { a: Action | undefined }) {
+function Trace({ a, traceUrl }: { a: Action | undefined; traceUrl?: string | null }) {
   const [raw, setRaw] = useState(false);
   const steps = (a?.transcript ?? []) as Step[];
   return (
     <aside aria-label="Trace" className="panel flex-[1_1_300px] max-w-[380px] min-w-0">
       <div className="flex items-center h-10 px-4 border-b border-line">
         <span className="text-xs font-medium flex-1">Trace</span>
+        {traceUrl && <a href={traceUrl} target="_blank" rel="noreferrer" className="text-2xs text-accent mr-3"
+          title="The model calls, tokens, cost and graph steps behind this card">Langfuse ↗</a>}
         {!!steps.length && <button className="text-2xs text-accent" onClick={() => setRaw(!raw)}>{raw ? "Steps" : "Raw"}</button>}
       </div>
       {!steps.length ? <Empty>Source message, parse, tools called and model output for the card in focus.</Empty>
@@ -371,6 +375,10 @@ function AgentPanel({ st, runs, cur }: { st: AgentStatus; runs: AgentRun[]; cur:
       <div className="flex justify-between"><span className="text-faint">Graphs</span>
         <span className={st.graphs === "ready" ? "" : "text-hot"} title={st.graphs}>{st.graphs === "ready" ? "Ready" : "Not installed"}</span></div>
       <div className="flex justify-between"><span className="text-faint">Spend</span><span>${st.spentUsd.toFixed(2)} / ${st.budgetUsd.toFixed(2)}</span></div>
+      <div className="flex justify-between"><span className="text-faint">Tracing</span>
+        {st.tracing?.langfuse === "on" && st.tracing.host
+          ? <a href={st.tracing.host} target="_blank" rel="noreferrer" className="text-accent">Langfuse ↗</a>
+          : <span className="text-dim" title="Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY, with the agent in record or live">Off</span>}</div>
       {Object.entries(st.models).map(([k, v]) => (
         <div key={k} className="flex justify-between"><span className="text-faint">{words(k)}</span><span className="text-dim">{v}</span></div>
       ))}
@@ -388,6 +396,7 @@ function AgentPanel({ st, runs, cur }: { st: AgentStatus; runs: AgentRun[]; cur:
                 <span className="text-dim">{words(r.task)}</span>
                 <span className="text-faint truncate">{r.subject}</span>
                 <span className="ml-auto text-faint">{short(r.model)}</span>
+                {r.traceUrl && <a href={r.traceUrl} target="_blank" rel="noreferrer" className="text-accent" title="Langfuse trace">↗</a>}
                 <State s={r.status} />
               </li>
             ))}

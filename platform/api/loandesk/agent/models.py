@@ -18,7 +18,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from .. import clock
+from .. import clock, observe
 from ..settings import get_settings
 
 # USD per million tokens: (input, cached input, output). From the spec's model table.
@@ -137,8 +137,13 @@ class ModelGateway:
             return _remap(hit, req)
         if meter.total >= self.cfg.budget_usd:
             raise ModelUnavailable(f"budget of ${self.cfg.budget_usd:.2f} spent")
-        resp = (await self._sdk().chat.completions.create(**req)).model_dump()
-        meter.add(model, resp.get("usage") or {})
+        with observe.generation(req) as gen:
+            try:
+                resp = (await self._sdk().chat.completions.create(**req)).model_dump()
+            except Exception as e:
+                gen.failed(e)
+                raise
+            gen.done(resp, meter.add(model, resp.get("usage") or {}))
         if self.mode == "record":
             path = self.cfg.cassette_path
             path.parent.mkdir(parents=True, exist_ok=True)

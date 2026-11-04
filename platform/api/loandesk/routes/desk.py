@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import agent, auth, clock, events, gate, sync
+from .. import agent, auth, clock, events, gate, observe, sync
 from ..adapters import AdapterError, systems
 from ..agent.models import gateway
 from ..agent.tools import REGISTRY
@@ -163,7 +163,7 @@ async def apply_paste(paste_id: str, body: ApplyIn, who: str = Depends(trader),
 @router.get("/agent/status", tags=["agent"])
 async def agent_status() -> dict:
     return {**gateway().status(), "tools": sorted(REGISTRY), "actionKinds": gate.kinds(),
-            "killSwitch": gate.kill_switch(), "graphs": agent.missing or "ready"}
+            "killSwitch": gate.kill_switch(), "graphs": agent.missing or "ready", "tracing": observe.status()}
 
 
 def _runner() -> Runner:
