@@ -38,8 +38,10 @@ class RejectIn(BaseModel):
 
 
 @router.get("/actions", tags=["gate"])
-async def list_actions(status: str | None = "PENDING", s: AsyncSession = Depends(get_session)) -> list[dict]:
-    return await gate.listing(s, None if status in (None, "", "ALL") else status)
+async def list_actions(status: str | None = "PENDING", limit: int = 200,
+                       s: AsyncSession = Depends(get_session)) -> list[dict]:
+    """Newest first; ``limit`` up to 2,000 (the whole queue on a busy day)."""
+    return await gate.listing(s, None if status in (None, "", "ALL") else status, limit=max(1, min(limit, 2000)))
 
 
 async def _action(s: AsyncSession, action_id: str) -> Action:
@@ -234,7 +236,8 @@ async def apply_paste(paste_id: str, body: ApplyIn, who: str = Depends(trader),
 @router.get("/agent/status", tags=["agent"])
 async def agent_status() -> dict:
     return {**gateway().status(), "tools": sorted(REGISTRY), "actionKinds": gate.kinds(),
-            "killSwitch": gate.kill_switch(), "graphs": agent.missing or "ready", "tracing": observe.status()}
+            "killSwitch": gate.kill_switch(), "graphs": agent.missing or "ready", "tracing": observe.status(),
+            "lanes": r.status() if (r := agent.current()) else None}
 
 
 def _runner() -> Runner:
@@ -251,6 +254,40 @@ async def agent_review(loc_id: str) -> dict:
     from ..agent.runner import run_json
 
     return run_json(await _runner().review_locate(loc_id))
+
+
+@router.post("/agent/plan", status_code=202, tags=["agent"])
+async def agent_plan() -> dict:
+    """Have the queue planner read the whole queue now: it starts the sub-agents, then ranks and batches."""
+    from ..agent.runner import run_json
+
+    r = _runner()
+    if r.busy("plan_queue"):
+        raise HTTPException(409, "the planner is already reading the queue")
+    return run_json(await r.plan_queue())
+
+
+@router.get("/agent/plan", tags=["agent"])
+async def agent_plan_latest(s: AsyncSession = Depends(get_session)) -> dict | None:
+    """The latest plan: order, batches, notes, conflicts, what it dispatched."""
+    from ..agent import queue
+
+    return await queue.latest(s)
+
+
+@router.post("/actions/{action_id}/review", status_code=202, tags=["agent"])
+async def agent_review_trade(action_id: str, s: AsyncSession = Depends(get_session)) -> dict:
+    """Ask the trade reviewer to read (or read again) one card."""
+    from ..agent.runner import run_json
+
+    if gateway().mode == "off":
+        raise HTTPException(503, "agent is off: set LOANDESK_AGENT_MODE=replay|record|live")
+    a = await _action(s, action_id)
+    if a.status != "PENDING":
+        raise HTTPException(409, f"the card is {a.status}")
+    a.review = None
+    await s.commit()
+    return run_json(await _runner().review_trade(action_id))
 
 
 @router.get("/agent/runs", tags=["agent"])

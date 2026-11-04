@@ -121,6 +121,22 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
   checkpointed after every node (the desk's Postgres, or a sibling `*.agent.db` next to SQLite;
   `LOANDESK_AGENT_CHECKPOINT_URL` overrides). Approving or rejecting the card resumes the run; on start-up, runs a
   restart interrupted carry on, including ones whose card was decided while the desk was down.
+  The agent team runs here: each kind of sub-agent has its own lane (`LOANDESK_AGENT_LOCATE_WORKERS`, default 6;
+  `LOANDESK_AGENT_TRADE_WORKERS`, 4; the planner, 1), so a burst of one kind never starves another and spend
+  comes in at a bounded rate.
+* `agent/queue.py`: the queue planner (Wonder), reading the whole approval queue. Code builds the digest (each
+  card's name, counterparty, side, size, dollars, fee, flags, age, deadline, review) and finds what only the whole
+  queue shows: Rule 204 close-outs, locates expiring at the close, recall due dates, a cover and a return in the
+  same name, duplicates, and cards that together would pass a counterparty's credit room. It dispatches sub-agents
+  (a trade review per unread rule-drafted card, a locate review per waiting warm line), waits for the trade reviews,
+  then ranks the queue, groups cards to approve together and writes notes. It approves nothing; a batch never holds
+  a flagged card or one the reviewer would amend or hold. No model: the rules' order. `POST /agent/plan`, or on its
+  own when the queue changed (`LOANDESK_AGENT_PLAN_EVERY_S`, default 300; 0 for on demand).
+* `agent/trade.py`: the trade reviewer (Spark), a second pair of eyes on every order, basket, return and recall the
+  rules draft, read as it's proposed: AGREE, AMEND (the fee or size it would change, checked against the fat-finger
+  band) or HOLD, with a note. The read rides on the card (`Action.review`), with **Apply and approve** for an
+  amendment. The autopilot waits for the read and won't approve a card the reviewer would amend or hold; a review
+  that fails marks the card unread, so nothing waits on it.
 * `agent/models.py`: the model gateway. `LOANDESK_AGENT_MODE=off|replay|record|live`, OpenAI SDK against
   `api.meta.ai/v1`, a cassette for record/replay (keys ignore timestamps and generated ids), a per-model spend meter
   and a hard budget.

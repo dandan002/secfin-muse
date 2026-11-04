@@ -174,6 +174,31 @@ export interface Action {
   transcript: unknown[];
   sourceRef?: string | null; // what it came from: a chat message, a locate
   createdAt: string;
+  review?: TradeReview | null; // the trade reviewer's read, on a rule-drafted card
+}
+
+export interface TradeReview {
+  verdict: "AGREE" | "AMEND" | "HOLD" | "UNREAD";
+  changes?: Record<string, number>;
+  notes: string;
+  confidence?: number;
+  riskFlags?: string[];
+  model: string;
+  at: string;
+}
+
+/** The queue planner's read of the whole queue: the order to work it in, cards to approve together, notes. */
+export interface QueuePlan {
+  by: string; // the model, or "rules" when no model answered
+  at: string;
+  runId: string;
+  order: { id: string; why: string }[];
+  batches: { title: string; ids: string[]; why: string }[];
+  notes: string[];
+  conflicts: { type: string; ids: string[]; detail: string }[];
+  cards: number;
+  overflow: number;
+  dispatched: { trades?: number; locates?: number };
 }
 
 export interface Counterparty {

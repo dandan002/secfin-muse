@@ -231,6 +231,7 @@ class Action(Base):
     transcript: Mapped[list[Any]] = mapped_column(default=list)  # source, parse, tools called, model output
     source_ref: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    review: Mapped[dict[str, Any] | None] = mapped_column()  # the trade reviewer's read: verdict, notes, changes
 
 
 class AgentRun(Base):

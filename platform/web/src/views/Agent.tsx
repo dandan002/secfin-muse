@@ -3,7 +3,7 @@ import { api } from "../lib/api";
 import { actor, bps, full, time } from "../lib/format";
 import { useKeys, useQuery } from "../lib/hooks";
 import { useDesk } from "../lib/store";
-import type { Action, AuditEvent } from "../lib/types";
+import type { Action, AuditEvent, QueuePlan, TradeReview } from "../lib/types";
 import { Empty, Figures, Kbd, Panel, State } from "../components/ui";
 
 interface AgentStatus {
@@ -17,6 +17,7 @@ interface AgentStatus {
   killSwitch: { on: boolean };
   graphs: string;
   tracing?: { langfuse: "on" | "off"; host: string | null };
+  lanes?: Record<string, { size: number; running: number; waiting: number }> | null;
 }
 
 interface AgentRun {
@@ -54,7 +55,9 @@ const FIGURES: [string, string, (v: unknown) => ReactNode][] = [
 /** The approval queue (spec module 6): every proposed side effect waits here for a human. One card in focus,
  *  its trace beside it, the rest of the queue and what was decided below. */
 export function Agent() {
-  const { data: all } = useQuery<Action[]>("/actions?status=ALL", ["action"]);
+  // Every pending card (the planner reads the oldest first; a busy queue runs past any page), and the latest decided.
+  const { data: open } = useQuery<Action[]>("/actions?status=PENDING&limit=2000", ["action"]);
+  const { data: recent } = useQuery<Action[]>("/actions?status=ALL&limit=100", ["action"]);
   const { data: st } = useQuery<AgentStatus>("/agent/status", ["action"]);
   const { data: runs } = useQuery<AgentRun[]>(st?.mode === "off" ? null : "/agent/runs?limit=12", ["agent_run"]);
   const toast = useDesk((s) => s.toast);
@@ -62,13 +65,17 @@ export function Agent() {
   const selected = useDesk((s) => s.selectedAction);
   const select = useDesk((s) => s.selectAction);
   const killed = !!st?.killSwitch.on;
+  const { data: plan } = useQuery<QueuePlan | null>(st?.mode === "off" ? null : "/agent/plan", ["plan"]);
+  const rank = useMemo(() => new Map((plan?.order ?? []).map((o, i) => [o.id, i])), [plan]);
 
-  const pending = useMemo(() => (all ?? []).filter((a) => a.status === "PENDING")
-    // Risk first: anything flagged, then Hot names, then oldest first.
-    .sort((a, b) => Number(!!b.riskFlags.length) - Number(!!a.riskFlags.length)
+  const pending = useMemo(() => [...(open ?? [])]
+    // The planner's order when there is one (cards newer than the plan after it); else risk first: anything
+    // flagged, then Hot names, then oldest first.
+    .sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9)
+      || Number(!!b.riskFlags.length) - Number(!!a.riskFlags.length)
       || Number(b.payload.tier === "HOT") - Number(a.payload.tier === "HOT")
-      || a.createdAt.localeCompare(b.createdAt)), [all]);
-  const decided = useMemo(() => (all ?? []).filter((a) => a.status !== "PENDING"), [all]);
+      || a.createdAt.localeCompare(b.createdAt)), [open, rank]);
+  const decided = useMemo(() => (recent ?? []).filter((a) => a.status !== "PENDING"), [recent]);
   const idx = Math.max(0, pending.findIndex((a) => a.id === selected));
   const cur = pending[idx];
   const [editing, setEditing] = useState<Record<string, string> | null>(null);
@@ -100,6 +107,24 @@ export function Agent() {
       act(a, "approve", payload);
     } catch {
       toast("err", "a field isn't valid: check the lists and objects");
+    }
+  };
+  const approveMany = async (ids: string[], what: string) => {
+    let ok = 0;
+    for (const id of ids) {
+      try {
+        await api.post(`/actions/${id}/approve`, {});
+        ok++;
+      } catch { /* left pending; the toast counts it */ }
+    }
+    toast(ok === ids.length ? "ok" : "warn", `${what}: approved ${ok} of ${ids.length}`);
+  };
+  const planNow = async () => {
+    try {
+      await api.post("/agent/plan");
+      toast("info", "the planner is reading the queue");
+    } catch (e) {
+      toast("err", (e as Error).message);
     }
   };
   const [confirmBatch, setConfirmBatch] = useState(false);
@@ -163,13 +188,19 @@ export function Agent() {
         ) : (
           <Card a={cur} killed={killed} editing={editing} setEditing={setEditing} passedOver={<PassedOver id={cur.id} />}
             onApprove={() => (editing ? approveEdited(cur) : act(cur, "approve"))} onEdit={() => startEdit(cur)}
+            onApply={(changes) => act(cur, "approve", { ...cur.payload, ...changes })}
             onReject={() => act(cur, "reject")} onTakeOver={() => act(cur, "take-over")} />
         )}
         <Trace a={cur} traceUrl={(runs ?? []).find((r) => r.actionId && r.actionId === cur?.id)?.traceUrl} />
       </div>
 
+      {st && st.mode !== "off" && (
+        <PlanPanel plan={plan ?? null} pending={pending} killed={killed} onPlan={planNow} onSelect={select}
+          onBatch={(b) => approveMany(b.ids.filter((i) => pending.some((a) => a.id === i)), b.title)} />
+      )}
+
       {pending.length > 1 && (
-        <Panel title={<>Queue <span className="label">{pending.length}</span></>}
+        <Panel title={<>Queue <span className="label">{pending.length}{plan?.order.length ? " · in the planner's order" : ""}</span></>}
           right={confirmBatch ? (
             <span className="flex items-center gap-2">
               <span>Approve {unflagged.length} unflagged? Flagged cards stay.</span>
@@ -187,11 +218,13 @@ export function Agent() {
             {pending.map((a) => (
               <li key={a.id}>
                 <button onClick={() => select(a.id)}
-                  className={`w-full grid grid-cols-[72px_96px_1fr_auto] gap-3 items-center h-9 px-4 border-b border-rule text-left hover:bg-raised ${
+                  className={`w-full grid grid-cols-[72px_96px_1fr_auto_auto] gap-3 items-center h-9 px-4 border-b border-rule text-left hover:bg-raised ${
                     a.id === cur?.id ? "bg-soft hover:bg-soft" : ""}`}>
                   <span className="text-faint">{time(a.createdAt)}</span>
                   <span className="text-dim">{words(a.kind)}</span>
-                  <span className="truncate">{a.title}</span>
+                  <span className="truncate">{a.title}
+                    {rank.has(a.id) && plan?.order[rank.get(a.id)!].why && <span className="text-faint"> · {plan.order[rank.get(a.id)!].why}</span>}</span>
+                  <ReviewTag r={a.review} />
                   <span className={a.riskFlags.length ? "text-hot" : "text-faint"}>
                     {a.riskFlags.length ? `${a.riskFlags.length} flag${a.riskFlags.length > 1 ? "s" : ""}` : actor(a.proposedBy)}
                   </span>
@@ -224,8 +257,9 @@ export function Agent() {
   );
 }
 
-function Card({ a, killed, editing, setEditing, onApprove, onEdit, onReject, onTakeOver, passedOver }: {
+function Card({ a, killed, editing, setEditing, onApprove, onEdit, onApply, onReject, onTakeOver, passedOver }: {
   a: Action;
+  onApply: (changes: Record<string, number>) => void;
   passedOver?: ReactNode;
   killed: boolean;
   editing: Record<string, string> | null;
@@ -255,6 +289,7 @@ function Card({ a, killed, editing, setEditing, onApprove, onEdit, onReject, onT
         <span className="text-md font-semibold first-letter:uppercase">{a.title}</span>
         {a.rationale && <span className="text-dim whitespace-pre-line">{a.rationale}</span>}
       </div>
+      {a.review && <ReviewNote r={a.review} payload={a.payload} killed={killed} onApply={onApply} />}
 
       {!editing && !!figs.length && (
         <div className="grid border-y border-line" style={{ gridTemplateColumns: `repeat(${figs.length}, minmax(0, 1fr))` }}>
@@ -394,6 +429,17 @@ function AgentPanel({ st, runs, cur }: { st: AgentStatus; runs: AgentRun[]; cur:
         {st.tracing?.langfuse === "on" && st.tracing.host
           ? <a href={st.tracing.host} target="_blank" rel="noreferrer" className="text-accent">Langfuse ↗</a>
           : <span className="text-dim" title="Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY, with the agent in record or live">Off</span>}</div>
+      {st.lanes && (
+        <>
+          <div className="label pt-2 border-t border-line mt-1">Team · running / at once (waiting)</div>
+          {Object.entries(st.lanes).map(([k, l]) => (
+            <div key={k} className="flex justify-between">
+              <span className="text-faint">{LANE[k] ?? words(k)}</span>
+              <span className={l.running ? "" : "text-dim"}>{l.running} / {l.size}{l.waiting ? ` (${l.waiting})` : ""}</span>
+            </div>
+          ))}
+        </>
+      )}
       {Object.entries(st.models).map(([k, v]) => (
         <div key={k} className="flex justify-between"><span className="text-faint">{words(k)}</span><span className="text-dim">{v}</span></div>
       ))}
@@ -417,6 +463,96 @@ function AgentPanel({ st, runs, cur }: { st: AgentStatus; runs: AgentRun[]; cur:
             ))}
           </ul>
         </>
+      )}
+    </Panel>
+  );
+}
+
+const LANE: Record<string, string> = { review_locate: "Locate reviewers", review_trade: "Trade reviewers",
+  plan_queue: "Queue planner" };
+const VERDICT: Record<TradeReview["verdict"], [string, string]> = {
+  AGREE: ["Agrees", "text-up"], AMEND: ["Would amend", "text-hot"], HOLD: ["Hold", "text-hot"], UNREAD: ["Unread", "text-faint"],
+};
+
+/** The trade reviewer's verdict, in a word, on a queue row. */
+function ReviewTag({ r }: { r: TradeReview | null | undefined }) {
+  if (!r) return <span />;
+  const [label, tone] = VERDICT[r.verdict];
+  return <span className={`text-2xs ${tone}`} title={r.notes}>{label}</span>;
+}
+
+/** The trade reviewer's read on the card in focus, with its suggested change one click away. */
+function ReviewNote({ r, payload, killed, onApply }: {
+  r: TradeReview; payload: Record<string, unknown>; killed: boolean; onApply: (c: Record<string, number>) => void;
+}) {
+  const [label, tone] = VERDICT[r.verdict];
+  const changes = Object.entries(r.changes ?? {});
+  return (
+    <div className="mx-4 mb-3 px-3 py-2.5 rounded border border-line bg-raised/40 flex flex-col gap-1.5">
+      <span className="flex items-center gap-2 text-2xs">
+        <span className="text-faint">Trade reviewer · {short(r.model)}</span>
+        <span className={tone}>{label}</span>
+        {r.confidence != null && <span className="text-faint">· {Math.round(r.confidence * 100)}% sure</span>}
+      </span>
+      {r.notes && <span className="text-dim">{r.notes}</span>}
+      {!!changes.length && (
+        <span className="flex items-center gap-3 flex-wrap">
+          {changes.map(([k, v]) => (
+            <span key={k}><span className="text-faint">{words(k)} </span>
+              <span className="line-through text-faint">{String(payload[k] ?? "—")}</span> → <span className="font-medium">{k === "quantity" ? full(v) : v}</span></span>
+          ))}
+          <button className="btn btn-sm" disabled={killed} onClick={() => onApply(Object.fromEntries(changes))}>Apply and approve</button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** The queue planner's read of the whole queue: notes, conflicts and the cards it would approve together. */
+function PlanPanel({ plan, pending, killed, onPlan, onSelect, onBatch }: {
+  plan: QueuePlan | null;
+  pending: Action[];
+  killed: boolean;
+  onPlan: () => void;
+  onSelect: (id: string) => void;
+  onBatch: (b: QueuePlan["batches"][number]) => void;
+}) {
+  const live = new Set(pending.map((a) => a.id));
+  const title = (id: string) => pending.find((a) => a.id === id)?.title ?? id;
+  const batches = (plan?.batches ?? []).map((b) => ({ ...b, ids: b.ids.filter((i) => live.has(i)) })).filter((b) => b.ids.length > 1);
+  const conflicts = (plan?.conflicts ?? []).filter((c) => c.ids.some((i) => live.has(i)));
+  return (
+    <Panel title={<>Plan {plan && <span className="label">{plan.by === "rules" ? "rules only" : short(plan.by)} · {time(plan.at)}
+      {plan.dispatched.trades || plan.dispatched.locates
+        ? ` · sent ${plan.dispatched.trades ?? 0} trade and ${plan.dispatched.locates ?? 0} locate reviews` : ""}</span>}</>}
+      right={<button className="btn btn-sm" onClick={onPlan}>Plan now</button>}>
+      {!plan ? <Empty>The queue planner reads every card, starts reviews alongside, and plans the order to work them in.</Empty> : (
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))]">
+          <div className="px-4 py-3 flex flex-col gap-1.5 min-w-0">
+            <span className="label">Notes</span>
+            {plan.notes.length ? plan.notes.map((n) => <span key={n}>{n}</span>) : <span className="text-faint">None.</span>}
+            {!!plan.overflow && <span className="text-2xs text-faint">{plan.overflow} newer cards weren't read; they come in the next plan.</span>}
+          </div>
+          <div className="px-4 py-3 flex flex-col gap-1.5 min-w-0 border-l border-line">
+            <span className="label">Conflicts</span>
+            {conflicts.length ? conflicts.map((c) => (
+              <button key={c.detail} className="text-left text-hot hover:underline" onClick={() => onSelect(c.ids.find((i) => live.has(i))!)}>
+                {c.detail}</button>
+            )) : <span className="text-faint">None found.</span>}
+          </div>
+          <div className="px-4 py-3 flex flex-col gap-2 min-w-0 border-l border-line">
+            <span className="label">Approve together</span>
+            {batches.length ? batches.map((b) => (
+              <div key={b.title + b.ids[0]} className="flex flex-col gap-1">
+                <span className="flex items-center gap-2">
+                  <span className="font-medium flex-1 truncate" title={b.ids.map(title).join("\n")}>{b.title}</span>
+                  <button className="btn btn-sm" disabled={killed} onClick={() => onBatch(b)}>Approve {b.ids.length}</button>
+                </span>
+                {b.why && <span className="text-2xs text-dim">{b.why}</span>}
+              </div>
+            )) : <span className="text-faint">No batches.</span>}
+          </div>
+        </div>
       )}
     </Panel>
   );

@@ -119,7 +119,7 @@ function Sidebar({ st, kill, onKill, mode, onMode }: {
   const setView = useDesk((s) => s.setView);
   const selected = useDesk((s) => s.selectedAction);
   const selectAction = useDesk((s) => s.selectAction);
-  const { data: pending } = useQuery<Action[]>("/actions?status=PENDING", ["action"]);
+  const { data: pending } = useQuery<Action[]>("/actions?status=PENDING&limit=2000", ["action"]);
   const here = workspaceOf(view);
   const down = st?.systems.filter((s) => !s.up) ?? [];
   const clock = useDesk((s) => s.clock);
