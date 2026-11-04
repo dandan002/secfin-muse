@@ -112,3 +112,17 @@ async def test_order_commands_take_an_empty_body(client: httpx.AsyncClient) -> N
     assert (await client.post(f"/orders/{o['id']}/counter", json={})).status_code == 422
     r = await client.post(f"/orders/{o['id']}/cancel", json={})
     assert r.status_code != 422 or "feeBps" not in r.text  # past validation: the venue's answer, not ours
+
+
+async def test_locates_by_id_and_summary(client: httpx.AsyncClient) -> None:
+    """The waiting list streams: a push names a line, the desk fetches just that line, and counts come apart."""
+    await _supply("I00039", 10_000)  # DELL, WARM: goes to review
+    was = (await client.get("/locates/summary")).json()
+    a, b = (await client.post("/locates", json={"counterparty": "PBBRAVO", "lines": [
+        {"identifier": "DELL US", "quantity": 1000}, {"identifier": "DELL US", "quantity": 2000}]})).json()
+    got = (await client.get("/locates", params={"ids": a["id"]})).json()
+    assert [x["id"] for x in got] == [a["id"]] and "suggestedQty" in got[0]
+    await client.post(f"/locates/{b['id']}/decision", json={"decision": "REJECTED"})
+    now = (await client.get("/locates/summary")).json()
+    assert {k: now[k] - was[k] for k in ("received", "waiting", "withAgent", "decided")} == {
+        "received": 2, "waiting": 1, "withAgent": 1, "decided": 1}

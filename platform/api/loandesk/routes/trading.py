@@ -66,8 +66,16 @@ async def create_locates(body: LocatesIn, who: str = Depends(trader), s: AsyncSe
 
 @router.get("/locates", tags=["locates"])
 async def list_locates(status: str | None = None, route: str | None = None, limit: int = Query(500, le=5000),
+                       ids: str | None = Query(None, description="Comma-separated locate ids: just these lines"),
                        s: AsyncSession = Depends(get_session)) -> list[dict]:
-    return await locates.listing(s, status=status.upper().split(",") if status else None, route=route, limit=limit)
+    return await locates.listing(s, status=status.upper().split(",") if status else None, route=route, limit=limit,
+                                 ids=[x for x in ids.split(",") if x] if ids is not None else None)
+
+
+@router.get("/locates/summary", tags=["locates"])
+async def locates_summary(s: AsyncSession = Depends(get_session)) -> dict:
+    """Counts for the burst strip: received, waiting (with the agent or the trader), decided, auto-cleared."""
+    return await locates.summary(s)
 
 
 async def _decide(s: AsyncSession, loc_id: str, body: DecisionIn, who: str) -> Locate:

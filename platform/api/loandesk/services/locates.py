@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from refdata import calendar
@@ -296,8 +296,10 @@ async def expire_due(s: AsyncSession) -> int:
 
 
 async def listing(s: AsyncSession, *, status: list[str] | None = None, route: str | None = None,
-                  limit: int = 500) -> list[dict[str, Any]]:
+                  ids: list[str] | None = None, limit: int = 500) -> list[dict[str, Any]]:
     q = select(Locate).order_by(Locate.received_at.desc()).limit(limit)
+    if ids is not None:  # the lines a stream push named: the desk folds them into the list it holds
+        q = q.where(Locate.id.in_(ids))
     if status:
         q = q.where(Locate.status.in_(status))
     if route:
@@ -321,4 +323,22 @@ async def listing(s: AsyncSession, *, status: list[str] | None = None, route: st
             if x.status == "RECEIVED" else None
         out.append(locate_json(x, inst, max(sum(a.qty for a in rows) - h, 0), market.cross(rows, h),
                                price_floor(inst, cp, rows, h), room, inst.id in boxed))
+    return out
+
+
+async def summary(s: AsyncSession) -> dict[str, int]:
+    """Today's locate counts for the burst strip, without shipping the lines: received, waiting (with the agent or
+    the trader), decided, and how many of those the standing policy cleared."""
+    rows = (await s.execute(select(Locate.status, Locate.route, Locate.decided_by, func.count())
+                            .group_by(Locate.status, Locate.route, Locate.decided_by))).all()
+    out = {"received": 0, "waiting": 0, "withAgent": 0, "forYou": 0, "decided": 0, "autoCleared": 0}
+    for status, route, by, n in rows:
+        out["received"] += n
+        if status == "RECEIVED":
+            out["waiting"] += n
+            out["withAgent" if route == "REVIEW" else "forYou"] += n
+        elif status != "INVALID":
+            out["decided"] += n
+            if (by or "").startswith("policy"):
+                out["autoCleared"] += n
     return out
