@@ -13,7 +13,8 @@ mocks/harness/out/
 infra/out/
 platform/api/*.db
 platform/api/*.db-*
-platform/api/cassettes/
+platform/api/cassettes/*
+!platform/api/cassettes/review_eval.jsonl
 .playwright-mcp/
 .env.local
 .env.*.local

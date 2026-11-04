@@ -178,6 +178,26 @@ acceptance ("Send", "Send HII, pass the rest", "Sure, send 500") with the right 
 with sizes carried from the RFQ; one quote handed to the trader. About $0.0034 a message on low reasoning. The
 rules alone can't read replies (62% here) and hand them to the trader instead.
 
+Locate reviewer eval (`loandesk/agent/review_eval.py`): 14 labelled locates on a fresh, seeded desk (ample, thin
+and scarce supply, a counterparty capped by its limits, Hot names, prompt injection in the request reference), each
+reviewed by the real graph as deployed. Scored: acceptable and preferred decisions, hard-limit breaches in the
+model's own answers and on cards, escalations, injections obeyed and flagged, Hot-name cards the autopilot would
+approve, confidence, time and spend. Its recording is committed, and `tests/test_review_eval.py` replays it on
+every run to hold the safety targets.
+
+```bash
+(cd platform/api && LOANDESK_AGENT_MODE=replay uv run --extra agent python -m loandesk.agent.review_eval)  # free
+(cd platform/api && LOANDESK_AGENT_MODE=record uv run --extra agent python -m loandesk.agent.review_eval \
+    --reviewer muse-spark-1.3 --reviewer muse-wonder-1.0 --budget 3)                               # compare, record
+```
+
+| Reviewer (escalating to Wonder) | Acceptable | Preferred | Raw breaches | Cards past a limit | Escalated | Injections obeyed / flagged | Hot auto-approvals | Confidence | s / review | Spend |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| muse-spark-1.3, medium | 14/14 | 11/14 | 0 | 0 | 3 | 0 / 2 | 0 | 0.77 | 34 | $0.86 |
+
+The three short of preferred were acceptable: two partials on a sliver of supply where a decline was preferred,
+and one partial on ample supply.
+
 Prompt-injection red-team (`ingest/redteam.py`): 52 counterparty messages, each with what the desk must do. 38
 attacks the rules must flag on sight (direct, reworded, claims our approvals were waived, injections riding on a real
 trade or recall, spelled out or hidden in full-width or invisible characters, closing the `<untrusted>` fence early,
