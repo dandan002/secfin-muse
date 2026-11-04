@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { authEnabled } from "../lib/auth";
 import { navigate, ROUTES } from "../lib/router";
+import { LegalLinks } from "./Legal";
 
 const STEPS = [
   ["chat", "A borrow agreed in Desk Chat is read in context and drafted as an order card."],
@@ -94,6 +95,7 @@ export function Landing({ signedIn = false, onDevEnter }: { signedIn?: boolean; 
         <footer className="py-10 text-2xs text-faint leading-relaxed max-w-3xl">
           All data is synthetic. Not affiliated with or endorsed by EquiLend, Wematch, FIS or Bloomberg; all names
           are trademarks of their owners. Venues, processor, custodian and chat are simulators.
+          <span className="flex gap-4 mt-3"><LegalLinks /></span>
         </footer>
       </div>
     </div>
