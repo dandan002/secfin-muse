@@ -3,6 +3,8 @@
 Three modes, switched at run time like the kill switch (``PUT /autopilot``) and starting from
 ``LOANDESK_AUTOPILOT_MODE``:
 
+The limits below are the desk's to set (``PUT /policy/{key}``, see ``policy.py``); settings only start them.
+
 * ``off``: every card waits for a trader (the default, and the desk's normal stance).
 * ``autopilot``: the agent starts its own reviews of Warm locates, and a card approves itself when it is one of
   the allowed kinds (locate decisions, orders, baskets), carries no risk flag at all, is not on a Hot name, the
@@ -30,7 +32,7 @@ from typing import Any, Literal
 
 from sqlalchemy import select
 
-from . import clock, db, events, gate, rules, secmaster
+from . import clock, db, events, gate, policy, rules, secmaster
 from .models import Action, Event, Locate, Order
 from .settings import get_settings
 
@@ -55,14 +57,12 @@ class Envelope:
 
 
 def envelope(mode: Mode) -> Envelope | None:
-    cfg = get_settings()
-    if mode == "autopilot":
-        return Envelope(frozenset(cfg.autopilot_kinds), cfg.autopilot_max_card_usd, cfg.autopilot_day_usd,
-                        cfg.autopilot_day_count, cfg.autopilot_min_confidence, allow_warnings=False, allow_hot=False)
-    if mode == "danger":
-        return Envelope(None, cfg.danger_max_card_usd, cfg.danger_day_usd, cfg.danger_day_count, 0.0,
-                        allow_warnings=True, allow_hot=True)
-    return None
+    """The mode's limits, as the desk set them (``policy``), else as the settings start them."""
+    if mode not in ACTOR:
+        return None
+    lim = policy.limits(mode)
+    return Envelope(None if lim.kinds is None else frozenset(lim.kinds), lim.maxCardUsd, lim.dayUsd, lim.dayCount,
+                    lim.minConfidence, allow_warnings=mode == "danger", allow_hot=mode == "danger")
 
 
 # -- mode ------------------------------------------------------------------------------------------
@@ -79,7 +79,8 @@ def state() -> dict[str, Any]:
             "limits": None if env is None else {
                 "kinds": sorted(env.kinds) if env.kinds else "all", "maxCardUsd": env.max_card_usd,
                 "dayUsd": env.day_usd, "dayCount": env.day_count, "minConfidence": env.min_confidence,
-                "warnings": env.allow_warnings, "hot": env.allow_hot}}
+                "warnings": env.allow_warnings, "hot": env.allow_hot, "tripAfter": policy.trip_after(),
+                **({"counterTolerancePct": policy.limits("danger").counterTolerancePct} if m == "danger" else {})}}
 
 
 async def set_mode(m: Mode, by: str, reason: str | None = None) -> dict[str, Any]:
@@ -201,7 +202,7 @@ async def consider(action_id: str) -> Action | None:
     if (r := agent.current()) is not None:  # the agent run that drafted it carries on
         await r.action_decided(a)
     _failures = _failures + 1 if a.status == "FAILED" else 0
-    if _failures >= get_settings().autopilot_trip_after:
+    if _failures >= policy.trip_after():
         await set_mode("off", "policy:BREAKER", f"{_failures} auto-approved cards failed in a row "
                                                  f"(last: {(a.result or {}).get('error')})")
     return a
@@ -213,7 +214,7 @@ def counter_ok(o: Order) -> bool:
     more, a loan takes at most that much less."""
     if o.status != "COUNTERED" or o.counter_fee_bps is None:
         return False
-    tol = get_settings().danger_counter_tolerance_pct / 100
+    tol = policy.limits("danger").counterTolerancePct / 100
     if o.side == "BORROW":
         return o.counter_fee_bps <= o.fee_bps * (1 + tol)
     return o.counter_fee_bps >= o.fee_bps * (1 - tol)
