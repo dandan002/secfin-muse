@@ -33,7 +33,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from .. import clock, db, gate, rules, secmaster
+from .. import clock, db, gate, guard, rules, secmaster
 from ..models import AgentRun, Counterparty, Instrument
 from ..services import limits, locates, market
 from ..settings import get_settings
@@ -87,11 +87,8 @@ ANSWER = """When you are done, answer with JSON only, no prose around it:
 ASSESSED = ("availability", "utilization", "feeHistory")
 READ_TOOLS = ["get_counterparty", "search_history", "get_market", "get_fee_history", "check_limits"]
 MAX_MODEL_CALLS = 10  # per model; a run makes at most twice this with an escalation
-UNTRUSTED_FIELDS = frozenset({"identifier", "requestRef", "sourceRef", "text", "raw"})
-
-
-def untrusted(text: str) -> str:
-    return "<untrusted>" + text.replace("<untrusted>", "").replace("</untrusted>", "") + "</untrusted>"
+UNTRUSTED_FIELDS = frozenset({"identifier", "requestRef", "sourceRef", "text", "raw", "query"})
+untrusted = guard.untrusted
 
 
 def fence(obj: Any) -> Any:

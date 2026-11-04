@@ -41,7 +41,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import clock, events, secmaster
+from .. import clock, events, guard, secmaster
 from ..models import ChatMessage, Counterparty
 from ..settings import get_settings
 from . import paste
@@ -52,10 +52,6 @@ OPEN = ("RFQ", "OFFER", "IOI", "QUOTE", "COUNTER", "DECLINE", "RECALL", "RETURN"
 NAMED = ("RFQ", "OFFER", "IOI", "QUOTE", "ACCEPT", "RECALL", "RETURN", "INTERNAL_BORROW")  # must name their lines
 CONTEXT = 40  # most recent earlier messages in the room the parser sees (plus any older request still open)
 
-INJECTION = re.compile(
-    r"ignore (your|all|previous|the) (limits|rules|instructions)|disregard (previous|your|all|the)? ?"
-    r"(rules|instructions|limits)|system note|assistant instructions|\[\[.*?\]\]|skip the approval|"
-    r"pre-?authori[sz]ed|no need to (check|review)|reply ['\"]?confirmed|you are now|new instructions", re.I)
 RFQ = re.compile(r"\b(quote|levels?|lvl|bid/offer|where can (you|u) show|where are (you|u)|what'?s the fee|"
                  r"can (you|u) show|price|bid|borrows?|lend us)\b", re.I)
 RECALL = re.compile(r"\brecall(s|ing|ed)?\b", re.I)
@@ -90,8 +86,8 @@ def read_rules(text: str, cp_kind: str | None = None) -> Reading:
     lines = _lines(parsed)
     sized = [ln for ln in lines if ln["quantity"]]
     clean = sized and all(ln["instrumentId"] for ln in sized)
-    if INJECTION.search(text):
-        return Reading("INJECTION", 0.97, lines, note="tries to change the desk's rules")
+    if (said := guard.injection(text)) is not None:
+        return Reading("INJECTION", 0.97, lines, note=f"tries to change the desk's rules: {said!r}")
     if CONFIRM.search(text):
         return Reading("ACCEPT", 0.9 if sized else 0.6, sized)
     if COUNTER.search(text):
@@ -170,13 +166,9 @@ Answer with JSON only:
 "ourSide" is the side of the trade we (US) would be on if it goes ahead: we LEND when they borrow from us."""
 
 
-def _untrusted(text: str) -> str:
-    return "<untrusted>" + text.replace("<untrusted>", "").replace("</untrusted>", "") + "</untrusted>"
-
-
 def _said(side: str, seq: int, sender: str, text: str, at: datetime | None = None) -> str:
     when = f" {at:%H:%M}" if at else ""
-    return f"#{seq}{when} {side} ({sender}): " + (_untrusted(text) if side == "THEM" else text)
+    return f"#{seq}{when} {side} ({sender}): " + (guard.untrusted(text) if side == "THEM" else text)
 
 
 async def read_model(s: AsyncSession, msg: dict[str, Any], side: str, cp: Counterparty | None,
