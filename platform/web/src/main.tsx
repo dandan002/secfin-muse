@@ -5,6 +5,7 @@ import { App } from "./App";
 import { CLERK_KEY, JWT_TEMPLATE, setTokenGetter } from "./lib/auth";
 import { isUnder, navigate, Redirect, ROUTES, usePath } from "./lib/router";
 import { Landing } from "./views/Landing";
+import { Privacy, Terms } from "./views/Legal";
 import { SignInPage } from "./views/SignInPage";
 import "./index.css";
 
@@ -33,6 +34,8 @@ function SignedInDesk() {
 function Routes() {
   const path = usePath();
   const { isLoaded, isSignedIn } = useAuth();
+  if (path === ROUTES.terms) return <Terms />;
+  if (path === ROUTES.privacy) return <Privacy />;
   if (!isLoaded) return null;
   if (isUnder(path, ROUTES.desk)) return isSignedIn ? <SignedInDesk /> : <Redirect to={ROUTES.signIn} />;
   if (isUnder(path, ROUTES.signIn)) return isSignedIn ? <Redirect to={ROUTES.desk} /> : <SignInPage />;
@@ -45,6 +48,8 @@ function Routes() {
 function Unconfigured() {
   const path = usePath();
   const dev = import.meta.env.DEV;
+  if (path === ROUTES.terms) return <Terms />;
+  if (path === ROUTES.privacy) return <Privacy />;
   if (dev && isUnder(path, ROUTES.desk)) return <App />;
   if (path !== ROUTES.landing) return <Redirect to={ROUTES.landing} />;
   return <Landing onDevEnter={dev ? () => navigate(ROUTES.desk) : undefined} />;

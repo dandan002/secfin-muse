@@ -2,7 +2,7 @@ import { useEffect, useSyncExternalStore } from "react";
 
 /** Three pages: the landing at ``/``, sign-in at ``/sign-in`` (Clerk adds sub-steps under it), the desk at ``/desk``.
  *  A tiny history router; Clerk navigates through ``navigate`` too, so sign-in steps never reload the page. */
-export const ROUTES = { landing: "/", signIn: "/sign-in", desk: "/desk" } as const;
+export const ROUTES = { landing: "/", signIn: "/sign-in", desk: "/desk", terms: "/terms", privacy: "/privacy" } as const;
 
 const EVENT = "loandesk:navigate";
 

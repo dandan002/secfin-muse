@@ -1,5 +1,6 @@
 import { SignIn } from "@clerk/react";
 import { navigate, ROUTES } from "../lib/router";
+import { LegalLinks } from "./Legal";
 
 /** Clerk's sign-in, styled to the desk (dark graphite, sage accent). Sign-up is off: traders are invited. */
 const appearance = {
@@ -52,7 +53,10 @@ export function SignInPage() {
           />
         </main>
 
-        <footer className="py-6 text-2xs text-faint">All data is synthetic.</footer>
+        <footer className="py-6 text-2xs text-faint flex gap-4">
+          <span className="flex-1">All data is synthetic. By signing in you agree to the terms.</span>
+          <LegalLinks />
+        </footer>
       </div>
     </div>
   );
