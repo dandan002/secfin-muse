@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -37,6 +38,21 @@ def enabled() -> bool:
         and client() is not None
 
 
+_FENCED = re.compile(r"(<untrusted>)(.*?)(</untrusted>)", re.S | re.I)
+
+
+def redact(*, data: Any, **_: Any) -> Any:
+    """Langfuse's mask: counterparty text (always fenced in <untrusted> before a model sees it) stays home; the
+    trace keeps its shape and length, so a reader still sees where it was."""
+    if isinstance(data, str):
+        return _FENCED.sub(lambda m: f"{m[1]}[redacted: {len(m[2])} chars]{m[3]}", data)
+    if isinstance(data, dict):
+        return {k: redact(data=v) for k, v in data.items()}
+    if isinstance(data, list | tuple):
+        return [redact(data=v) for v in data]
+    return data
+
+
 def client() -> Any:
     """The Langfuse client, made once; None when it isn't configured or installed."""
     global _client, _failed
@@ -52,7 +68,8 @@ def client() -> Any:
         _failed = True
         return None
     _client = Langfuse(public_key=cfg.langfuse_public_key, secret_key=cfg.langfuse_secret_key,
-                       host=cfg.langfuse_host, environment=cfg.langfuse_environment)
+                       host=cfg.langfuse_host, environment=cfg.langfuse_environment,
+                       **({"mask": redact} if cfg.langfuse_redact_untrusted else {}))
     return _client
 
 

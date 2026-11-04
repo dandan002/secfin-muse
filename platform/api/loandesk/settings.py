@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     # Who may use the desk: trader names (the token's trader / username claim, or the Clerk user id). Empty: anyone
     # the Clerk instance signs in, so set this (or restrict sign-ups in Clerk) before the desk faces the internet.
     traders: list[str] = []
+    # Or let Clerk say who trades: a token whose ``role`` (the user's public metadata, via the ``loandesk`` token
+    # template; infra/clerk_setup.py sets both up) is one of these gets in. E.g. ["trader", "head"].
+    trader_roles: list[str] = []
+    # Heads of desk (trader names or emails): with sign-in on, only they release the kill switch, turn the autopilot
+    # or danger mode on, or change the desk's policy. A Clerk user whose public metadata has ``role: head`` (carried
+    # in the ``loandesk`` session token) is one too. Anyone may throw the kill switch or turn the autopilot off.
+    heads: list[str] = []
 
     # -- the outside world (the mocks, locally on 8000-8060) ------------------------------------
     control_url: str = _url("CONTROL", 8000)
@@ -157,6 +164,7 @@ class Settings(BaseSettings):
                                                                                "LANGFUSE_SECRET_KEY"))
     langfuse_host: str = Field("https://cloud.langfuse.com",
                                validation_alias=AliasChoices("LOANDESK_LANGFUSE_HOST", "LANGFUSE_HOST"))
+    langfuse_redact_untrusted: bool = True  # counterparty text (inside <untrusted>) never leaves for Langfuse
     langfuse_environment: str = "local"  # Langfuse's environment tag: local, demo, ...
 
 

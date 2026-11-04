@@ -12,3 +12,5 @@ clerk_publishable_key = "pk_test_..."
 # budget_email    = "you@example.com"  # emails at 80% and 100% of credit_guard_usd
 # llm_mode        = "replay"           # off | replay | record | live
 # meta_ai_api_key = "..."              # or TF_VAR_meta_ai_api_key; needed for record/live
+# Clerk roles (public metadata, via the loandesk token template) the desk lets in; set up with infra/clerk_setup.py
+desk_trader_roles     = ["trader", "head"]

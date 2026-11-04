@@ -48,14 +48,35 @@ async def verify(token: str) -> dict[str, Any]:
     parties = cfg.clerk_authorized_parties or cfg.cors_origins
     if claims.get("azp") and claims["azp"] not in parties:  # a token minted for another site
         raise AuthError(f"token is for {claims['azp']}")
-    if cfg.traders and trader_name(claims) not in {t.strip().lower() for t in cfg.traders}:
-        raise NotATrader(f"{trader_name(claims)} isn't one of the desk's traders")
+    listed = bool(_who(claims) & {t.strip().lower() for t in cfg.traders})
+    role = str(claims.get("role") or "").lower()
+    by_role = role in {r.strip().lower() for r in cfg.trader_roles}
+    if (cfg.traders or cfg.trader_roles) and not (listed or by_role):
+        why = ("the session token has no role: is the loandesk JWT template set up (infra/clerk_setup.py)?"
+               if cfg.trader_roles and "role" not in claims else "")
+        raise NotATrader(f"{trader_name(claims)} isn't one of the desk's traders{'; ' + why if why else ''}")
     return claims
 
 
 def trader_name(claims: dict[str, Any]) -> str:
-    """A ``trader`` (or ``username``) claim added to the Clerk session token, else the Clerk user id."""
-    return str(claims.get("trader") or claims.get("username") or claims["sub"]).strip().lower()[:32]
+    """The ``trader`` claim (the ``loandesk`` token template sets it), else ``username``, else the email, else the
+    Clerk user id."""
+    return str(claims.get("trader") or claims.get("username") or claims.get("email") or claims["sub"]
+               ).strip().lower()[:40]
+
+
+def _who(claims: dict[str, Any]) -> set[str]:
+    """Every name the desk may know this person by, for the trader and head lists."""
+    return {str(v).strip().lower() for v in (trader_name(claims), claims.get("username"), claims.get("email"),
+                                             claims.get("sub")) if v}
+
+
+def is_head(claims: dict[str, Any] | None) -> bool:
+    """Head of desk: ``role: head`` in the token (Clerk public metadata), or named in ``LOANDESK_HEADS``."""
+    if claims is None:
+        return not enabled()  # sign-in off: local dev, everyone is the head
+    heads = {h.strip().lower() for h in get_settings().heads}
+    return str(claims.get("role") or "").lower() == "head" or bool(_who(claims) & heads)
 
 
 async def require_user(conn: HTTPConnection) -> None:

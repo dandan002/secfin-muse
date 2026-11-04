@@ -90,10 +90,42 @@ async def set_mode(m: Mode, by: str, reason: str | None = None) -> dict[str, Any
     _failures = 0
     async with db.session() as s:
         events.record(s, ENTITY, "mode", m, {"mode": m, "reason": reason}, actor=by)
+        await _keep(s)
         await s.commit()
     if m != "off" and worker is not None:
         worker.sweep()
     return state()
+
+
+async def _keep(s: Any) -> None:
+    from .models import DeskSetting
+
+    v = {k: _state[k] for k in ("mode", "by", "at", "tripped")}
+    if (row := await s.get(DeskSetting, "autopilot_mode")) is None:
+        s.add(DeskSetting(key="autopilot_mode", value=v, updated_by=_state["by"] or "system", updated_at=clock.now()))
+    else:
+        row.value, row.updated_by, row.updated_at = v, _state["by"] or "system", clock.now()
+
+
+async def restore() -> None:
+    """The mode from before a restart. The autopilot carries on; danger doesn't: a person turns it on again, so a
+    crash loop or a redeploy never leaves the desk running end to end unattended without someone choosing it."""
+    from .models import DeskSetting
+
+    async with db.session() as s:
+        row = await s.get(DeskSetting, "autopilot_mode")
+        if row is None:
+            return
+        was = row.value or {}
+        if was.get("mode") == "autopilot":
+            _state.update(mode="autopilot", by=was.get("by"), at=was.get("at"), tripped=None)
+        elif was.get("mode") == "danger":
+            _state.update(mode="off", by="system:restart", at=clock.iso(clock.now()),
+                          tripped="the desk restarted while in danger mode: a head of desk turns it on again")
+            events.record(s, ENTITY, "mode", "off", {"mode": "off", "reason": _state["tripped"]},
+                          actor="system:restart")
+            await _keep(s)
+            await s.commit()
 
 
 # -- the decision ------------------------------------------------------------------------------------

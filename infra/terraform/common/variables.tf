@@ -74,6 +74,12 @@ variable "clerk_publishable_key" {
   description = "pk_test_... / pk_live_...: public, baked into the web app's build (infra/up.sh)."
 }
 
+variable "desk_trader_roles" {
+  type        = list(string)
+  default     = []
+  description = "Clerk roles (public metadata, in the loandesk token) the desk lets in, e.g. [\"trader\", \"head\"]. Run infra/clerk_setup.py on the instance first."
+}
+
 variable "desk_sync" {
   type        = bool
   default     = false

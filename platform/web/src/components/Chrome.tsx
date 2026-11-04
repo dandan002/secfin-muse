@@ -5,7 +5,7 @@ import { authEnabled } from "../lib/auth";
 import { money, time } from "../lib/format";
 import { useKeys, useQuery } from "../lib/hooks";
 import { useDesk, VIEWS, workspaceOf, WORKSPACES } from "../lib/store";
-import type { Action, Autopilot, AutopilotMode, Status } from "../lib/types";
+import type { Action, Autopilot, AutopilotMode, Me, Status } from "../lib/types";
 
 const SHORT: Record<string, string> = {
   control: "Sim",
@@ -40,6 +40,8 @@ export function Shell({ children }: { children: ReactNode }) {
     }
   };
   const mode = ap?.mode ?? "off";
+  const { data: me } = useQuery<Me>("/me");
+  const head = me?.head ?? false;
 
   const setKill = async (on: boolean) => {
     await api.put("/kill-switch", { on });
@@ -65,8 +67,8 @@ export function Shell({ children }: { children: ReactNode }) {
           <span className="flex-1" />
           {confirming ? (
             <>
-              <span>Let the agent's approved actions execute again?</span>
-              <button className="btn border-bg text-bg hover:bg-bg/10" onClick={() => setKill(false)}>Turn off</button>
+              <span>{head ? "Let the agent's approved actions execute again?" : "Only a head of desk can release it."}</span>
+              <button className="btn border-bg text-bg hover:bg-bg/10" disabled={!head} onClick={() => setKill(false)}>Turn off</button>
               <button className="btn border-transparent text-bg hover:bg-bg/10" onClick={() => setConfirming(false)}>Keep on</button>
             </>
           ) : (
@@ -96,7 +98,8 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
       )}
       <div className="flex-1 flex min-h-0">
-        <Sidebar st={st} kill={kill} onKill={() => (kill ? setConfirming(true) : setKill(true))} mode={mode} onMode={setMode} />
+        <Sidebar st={st} kill={kill} onKill={() => (kill ? setConfirming(true) : setKill(true))} mode={mode} onMode={setMode}
+          head={head} />
         <div className="flex-1 min-w-0 flex flex-col">
           <Header />
           <main className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">{children}</main>
@@ -106,7 +109,8 @@ export function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-function Sidebar({ st, kill, onKill, mode, onMode }: {
+function Sidebar({ st, kill, onKill, mode, onMode, head }: {
+  head: boolean;
   st: Status | null;
   kill: boolean;
   onKill: () => void;
@@ -193,8 +197,8 @@ function Sidebar({ st, kill, onKill, mode, onMode }: {
             <button className="text-accent hover:underline" onClick={() => setView("policy")}>Limits</button></span>
           <div role="radiogroup" aria-label="Who approves cards" className="grid grid-cols-3 gap-0.5 p-0.5 rounded border border-line">
             {([["off", "Manual"], ["autopilot", "Autopilot"], ["danger", "Danger"]] as const).map(([m, label]) => (
-              <button key={m} role="radio" aria-checked={mode === m}
-                title={m === "off" ? "Every card waits for a trader" : m === "autopilot"
+              <button key={m} role="radio" aria-checked={mode === m} disabled={m !== "off" && !head && mode !== m}
+                title={m !== "off" && !head ? "Only a head of desk turns this on" : m === "off" ? "Every card waits for a trader" : m === "autopilot"
                   ? "Unflagged locate, order and basket cards inside the limits approve themselves"
                   : "The agent acts end to end: every kind of card, Hot names, warnings, lender counters"}
                 onClick={() => (m === "danger" && mode !== "danger" ? setDangerAsk(true) : (setDangerAsk(false), onMode(m)))}

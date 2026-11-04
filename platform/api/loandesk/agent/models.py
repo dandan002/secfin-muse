@@ -37,6 +37,12 @@ class Meter:
     spent: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     calls: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     day: str | None = None
+    held: float = 0.0  # what the calls in flight are expected to cost: a dozen at once can't overshoot the budget
+
+    def expect(self, model: str) -> float:
+        """What a call to ``model`` costs, by today's average so far (a cautious guess before the first)."""
+        n = self.calls.get(model, 0)
+        return self.spent[model] / n if n else 0.05
 
     @property
     def total(self) -> float:
@@ -180,15 +186,20 @@ class ModelGateway:
             if hit is None:
                 raise ModelUnavailable(f"no recording for this request ({key[:12]}) in {self.cfg.cassette_path}")
             return _remap(hit, req)
-        if meter.total >= self.cfg.budget_usd:
-            raise ModelUnavailable(f"budget of ${self.cfg.budget_usd:.2f} spent")
-        with observe.generation(req) as gen:
-            try:
-                resp = (await self._sdk().chat.completions.create(**req)).model_dump()
-            except Exception as e:
-                gen.failed(e)
-                raise
-            gen.done(resp, meter.add(model, resp.get("usage") or {}))
+        hold = meter.expect(model)
+        if meter.total + meter.held + hold > self.cfg.budget_usd:
+            raise ModelUnavailable(f"budget of ${self.cfg.budget_usd:.2f} spent (or held by calls in flight)")
+        meter.held += hold
+        try:
+            with observe.generation(req) as gen:
+                try:
+                    resp = (await self._sdk().chat.completions.create(**req)).model_dump()
+                except Exception as e:
+                    gen.failed(e)
+                    raise
+                gen.done(resp, meter.add(model, resp.get("usage") or {}))
+        finally:
+            meter.held -= hold
         await save_meter()
         if self.mode == "record":
             path = self.cfg.cassette_path
