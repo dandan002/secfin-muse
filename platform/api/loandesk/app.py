@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import agent, auth, autopilot, db, observe, policy, secmaster
+from . import agent, auth, autopilot, db, gate, observe, policy, secmaster
 from .adapters import systems
 from .routes import chat, desk, reference, trading
 from .settings import get_settings
@@ -34,6 +34,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with db.session() as s:
         n = await secmaster.load(s)
         await policy.load(s)
+        await gate.load_kill_switch(s)
+    if gate.kill_switch()["on"]:
+        log.warning("the kill switch is on (thrown by %s): nothing executes until a trader releases it",
+                    gate.kill_switch()["by"])
     if n:
         log.info("security master: loaded %d instruments", n)
     await agent.start()  # before the syncer: cards it drafts at start-up get their trade review as they're proposed

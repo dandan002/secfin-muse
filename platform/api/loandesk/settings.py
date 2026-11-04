@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Sign-in (see auth.py): the Clerk instance's Frontend API URL. Unset, the desk is open (local dev only).
     clerk_issuer: str | None = None
     clerk_authorized_parties: list[str] = []  # origins a token may be minted for; defaults to cors_origins
+    # Who may use the desk: trader names (the token's trader / username claim, or the Clerk user id). Empty: anyone
+    # the Clerk instance signs in, so set this (or restrict sign-ups in Clerk) before the desk faces the internet.
+    traders: list[str] = []
 
     # -- the outside world (the mocks, locally on 8000-8060) ------------------------------------
     control_url: str = _url("CONTROL", 8000)
@@ -113,7 +116,7 @@ class Settings(BaseSettings):
     orchestrator_model: str = "muse-wonder-1.0"
     reviewer_model: str = "muse-spark-1.3"
     parser_model: str = "muse-spark-1.3"
-    budget_usd: float = 0.50
+    budget_usd: float = 0.50  # model spend a day (New York), across restarts
     cassette_path: Path = Path("cassettes/agent.jsonl")
     reviewer_effort: str = "medium"  # reasoning_effort per model (spec: Spark on medium reasoning)
     orchestrator_effort: str = "high"
@@ -125,6 +128,7 @@ class Settings(BaseSettings):
     # The agent team (see agent/__init__.py): sub-agents run concurrently, each kind in its own lane.
     agent_locate_workers: int = 6  # locate reviews at once
     agent_trade_workers: int = 4  # trade reviews at once
+    agent_trade_budget_share: float = 0.5  # trade reviews stop at this share of the day's budget: locates come first
     agent_review_trades: bool = True  # a second pair of eyes on every rule-drafted order, basket, return and recall
     agent_plan_every_s: float = 300  # re-plan when the queue changed, at most this often (0: on demand only)
     agent_plan_max_cards: int = 150  # cards the planner reads (the oldest first); the rest wait for the next plan

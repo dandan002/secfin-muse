@@ -212,3 +212,24 @@ async def test_a_batch_never_holds_a_card_the_reviewer_would_change() -> None:
     out = await queue.check({"digest": cards, "conflicts": [], "overflow": 0, "model": WONDER, "answer": {
         "order": [{"id": "a"}], "batches": [{"title": "all", "ids": ["a", "b", "c", "d", "e"], "why": ""}]}})
     assert out["plan"]["batches"][0]["ids"] == ["a", "d"]  # approved as drafted: only what nobody would change
+
+
+async def test_one_live_review_per_card(team: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Review button twice, or the autopilot and the planner both: one run, not two cards."""
+    monkeypatch.setattr(get_settings(), "agent_review_trades", False)
+    await _clear_queue()
+    card = await _card(await _name(5))
+    gate_open = asyncio.Event()
+
+    class Slow(Scripted):
+        async def chat(self, **kw: Any) -> dict[str, Any]:
+            await gate_open.wait()
+            return await super().chat(**kw)
+
+    m = Slow({SPARK: [{"verdict": "AGREE", "notes": "ok", "confidence": 0.9}]})
+    monkeypatch.setattr(trade, "gateway", lambda: m)
+    first, second = await team.review_trade(card), await team.review_trade(card)
+    assert first.id == second.id
+    gate_open.set()
+    await settle(team)
+    assert len(m.seen) == 1 and (await _card_now(card)).review["verdict"] == "AGREE"

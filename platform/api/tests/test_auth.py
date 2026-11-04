@@ -29,6 +29,8 @@ def token(key: Any = KEY, **claims: Any) -> str:
 @pytest.fixture
 def clerk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "clerk_issuer", ISSUER)
+    monkeypatch.setattr(get_settings(), "clerk_authorized_parties", ["http://localhost:5180"])  # whatever .env says
+    monkeypatch.setattr(get_settings(), "traders", [])
     jwks = SimpleNamespace(get_signing_key_from_jwt=lambda _t: SimpleNamespace(key=KEY.public_key()))
     monkeypatch.setattr(auth, "_jwks", lambda _issuer: jwks)
 
@@ -79,3 +81,14 @@ async def test_the_stream_refuses_a_missing_or_bad_token(clerk: None) -> None:
 
 async def test_sign_in_off_keeps_the_dev_desk_open(client: httpx.AsyncClient) -> None:
     assert (await client.get("/locates")).status_code == 200
+
+
+async def test_only_the_desks_traders_get_in(client: httpx.AsyncClient, clerk: None,
+                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Clerk instance may let anyone sign up: with a trader list set, a valid token from anyone else is refused."""
+    monkeypatch.setattr(get_settings(), "traders", ["Sam", "kli"])
+    ok = {"authorization": f"Bearer {token(trader='sam')}"}
+    stranger = {"authorization": f"Bearer {token(username='mallory')}"}
+    assert (await client.get("/locates", headers=ok)).status_code == 200
+    r = await client.put("/kill-switch", headers=stranger, json={"on": False})
+    assert r.status_code == 403 and "mallory" in r.json()["detail"]

@@ -5,7 +5,9 @@
 * ``record``: call the Meta Model API and append each request/response to the cassette.
 * ``live``: call the API without recording.
 
-Spend is metered per model from token usage and refused past ``LOANDESK_BUDGET_USD``.
+Spend is metered per model from token usage and refused past ``LOANDESK_BUDGET_USD`` a day (New York). The meter
+is saved after every call and read back on start, so a restart (the desk scales to zero when idle) never hands
+out a fresh budget.
 Calls go through the OpenAI SDK against ``api.meta.ai/v1`` (installed with the ``agent`` extra).
 """
 
@@ -34,12 +36,29 @@ class ModelUnavailable(RuntimeError):
 class Meter:
     spent: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     calls: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    day: str | None = None
 
     @property
     def total(self) -> float:
+        self._roll()
         return sum(self.spent.values())
 
+    def _roll(self) -> None:
+        today = clock.local_date().isoformat()
+        if self.day != today:
+            self.day, self.spent, self.calls = today, defaultdict(float), defaultdict(int)
+
+    def json(self) -> dict[str, Any]:
+        return {"day": self.day, "spent": dict(self.spent), "calls": dict(self.calls)}
+
+    def restore(self, v: dict[str, Any]) -> None:
+        self._roll()
+        if v.get("day") == self.day:
+            self.spent.update(v.get("spent") or {})
+            self.calls.update(v.get("calls") or {})
+
     def add(self, model: str, usage: dict[str, Any]) -> float:
+        self._roll()
         p_in, p_cached, p_out = PRICES.get(model, PRICES["muse-wonder-1.0"])
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
         fresh = (usage.get("prompt_tokens") or 0) - cached
@@ -50,6 +69,32 @@ class Meter:
 
 
 meter = Meter()
+
+
+async def save_meter() -> None:
+    from .. import db
+    from ..models import DeskSetting
+
+    try:
+        async with db.session() as s:
+            row = await s.get(DeskSetting, "model_spend")
+            if row is None:
+                s.add(DeskSetting(key="model_spend", value=meter.json(), updated_by="gateway",
+                                  updated_at=clock.now()))
+            else:
+                row.value, row.updated_at = meter.json(), clock.now()
+            await s.commit()
+    except Exception:  # never fail a model call over the bookkeeping; the next call saves it again
+        pass
+
+
+async def load_meter() -> None:
+    from .. import db
+    from ..models import DeskSetting
+
+    async with db.session() as s:
+        if (row := await s.get(DeskSetting, "model_spend")) is not None:
+            meter.restore(row.value)
 
 
 # Timestamps and generated ids change on every run; the recording key ignores them so a replay of the same
@@ -144,6 +189,7 @@ class ModelGateway:
                 gen.failed(e)
                 raise
             gen.done(resp, meter.add(model, resp.get("usage") or {}))
+        await save_meter()
         if self.mode == "record":
             path = self.cfg.cassette_path
             path.parent.mkdir(parents=True, exist_ok=True)

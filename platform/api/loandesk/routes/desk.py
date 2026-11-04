@@ -87,8 +87,10 @@ class KillIn(BaseModel):
 
 
 @router.put("/kill-switch", tags=["gate"])
-async def kill_switch(body: KillIn, who: str = Depends(trader)) -> dict:
-    return gate.set_kill_switch(body.on, who)
+async def kill_switch(body: KillIn, who: str = Depends(trader), s: AsyncSession = Depends(get_session)) -> dict:
+    out = await gate.save_kill_switch(s, body.on, who)
+    await s.commit()
+    return out
 
 
 class AutopilotIn(BaseModel):
