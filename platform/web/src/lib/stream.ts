@@ -3,7 +3,21 @@ import { API_URL } from "./api";
 import { sessionToken } from "./auth";
 import { useDesk } from "./store";
 
-/** One WebSocket to the desk's /stream; pushes bump topic versions so views refetch. Reconnects with backoff. */
+type Listener = (data: any) => void;  // eslint-disable-line @typescript-eslint/no-explicit-any
+const listeners = new Map<string, Set<Listener>>();
+
+/** Hear each push on ``topic`` as it arrives, payload and all: for views that fold changes into what they hold
+ *  instead of refetching. ``"open"`` fires on every (re)connect, when anything missed must be read afresh. */
+export function onPush(topic: string, fn: Listener): () => void {
+  const set = listeners.get(topic) ?? new Set();
+  listeners.set(topic, set.add(fn));
+  return () => set.delete(fn);
+}
+
+const emit = (topic: string, data: unknown) => listeners.get(topic)?.forEach((fn) => fn(data));
+
+/** One WebSocket to the desk's /stream; pushes bump topic versions so views refetch, and go to any listeners.
+ *  Reconnects with backoff. */
 export function useStream() {
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -20,11 +34,15 @@ export function useStream() {
         retry = 0;
         setConnected(true);
         ["locate", "order", "trade", "break", "action", "market", "agent_run", "chat", "short_list"].forEach(bump);
+        emit("open", null);
       };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         if (msg.topic === "clock") setClock(msg.data);
-        else bump(msg.topic);
+        else {
+          bump(msg.topic);
+          emit(msg.topic, msg.data);
+        }
       };
       ws.onclose = () => {
         setConnected(false);
