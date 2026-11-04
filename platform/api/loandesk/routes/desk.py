@@ -7,17 +7,17 @@ import contextlib
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import agent, auth, autopilot, clock, events, gate, observe, sync
+from .. import agent, auth, autopilot, clock, events, gate, observe, policy, sync
 from ..adapters import AdapterError, systems
 from ..agent.models import gateway
 from ..agent.tools import REGISTRY
 from ..db import get_session
 from ..ingest import paste
-from ..models import Action, AgentRun, Event, PasteSession
+from ..models import Action, AgentRun, Counterparty, Event, PasteSession
 from ..services import locates
 from ..settings import get_settings
 from .deps import trader
@@ -106,6 +106,58 @@ async def set_autopilot(body: AutopilotIn, who: str = Depends(trader)) -> dict:
     if body.mode == "danger" and body.confirm != "DANGER":
         raise HTTPException(422, 'danger mode lets the agent act end to end: send confirm "DANGER" to turn it on')
     return await autopilot.set_mode(body.mode, who)
+
+
+# -- desk policy: autopilot limits and counterparty priority ---------------------------------------
+class BreakerIn(BaseModel):
+    tripAfter: int = Field(..., ge=1, le=100)
+
+
+@router.get("/policy", tags=["gate"])
+async def get_policy() -> dict:
+    """What the desk set (``value``), what settings start it at (``default``), and who set it last."""
+    return {**policy.snapshot(), "kinds": sorted(gate._executors)}
+
+
+@router.put("/policy/{key}", tags=["gate"])
+async def put_policy(key: Literal["autopilot", "danger", "breaker", "priority"], body: dict[str, Any],
+                     who: str = Depends(trader), s: AsyncSession = Depends(get_session)) -> dict:
+    """Set one policy. ``autopilot`` / ``danger``: the mode's limits; ``breaker``: ``{tripAfter}``; ``priority``:
+    ``{returns, recalls, margin}`` (counterparty codes, first first) and ``marginBudgetUsd``."""
+    try:
+        if key in ("autopilot", "danger"):
+            v = policy.Limits(**body)
+            if v.kinds is not None and (bad := sorted(set(v.kinds) - set(gate._executors))):
+                raise HTTPException(422, f"no such card kind: {', '.join(bad)}")
+            value = v.model_dump()
+        elif key == "breaker":
+            value = BreakerIn(**body).model_dump()
+        else:
+            v = policy.Priority(**body)
+            codes = set((await s.execute(select(Counterparty.code))).scalars())
+            for name in policy.LISTS:
+                order = getattr(v, name)
+                if bad := sorted(set(order) - codes):
+                    raise HTTPException(422, f"{name}: no counterparty {', '.join(bad)}")
+                if len(set(order)) != len(order):
+                    raise HTTPException(422, f"{name}: a counterparty is listed twice")
+            value = v.model_dump()
+    except ValidationError as e:
+        raise HTTPException(422, e.errors(include_url=False, include_context=False)) from e
+    out = await policy.put(s, key, value, who)
+    await s.commit()
+    if key in ("autopilot", "danger") and autopilot.worker is not None and autopilot.mode() == key:
+        autopilot.worker.sweep()  # cards it passed over may fit the new limits
+    return out
+
+
+@router.delete("/policy/{key}", tags=["gate"])
+async def reset_policy(key: Literal["autopilot", "danger", "breaker", "priority"], who: str = Depends(trader),
+                       s: AsyncSession = Depends(get_session)) -> dict:
+    """Back to where the settings start it."""
+    out = await policy.put(s, key, None, who)
+    await s.commit()
+    return out
 
 
 # -- paste ingestion ---------------------------------------------------------------------------------

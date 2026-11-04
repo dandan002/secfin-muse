@@ -9,10 +9,9 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from loandesk import autopilot, db, gate, secmaster
+from loandesk import autopilot, db, gate, policy, secmaster
 from loandesk.models import Action, Event, Locate, Order
 from loandesk.services import market
-from loandesk.settings import get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -138,7 +137,7 @@ async def test_off_means_off_and_a_passed_over_card_says_why(setup: None) -> Non
 async def test_the_days_count_limit(setup: None, monkeypatch: pytest.MonkeyPatch) -> None:
     async with db.session() as s:
         n, _ = await autopilot.used_today(s)
-    monkeypatch.setattr(get_settings(), "autopilot_day_count", n + 1)
+    monkeypatch.setitem(policy._set, "autopilot", {**policy.get("autopilot"), "dayCount": n + 1})
     _on("autopilot")
     first, second = await _card(), await _card()
     assert (await autopilot.consider(first)) is not None
@@ -157,7 +156,7 @@ async def test_the_kill_switch_still_stops_it(setup: None) -> None:
 
 
 async def test_failures_in_a_row_trip_the_breaker(setup: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "autopilot_trip_after", 2)
+    monkeypatch.setitem(policy._set, "breaker", {"tripAfter": 2})
     _on("autopilot")
     for _ in range(2):  # a card for a locate that isn't there: the executor fails it
         card = await _card("locate_decision", {"locateId": "loc_missing", "decision": "APPROVED", "quantity": 1})

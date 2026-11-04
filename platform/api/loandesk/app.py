@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import agent, auth, autopilot, db, observe, secmaster
+from . import agent, auth, autopilot, db, observe, policy, secmaster
 from .adapters import systems
 from .routes import chat, desk, reference, trading
 from .settings import get_settings
@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await db.create_all()
     async with db.session() as s:
         n = await secmaster.load(s)
+        await policy.load(s)
     if n:
         log.info("security master: loaded %d instruments", n)
     syncer = Syncer()

@@ -373,3 +373,14 @@ class SyncCursor(Base):
     __tablename__ = "sync_cursors"
     name: Mapped[str] = mapped_column(String(32), primary_key=True)
     value: Mapped[str] = mapped_column(String(64))
+
+
+class DeskSetting(Base):
+    """A policy the desk sets at run time (autopilot limits, counterparty priorities): the latest value per key.
+    Every change is also an event, so who set what, and when, is in the audit trail."""
+
+    __tablename__ = "desk_settings"
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column()
+    updated_by: Mapped[str] = mapped_column(String(48))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

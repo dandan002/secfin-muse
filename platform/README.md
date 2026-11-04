@@ -133,7 +133,16 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
   taken within 10% of our bid; $25m a card, $500m / 2,000 a day. In every mode a `BLOCKED` card never approves
   itself, the executors keep every hard limit, the kill switch stops it all, and three failed auto-approvals in a
   row turn it off (the breaker). Approvals are recorded as `policy:AUTOPILOT` / `policy:DANGER` with the notional
-  counted; a card left for a trader says why on the card. All limits are `LOANDESK_AUTOPILOT_*` / `LOANDESK_DANGER_*`.
+  counted; a card left for a trader says why on the card. `LOANDESK_AUTOPILOT_*` / `LOANDESK_DANGER_*` only start
+  the limits: the desk sets them on the **Policy** screen (sidebar **Limits**).
+* `policy.py`: what the desk sets at run time (`GET /policy`, `PUT|DELETE /policy/{autopilot,danger,breaker,priority}`),
+  kept in `desk_settings` and audited as `policy` events: each mode's limits and card kinds, the breaker, and
+  counterparty priority. Three ordered lists: **returns** (whose borrows the short list gives back first, then the
+  dearest), **recalls** (whose loans of ours it recalls first, then the cheapest) and **margin** (whose calls are
+  worked first, then the largest), plus a daily collateral budget.
+* `services/margin.py`: a `margin` card per margin call on our trades, from `POST /marks/run` or the processor's
+  nightly mark (polled), in the desk's margin order; approved, it pays (or expects) the cash at the custodian. A
+  payment past the day's collateral budget is flagged and waits for a trader in every mode.
 * `observe.py`: Langfuse traces, on only with `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (`LANGFUSE_HOST`
   defaults to Langfuse Cloud) and the agent in `record` or `live`; `off`, `replay` and CI never trace. Each model
   call through the gateway is a generation (model, messages, parameters, tokens, the desk's own cost; errors marked);

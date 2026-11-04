@@ -21,7 +21,7 @@ from . import clock, db, events
 from .adapters import AdapterError, systems
 from .ingest import chat
 from .models import BuyIn, Order, SyncCursor, Trade
-from .services import booking, buyins, fails, inventory, lifecycle, locates, market, orders, recalls, shortlist
+from .services import booking, buyins, fails, inventory, lifecycle, locates, margin, market, orders, recalls, shortlist
 from .settings import get_settings
 
 log = logging.getLogger("loandesk.sync")
@@ -235,6 +235,14 @@ async def sync_buy_ins() -> None:
         await s.commit()
 
 
+async def sync_margin() -> None:
+    """Margin calls from the processor's nightly mark (a trader's ``/marks/run`` drafts its own at once)."""
+    async with db.session() as s:
+        calls = await systems().processor.margin_calls(clock.local_date().isoformat())
+        if await margin.draft(s, calls, by="rules:margin"):
+            await s.commit()
+
+
 async def sync_settlement() -> None:
     async with db.session() as s:
         if (await s.execute(select(BuyIn.id).where(BuyIn.cash_status == "INSTRUCTED").limit(1))).first():
@@ -282,7 +290,7 @@ class Syncer:
                 "venue_b": (cfg.poll_s, sync_venue_b), "settlement": (cfg.poll_s * 2.5, sync_settlement),
                 "inventory": (cfg.inventory_every_s, sync_inventory), "recalls": (cfg.poll_s * 2, sync_recalls),
                 "stock_record": (cfg.poll_s * 5, sync_stock_record), "fails": (cfg.poll_s * 2, sync_fails),
-                "buy_ins": (cfg.poll_s * 3, sync_buy_ins),
+                "buy_ins": (cfg.poll_s * 3, sync_buy_ins), "margin": (cfg.poll_s * 6, sync_margin),
                 "housekeeping": (30.0, housekeeping)}
         self.tasks = [asyncio.create_task(_every(n, sec, fn), name=f"sync-{n}") for n, (sec, fn) in jobs.items()]
 

@@ -189,7 +189,8 @@ function Sidebar({ st, kill, onKill, mode, onMode }: {
           </Row>
         )}
         <div className="flex flex-col gap-1.5 mt-1">
-          <span className="text-faint">Approvals</span>
+          <span className="flex justify-between text-faint">Approvals
+            <button className="text-accent hover:underline" onClick={() => setView("policy")}>Limits</button></span>
           <div role="radiogroup" aria-label="Who approves cards" className="grid grid-cols-3 gap-0.5 p-0.5 rounded border border-line">
             {([["off", "Manual"], ["autopilot", "Autopilot"], ["danger", "Danger"]] as const).map(([m, label]) => (
               <button key={m} role="radio" aria-checked={mode === m}

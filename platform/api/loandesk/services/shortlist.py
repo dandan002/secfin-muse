@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from refdata import calendar
 
-from .. import clock, events, rules, secmaster
+from .. import clock, events, policy, rules, secmaster
 from ..models import (
     Action,
     ChatMessage,
@@ -372,7 +372,8 @@ async def draft(s: AsyncSession, *, by: str = "rules:short-list", trade_date: da
 
 
 async def _draft_returns(s: AsyncSession, sl: dict[str, Any], *, by: str, notes: list[str]) -> list[str]:
-    """A return card per borrow for each name's excess (less returns already at the gate), dearest fee first.
+    """A return card per borrow for each name's excess (less returns already at the gate): the lenders first in the
+    desk's return order (``policy``), then the dearest fee.
     Only borrows booked at the processor and not failing can be returned."""
     from .. import gate
 
@@ -387,6 +388,7 @@ async def _draft_returns(s: AsyncSession, sl: dict[str, Any], *, by: str, notes:
             Trade.instrument_id == ln["instrumentId"], Trade.side == "BORROW", Trade.loan_status == "OPEN",
             Trade.sfp_contract_id.is_not(None), Trade.settle_status.is_distinct_from("FAILING"))
             .order_by(Trade.fee_bps.desc(), Trade.executed_at.desc()))).scalars().all()
+        trades = sorted(trades, key=lambda t: policy.rank("returns", t.cp_code))  # stable: the desk's order first
         why = (f"clients short {ln['clientShort']:,} {ln['composite']} settling {sl['settlementDate']}; box "
                f"{ln['box']:,}" + (f", unbooked {ln['unbooked']:,}" if ln["unbooked"] else "")
                + (f", returned since the box was read {ln['returnedSinceBox']:,}" if ln["returnedSinceBox"] else "")
@@ -410,8 +412,11 @@ async def _draft_returns(s: AsyncSession, sl: dict[str, Any], *, by: str, notes:
                     s, kind="lifecycle", payload={"tradeId": t.id, "event": "RETURN", "quantity": qty},
                     proposed_by=by,
                     title=f"return excess: {qty:,} {ln['composite']} to {t.cp_code} @ {t.fee_bps:g} bps",
-                    rationale=f"{why}. Returning {'all' if whole else f'{qty:,} of {open_qty(t):,}'} of {t.id}, the "
-                              f"dearest borrow left, saves about ${daily:,.0f} a day.",
+                    rationale=f"{why}. Returning {'all' if whole else f'{qty:,} of {open_qty(t):,}'} of {t.id}, "
+                              + (f"{t.cp_code} being first in the desk's return order, "
+                                 if policy.rank("returns", t.cp_code) < len(policy.priority().returns) else
+                                 "the dearest borrow left, ")
+                              + f"saves about ${daily:,.0f} a day.",
                     risk_flags=flags, source_ref=f"{RETURN}:{ln['instrumentId']}",
                     original={"shortList": sl["tradeDate"], "line": ln["instrumentId"], "excess": ln["excess"]})
                 made.append(a.id)
@@ -465,20 +470,22 @@ async def _supersede_oversized(s: AsyncSession, sl: dict[str, Any], *, by: str) 
 
 async def _recall_loans(s: AsyncSession, ln: dict[str, Any], left: int, cover_fee: float, *, by: str,
                         notes: list[str]) -> tuple[int, list[str]]:
-    """Recall shares we lent, cheapest loan first, for as much of ``left`` as they cover: when a loan earns less than
-    the cover would cost to borrow (or the name is hot, where the street may not lend at all). Each is a RECALL
-    card at the gate on the loan; the borrower has the standard settlement cycle to return the shares."""
+    """Recall shares we lent, the desk's recall order first (``policy``) then the cheapest loan, for as much of
+    ``left`` as they cover: each loan that earns less than the cover would cost to borrow (or any, on a hot name,
+    where the street may not lend at all). Each is a RECALL card at the gate on the loan; the borrower has the
+    standard settlement cycle to return the shares."""
     from .. import gate
 
     got, ids = 0, []
     loans = (await s.execute(select(Trade).where(
         Trade.instrument_id == ln["instrumentId"], Trade.side == "LEND", Trade.loan_status == "OPEN",
         Trade.sfp_contract_id.is_not(None)).order_by(Trade.fee_bps, Trade.executed_at))).scalars().all()
+    loans = sorted(loans, key=lambda t: policy.rank("recalls", t.cp_code))  # stable: the desk's order first
     for t in loans:
         if got >= left:
             break
         if t.fee_bps >= cover_fee and ln["tier"] != "HOT":
-            break  # the rest earn more than the borrow would cost: keep them out, borrow instead
+            continue  # earns more than the borrow would cost: keep it out, borrow instead
         q = min(open_qty(t), _lot(left - got))
         if q <= 0:
             continue

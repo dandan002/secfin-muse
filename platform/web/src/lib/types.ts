@@ -426,3 +426,31 @@ export interface Autopilot {
     warnings: boolean; hot: boolean } | null;
   today?: { count: number; notionalUsd: number };
 }
+
+/** One mode's envelope, as the desk sets it on the Policy screen. ``kinds`` null: every kind. */
+export interface Limits {
+  kinds: string[] | null;
+  maxCardUsd: number;
+  dayUsd: number;
+  dayCount: number;
+  minConfidence: number;
+  counterTolerancePct: number;
+}
+
+/** Counterparty codes, first first, for each list; and the margin the desk pays out a day (null: no budget). */
+export interface Priority {
+  returns: string[];
+  recalls: string[];
+  margin: string[];
+  marginBudgetUsd: number | null;
+}
+
+interface Setting<T> { value: T; default: T; set: boolean; by?: string; at?: string }
+
+export interface DeskPolicy {
+  autopilot: Setting<Limits>;
+  danger: Setting<Limits>;
+  breaker: Setting<{ tripAfter: number }>;
+  priority: Setting<Priority>;
+  kinds: string[];
+}

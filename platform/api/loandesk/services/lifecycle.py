@@ -135,7 +135,8 @@ async def mark(s: AsyncSession, t: Trade, *, by: str) -> dict[str, Any]:
 
 
 async def run_marks(s: AsyncSession, *, by: str) -> dict[str, Any]:
-    """The processor's daily mark across every open contract; margin calls land on their trades."""
+    """The processor's daily mark across every open contract; margin calls land on their trades, and a card for
+    each goes to the gate in the desk's margin order."""
     try:
         r = await systems().processor.run_marks()
     except AdapterError as e:
@@ -147,6 +148,9 @@ async def run_marks(s: AsyncSession, *, by: str) -> dict[str, Any]:
         _log(t, "MARGIN_CALL", by, price=c["price"], callAmount=c["callAmount"], ccy=c["ccy"],
              direction=c["marginCall"]["direction"])
         events.record(s, "trade", t.id, "margin_call", c, actor=by)
-    return {"marked": r.get("marked", 0), "marginCalls": len(calls), "ours": len(trades),
+    from . import margin
+
+    drafted = await margin.draft(s, list(calls.values()), by="rules:margin")
+    return {"marked": r.get("marked", 0), "marginCalls": len(calls), "ours": len(trades), "drafted": drafted,
             "calls": [{**c, "tradeId": next((t.id for t in trades if t.sfp_contract_id == k), None)}
                       for k, c in calls.items()]}

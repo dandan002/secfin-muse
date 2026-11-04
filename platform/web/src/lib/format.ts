@@ -62,11 +62,11 @@ export function when(iso: string | null | undefined): string {
   return iso ? NY_DAY.format(new Date(iso)) : "—";
 }
 
-/** "250k" | "1.2m" | "50,000" → shares. */
+/** "250k" | "1.2m" | "50,000" → shares (or dollars: "2.5b"). */
 export function parseQty(s: string): number | null {
-  const m = s.trim().replace(/,/g, "").match(/^(\d+(?:\.\d+)?)\s*(k|m|mm)?$/i);
+  const m = s.trim().replace(/^\$/, "").replace(/,/g, "").match(/^(\d+(?:\.\d+)?)\s*(k|m|mm|b|bn)?$/i);
   if (!m) return null;
-  const mult = { k: 1e3, m: 1e6, mm: 1e6 }[(m[2] ?? "").toLowerCase() as "k" | "m" | "mm"] ?? 1;
+  const mult = { k: 1e3, m: 1e6, mm: 1e6, b: 1e9, bn: 1e9 }[(m[2] ?? "").toLowerCase() as "k"] ?? 1;
   return Math.round(parseFloat(m[1]) * mult);
 }
 

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type View = "blotter" | "locates" | "ticket" | "market" | "agent" | "paste" | "audit" | "chat" | "shorts";
+export type View = "blotter" | "locates" | "ticket" | "market" | "agent" | "paste" | "audit" | "chat" | "shorts" | "policy";
 
 export type Workspace = "inbox" | "book" | "market" | "audit";
 
@@ -16,6 +16,7 @@ export const VIEWS: { id: View; label: string; workspace: Workspace }[] = [
   { id: "agent", label: "Approvals", workspace: "inbox" },
   { id: "locates", label: "Locates", workspace: "inbox" },
   { id: "chat", label: "Chat", workspace: "inbox" },
+  { id: "policy", label: "Policy", workspace: "inbox" },
   { id: "blotter", label: "Blotter", workspace: "book" },
   { id: "shorts", label: "Short list", workspace: "book" },
   { id: "market", label: "Rates", workspace: "market" },
