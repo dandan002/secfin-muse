@@ -55,7 +55,8 @@ export function useKeys(handler: (e: KeyboardEvent) => void, deps: unknown[]) {
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) {
         return;
       }
-      if (useDesk.getState().paletteOpen) return;
+      const d = useDesk.getState();
+      if (d.paletteOpen || d.bulkBorrow) return;  // an overlay is up: the screen behind it keeps still
       handler(e);
     };
     window.addEventListener("keydown", fn);
@@ -91,4 +92,40 @@ export function useDebounced<T>(value: T, ms: number): T {
     return () => clearTimeout(t);
   }, [value, ms]);
   return v;
+}
+
+/** Ticked rows for bulk work: click a box to tick, shift-click to tick the run since the last, Space ticks the
+ *  row in focus, Esc clears. Ticks of rows that leave the list are dropped. */
+export function useMulti(ids: string[], focused: string | undefined) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const anchor = useRef<string | null>(null);
+  const key = ids.join(",");
+  useEffect(() => {
+    setPicked((p) => {
+      const keep = new Set([...p].filter((id) => ids.includes(id)));
+      return keep.size === p.size ? p : keep;
+    });
+  }, [key]);
+  const toggle = (id: string, range = false) => {
+    setPicked((p) => {
+      const next = new Set(p);
+      if (range && anchor.current && ids.includes(anchor.current)) {
+        const [a, b] = [ids.indexOf(anchor.current), ids.indexOf(id)].sort((x, y) => x - y);
+        const on = !p.has(id);
+        for (const x of ids.slice(a, b + 1)) (on ? next.add(x) : next.delete(x));
+      } else if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    anchor.current = id;
+  };
+  const all = ids.length > 0 && ids.every((id) => picked.has(id));
+  const setAll = (on: boolean) => setPicked(on ? new Set(ids) : new Set());
+  useKeys((e) => {
+    if (e.key === " " && focused && !e.shiftKey) toggle(focused);
+    else if (e.key === "Escape" && picked.size) setPicked(new Set());
+    else return;
+    e.preventDefault();
+  }, [focused, picked, key]);
+  return { picked, toggle, all, setAll, clear: () => setPicked(new Set()) };
 }

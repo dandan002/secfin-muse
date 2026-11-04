@@ -1,8 +1,9 @@
 import { useEffect } from "react";
-import { Rail, Toasts, TopBar } from "./components/Chrome";
+import { BulkBorrow } from "./components/BulkBorrow";
+import { Shell, Toasts } from "./components/Chrome";
 import { CommandPalette } from "./components/CommandPalette";
 import { useKeys } from "./lib/hooks";
-import { useDesk, VIEWS } from "./lib/store";
+import { useDesk, VIEWS, WORKSPACES } from "./lib/store";
 import { useStream } from "./lib/stream";
 import { Agent } from "./views/Agent";
 import { Audit } from "./views/Audit";
@@ -20,31 +21,31 @@ const SCREENS = { blotter: BlotterView, locates: Locates, ticket: Ticket, market
 export function App() {
   useStream();
   const view = useDesk((s) => s.view);
-  const setView = useDesk((s) => s.setView);
+  const openWorkspace = useDesk((s) => s.openWorkspace);
   const theme = useDesk((s) => s.theme);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
   useKeys((e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const v = VIEWS.find((x) => x.key === e.key);
-    if (v) {
-      setView(v.id);
+    const w = WORKSPACES.find((x) => x.key === e.key);
+    if (w) {
+      openWorkspace(w.id);
       e.preventDefault();
     }
   }, []);
   const Screen = SCREENS[view];
   return (
-    <div className="h-full flex flex-col">
-      <TopBar />
-      <div className="flex-1 flex min-h-0">
-        <Rail />
-        <main className="flex-1 min-w-0 min-h-0 p-3">
+    <>
+      <Shell>
+        <h1 className="title m-0 shrink-0">{VIEWS.find((v) => v.id === view)?.label}</h1>
+        <div className="flex-1 min-h-0 flex flex-col">
           <Screen />
-        </main>
-      </div>
+        </div>
+      </Shell>
+      <BulkBorrow />
       <CommandPalette />
       <Toasts />
-    </div>
+    </>
   );
 }

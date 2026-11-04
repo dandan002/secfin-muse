@@ -1,10 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
-import { actor, bps, money, qty, time } from "../lib/format";
-import { useKeys, useQuery, useSelection } from "../lib/hooks";
+import { actor, bps, full, money, qty, time } from "../lib/format";
+import { useKeys, useMulti, useQuery, useSelection } from "../lib/hooks";
 import { useDesk } from "../lib/store";
 import type { Order, Trade } from "../lib/types";
-import { Empty, Kbd, Panel, State, Tabs } from "../components/ui";
+import { Empty, Figures, Kbd, Panel, Pipeline, State, Tabs } from "../components/ui";
 
 interface Blotter {
   orders: Order[];
@@ -14,16 +14,86 @@ interface Blotter {
 
 const OPEN = ["NEW", "SENT", "PENDING", "COUNTERED"];
 
+/** Where an order stands: ordered → routed → filled. Booking and on happen on the fill. */
+function orderStage(o: Order): { at: number; fail?: number } {
+  if (o.status === "REJECTED" || o.status === "FAILED") return { at: 1, fail: 1 };
+  if (o.status === "NEW") return { at: 0 };
+  if (OPEN.includes(o.status)) return { at: 1 };
+  if (o.status === "FILLED" || o.status === "PARTIAL") return { at: 3 };
+  return { at: 1 };
+}
+
+/** Where a fill stands: booked → compared → settled, or which of those broke. */
+function tradeStage(t: Trade): { at: number; fail?: number } {
+  if (t.compareStatus === "UNBOOKED") return { at: 3 };
+  if (t.compareStatus === "FAILED") return { at: 3, fail: 3 };
+  if (t.compareStatus === "UNMATCHED") return { at: 4, fail: 4 };
+  if (t.compareStatus !== "MATCHED") return { at: 4 };
+  if (t.settleStatus === "SETTLED") return { at: 6 };
+  if (t.settleStatus === "FAILING" || t.settleStatus === "FAILED") return { at: 5, fail: 5 };
+  return { at: 5 };
+}
+
+/** An action that needs a number, asked inline under its row instead of in a browser prompt. */
+interface Ask {
+  id: string;
+  title: string;
+  label: string;
+  value: string;
+  hint?: (v: string) => string;
+  send: (v: string) => void;
+}
+
+function AskRow({ ask, cols, onClose }: { ask: Ask; cols: number; onClose: () => void }) {
+  const [v, setV] = useState(ask.value);
+  const submit = () => {
+    if (v.trim()) ask.send(v.trim());
+    onClose();
+  };
+  return (
+    <tr>
+      <td colSpan={cols} className="px-3 py-2.5 bg-raised border-b border-rule">
+        <form className="sticky left-0 w-fit flex items-center gap-3.5 flex-wrap" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+          <span className="text-xs font-medium">{ask.title}</span>
+          <label className="flex items-center gap-2">
+            <span className="label">{ask.label}</span>
+            <input autoFocus value={v} onChange={(e) => setV(e.target.value)} aria-label={ask.label}
+              onKeyDown={(e) => e.key === "Escape" && onClose()} className="input w-24 text-right" />
+          </label>
+          {ask.hint && <span className="text-faint">{ask.hint(v)}</span>}
+          <button className="btn-accent btn-sm">Send <Kbd>↵</Kbd></button>
+          <button type="button" className="btn-ghost btn-sm" onClick={onClose}>Cancel <Kbd>Esc</Kbd></button>
+        </form>
+      </td>
+    </tr>
+  );
+}
+
 export function BlotterView() {
   const { data } = useQuery<Blotter>("/blotter", ["order", "trade", "break"]);
   const [filter, setFilter] = useState<"all" | "open" | "done">("all");
   const [cp, setCp] = useState("");
+  const [ask, setAsk] = useState<Ask | null>(null);
   const toast = useDesk((s) => s.toast);
   const orders = useMemo(() => (data?.orders ?? []).filter((o) =>
     (filter === "all" || (filter === "open") === OPEN.includes(o.status)) && (!cp || (o.counterparty ?? "").includes(cp.toUpperCase()))),
   [data, filter, cp]);
   const [sel, setSel] = useSelection(orders.length);
   const cur = orders[sel];
+  const live = orders.filter((o) => OPEN.includes(o.status));
+  const multi = useMulti(live.map((o) => o.id), cur && OPEN.includes(cur.status) ? cur.id : undefined);
+  const picked = live.filter((o) => multi.picked.has(o.id));
+  const countered = picked.filter((o) => o.status === "COUNTERED");
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  useEffect(() => { if (!picked.length) setConfirmCancel(false); }, [picked.length]);
+  const bulk = async (list: Order[], c: "accept" | "cancel") => {
+    setConfirmCancel(false);
+    const res = await Promise.allSettled(list.map((o) => api.post<Order>(`/orders/${o.id}/${c}`)));
+    const bad = res.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+    toast(bad.length ? "warn" : "ok", `${c === "accept" ? "accepted" : "cancelled"} ${list.length - bad.length} of ${list.length}`
+      + (bad.length ? `: ${(bad[0].reason as Error).message}` : ""));
+    multi.clear();
+  };
 
   const cmd = async (o: Order, c: "accept" | "cancel" | "counter", body?: object) => {
     try {
@@ -33,69 +103,97 @@ export function BlotterView() {
       toast("err", (e as Error).message);
     }
   };
-  const rerate = (o: Order) => {
-    const v = prompt(`Counter ${o.composite} at fee (bps)`, String(o.counterFeeBps ?? o.feeBps));
-    if (v) cmd(o, "counter", { feeBps: parseFloat(v) });
-  };
+  const counter = (o: Order) => setAsk({
+    id: o.id, title: `Counter ${o.composite}`, label: "Fee bps", value: String(o.counterFeeBps ?? o.feeBps),
+    send: (v) => cmd(o, "counter", { feeBps: parseFloat(v) }),
+  });
 
   useKeys((e) => {
-    if (!cur) return;
+    if (!cur || ask) return;
     if (e.key === "x") cmd(cur, "cancel");
     else if (e.key === "a" && cur.status === "COUNTERED") cmd(cur, "accept");
-    else if (e.key === "r") rerate(cur);
+    else if (e.key === "r") counter(cur);
     else return;
     e.preventDefault();
-  }, [cur]);
+  }, [cur, ask]);
 
   const c = data?.counts;
+  const bad = (n: number | undefined) => (n ? "text-down" : "");
   return (
-    <div className="h-full flex flex-col gap-3 min-h-0">
-      <div className="grid grid-cols-6 gap-3">
-        {[["open orders", c?.openOrders], ["open loans", c?.openLoans], ["unbooked", c?.unbooked], ["breaks", c?.breaks],
-          ["settle fails", c?.unsettled], ["open locates", c?.openLocates]].map(([k, v]) => (
-          <div key={k as string} className="panel px-3 py-2">
-            <div className="label">{k}</div>
-            <div className={`text-lg ${(k === "breaks" || k === "settle fails") && (v as number) > 0 ? "text-hot" : ""}`}>{v ?? "—"}</div>
-          </div>
-        ))}
-      </div>
+    <div className="flex flex-col gap-4">
+      <Figures items={[
+        { label: "Open orders", value: c?.openOrders ?? "—" },
+        { label: "Open loans", value: c?.openLoans ?? "—" },
+        { label: "Unbooked", value: c?.unbooked ?? "—", tone: c?.unbooked ? "text-hot" : "" },
+        { label: "Breaks", value: c?.breaks ?? "—", tone: bad(c?.breaks) },
+        { label: "Settle fails", value: c?.unsettled ?? "—", tone: bad(c?.unsettled) },
+        { label: "Open locates", value: c?.openLocates ?? "—" },
+      ]} />
 
-      <Panel className="flex-[3]" bodyClass="overflow-auto"
-        title={<>orders <span className="text-dim normal-case tracking-normal">{orders.length}</span></>}
-        right={<>
-          <span className="text-2xs text-faint flex gap-3 mr-2"><span><Kbd>a</Kbd> accept counter</span><span><Kbd>r</Kbd> re-rate</span><span><Kbd>x</Kbd> cancel</span></span>
-          <input value={cp} onChange={(e) => setCp(e.target.value)} placeholder="counterparty" className="input w-28 h-6" />
-          <Tabs value={filter} onChange={setFilter} options={[{ id: "all", label: "all" }, { id: "open", label: "open" }, { id: "done", label: "done" }]} />
+      <Panel bodyClass="overflow-auto max-h-[44vh]"
+        title={<>Orders <span className="label">{orders.length}</span></>}
+        right={picked.length ? (
+          <span className="flex items-center gap-2">
+            {confirmCancel ? <>
+              <span>Cancel {picked.length} open order{picked.length === 1 ? "" : "s"}?</span>
+              <button className="btn-accent btn-sm" onClick={() => bulk(picked, "cancel")}>Cancel them</button>
+              <button className="btn-ghost btn-sm" onClick={() => setConfirmCancel(false)}>Back</button>
+            </> : <>
+              <span className="font-medium">{picked.length} ticked</span>
+              <button className="btn btn-sm" disabled={!countered.length} onClick={() => bulk(countered, "accept")}>
+                Accept {countered.length || ""} counter{countered.length === 1 ? "" : "s"}</button>
+              <button className="btn btn-sm" onClick={() => setConfirmCancel(true)}>Cancel…</button>
+              <button className="btn-ghost btn-sm" onClick={multi.clear}>Clear <Kbd>Esc</Kbd></button>
+            </>}
+          </span>
+        ) : <>
+          <span className="kbd mr-2">Space tick · A accept counter · R counter · X cancel</span>
+          <input value={cp} onChange={(e) => setCp(e.target.value)} placeholder="Counterparty" className="input w-28 h-6" />
+          <Tabs value={filter} onChange={setFilter} options={[{ id: "all", label: "All" }, { id: "open", label: "Open" }, { id: "done", label: "Done" }]} />
         </>}>
-        {!orders.length ? <Empty>No orders yet. Send one from the Trade ticket (3) or ⌘K "borrow 100k AAPL @ 30".</Empty> : (
-          <table className="w-full text-xs">
-            <thead><tr>{["time", "side", "name", "type", "qty", "fee", "counter", "filled", "cp", "venue", "status", "by", "note"].map((h) =>
-              <th key={h} className={`th ${["qty", "fee", "counter", "filled"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+        {!orders.length ? <p className="px-4 py-6 text-faint">No orders yet. Send one from the Ticket, or ⌘K "borrow 100k AAPL @ 30".</p> : (
+          <table className="w-full">
+            <thead><tr><th className="th w-8"><input type="checkbox" aria-label="Tick all open" checked={multi.all} disabled={!live.length}
+              onChange={(e) => multi.setAll(e.target.checked)} /></th>
+              {["time", "side", "name", "type", "quantity", "fee", "counter", "filled", "counterparty", "venue", "lifecycle", "status", "by", "note", ""].map((h) =>
+              <th key={h} className={`th ${["quantity", "fee", "counter", "filled"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
             <tbody>
-              {orders.map((o, i) => (
-                <tr key={o.id} onClick={() => setSel(i)} className={`row ${i === sel ? "row-sel" : ""}`}>
+              {orders.map((o, i) => [
+                <tr key={o.id} onClick={() => setSel(i)} className={`row ${i === sel ? "row-sel" : multi.picked.has(o.id) ? "bg-raised" : ""}`}>
+                  <td className="td w-8" onClick={(e) => { e.stopPropagation(); if (OPEN.includes(o.status)) multi.toggle(o.id, e.shiftKey); }}>
+                    <input type="checkbox" readOnly disabled={!OPEN.includes(o.status)} checked={multi.picked.has(o.id)} aria-label={`Tick ${o.composite}`} />
+                  </td>
                   <td className="td text-faint">{time(o.createdAt)}</td>
-                  <td className={`td ${o.side === "BORROW" ? "text-info" : "text-accent"}`}>{o.side.toLowerCase()}</td>
-                  <td className="td">{o.composite}</td>
+                  <td className="td text-dim">{o.side === "BORROW" ? "Borrow" : "Lend"}</td>
+                  <td className="td font-semibold">{o.composite}</td>
                   <td className="td text-dim">{o.type.toLowerCase().replace("_", " ")}</td>
-                  <td className="td text-right">{qty(o.quantity)}</td>
+                  <td className="td text-right">{full(o.quantity)}</td>
                   <td className="td text-right">{bps(o.feeBps)}</td>
-                  <td className="td text-right text-warm">{o.counterFeeBps ? `${bps(o.counterFeeBps)}${o.counterQty ? ` × ${qty(o.counterQty)}` : ""}` : ""}</td>
+                  <td className="td text-right text-hot">{o.counterFeeBps ? `${bps(o.counterFeeBps)}${o.counterQty ? ` × ${qty(o.counterQty)}` : ""}` : ""}</td>
                   <td className="td text-right text-dim">{o.filledQty ? qty(o.filledQty) : ""}</td>
-                  <td className="td text-dim">{o.counterparty ?? "best"}</td>
-                  <td className="td text-faint" title={o.basketId ? `basket ${o.basketId}, line ${o.lineNo}: one Venue B list` : ""}>
-                    {o.venue.replace("VENUE_", "")}{o.basketId && <span className="ml-1 text-info">basket</span>}</td>
+                  <td className="td text-dim">{o.counterparty ?? "Best"}</td>
+                  <td className="td text-dim" title={o.basketId ? `basket ${o.basketId}, line ${o.lineNo}: one Venue B list` : ""}>
+                    {o.venue.replace("VENUE_", "")}{o.basketId && <span className="ml-1 text-faint">basket</span>}</td>
+                  <td className="td"><Pipeline {...orderStage(o)} /></td>
                   <td className="td"><State s={o.status} /></td>
                   <td className="td text-faint">{actor(o.createdBy)}</td>
-                  <td className="td text-faint max-w-[260px] truncate" title={o.rejectReason ?? o.routeReason}>{o.rejectReason ?? o.routeReason}</td>
-                </tr>
-              ))}
+                  <td className="td text-faint max-w-[240px] truncate" title={o.rejectReason ?? o.routeReason}>{o.rejectReason ?? o.routeReason}</td>
+                  <td className="td text-right whitespace-nowrap">
+                    {o.status === "COUNTERED" && <button className="btn-ghost btn-sm" onClick={() => cmd(o, "accept")}>Accept</button>}
+                    {OPEN.includes(o.status) && <>
+                      <button className="btn-ghost btn-sm" onClick={() => counter(o)}>Counter</button>
+                      <button className="btn-ghost btn-sm" onClick={() => cmd(o, "cancel")}>Cancel</button>
+                    </>}
+                  </td>
+                </tr>,
+                ask?.id === o.id && <AskRow key={o.id + "-ask"} ask={ask} cols={16} onClose={() => setAsk(null)} />,
+              ])}
             </tbody>
           </table>
         )}
       </Panel>
 
-      <Fills trades={data?.trades ?? []} />
+      <Fills trades={data?.trades ?? []} ask={ask} setAsk={setAsk} />
     </div>
   );
 }
@@ -107,18 +205,22 @@ function RecallTag({ t, today }: { t: Trade; today: string | undefined }) {
     RETURN_NOT_SENT: "return not instructed" }[t.recallStatus ?? "RECALLED"];
   const bad = overdue || t.recallStatus === "RETURN_FAILING" || t.recallStatus === "RETURN_NOT_SENT";
   return (
-    <span className={`ml-2 ${bad ? "text-hot" : "text-warm"}`}
+    <span className={`ml-2 ${bad ? "text-down" : "text-hot"}`}
       title={`${t.recallRef ? `ref ${t.recallRef}. ` : ""}The recall stands until the shares settle back with the lender; not back by the due date, the lender can buy them in at our cost.`}>
       {what}{t.recallDue ? `, due ${t.recallDue}` : ""}{overdue ? " · overdue" : ""}
     </span>
   );
 }
 
-function Fills({ trades }: { trades: Trade[] }) {
+function Fills({ trades, ask, setAsk }: { trades: Trade[]; ask: Ask | null; setAsk: (a: Ask | null) => void }) {
   const toast = useDesk((s) => s.toast);
   const today = useDesk((s) => s.clock?.nowLocal.slice(0, 10));  // the sim's New York date
-  const [sel, setSel] = useState(0);
-  const cur = trades[sel];
+  // Exceptions first: breaks, settle fails and recalls float to the top.
+  const rows = useMemo(() => [...trades].sort((a, b) => Number(isException(b)) - Number(isException(a))), [trades]);
+  const [selId, setSelId] = useState<string | null>(null);
+  const cur = rows.find((t) => t.id === selId) ?? rows[0];
+  useEffect(() => { if (selId && !rows.some((t) => t.id === selId)) setSelId(null); }, [rows, selId]);
+
   const run = async (t: Trade, c: "book" | "amend" | "settle" | "return" | "recall" | "rerate" | "mark", body?: object) => {
     try {
       const r = await api.post<Trade & { mark?: { callAmount?: number; price?: number } }>(`/trades/${t.id}/${c}`, body);
@@ -135,23 +237,28 @@ function Fills({ trades }: { trades: Trade[] }) {
   };
   const close = (t: Trade) => {
     const verb = t.side === "BORROW" ? "return" : "recall";
-    const v = prompt(`${verb} ${t.composite}: shares (open ${qty(t.openQty)})`, String(t.openQty));
-    if (v) run(t, verb, { quantity: parseInt(v.replace(/[,_]/g, ""), 10) });
+    setAsk({ id: t.id, title: `${verb === "return" ? "Return" : "Recall"} ${t.composite}`, label: "Shares", value: String(t.openQty),
+      hint: () => `${qty(t.openQty)} open`,
+      send: (v) => run(t, verb, { quantity: parseInt(v.replace(/[,_]/g, ""), 10) }) });
   };
-  const rerate = (t: Trade) => {
-    const v = prompt(`Re-rate ${t.composite} (now ${bps(t.feeBps)} bps)`, String(t.feeBps));
-    if (v) run(t, "rerate", { feeBps: parseFloat(v) });
-  };
+  const rerate = (t: Trade) => setAsk({
+    id: t.id, title: `Re-rate ${t.composite}`, label: `${bps(t.feeBps)} →`, value: String(t.feeBps),
+    hint: (v) => {
+      const d = (parseFloat(v) - t.feeBps) / 1e4 * t.notional / 360;
+      return Number.isFinite(d) && d ? `${d > 0 ? "+" : "−"}$${Math.abs(Math.round(d)).toLocaleString()} / day` : "";
+    },
+    send: (v) => run(t, "rerate", { feeBps: parseFloat(v) }),
+  });
   const live = (t?: Trade) => !!t && !!t.contractId && t.loanStatus === "OPEN";
 
   useKeys((e) => {
-    if (!e.shiftKey || !live(cur)) return;  // shift: the fills panel (plain keys belong to the orders above)
+    if (!e.shiftKey || !live(cur) || ask) return;  // shift: the fills panel (plain keys belong to the orders above)
     if (e.key === "R") rerate(cur);
     else if (e.key === "C") close(cur);
     else if (e.key === "M") run(cur, "mark");
     else return;
     e.preventDefault();
-  }, [cur]);
+  }, [cur, ask]);
 
   const runMarks = async () => {
     try {
@@ -163,57 +270,115 @@ function Fills({ trades }: { trades: Trade[] }) {
   };
 
   return (
-    <Panel className="flex-[2]" bodyClass="overflow-auto" title={<>fills & loans <span className="text-dim normal-case tracking-normal">{trades.length}</span></>}
-      right={<>
-        <span className="text-2xs text-faint flex gap-3 mr-2"><span><Kbd>⇧C</Kbd> return / recall</span><span><Kbd>⇧R</Kbd> re-rate</span><span><Kbd>⇧M</Kbd> mark</span></span>
-        <button className="btn h-6" onClick={runMarks}>run marks</button>
-      </>}>
-      {!trades.length ? <Empty>Fills from both venues land here, book to the processor and settle at the custodian.</Empty> : (
-        <table className="w-full text-xs">
-          <thead><tr>{["executed", "side", "name", "venue", "qty", "open", "fee", "notional", "cp", "contract", "compare", "settle", "loan", ""].map((h) =>
-            <th key={h} className={`th ${["qty", "open", "fee", "notional"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
-          <tbody>
-            {trades.map((t, i) => {
-              const last = t.lifecycle[t.lifecycle.length - 1];
-              return (
-                <tr key={t.id} onClick={() => setSel(i)} className={`row ${i === sel ? "row-sel" : ""}`}>
+    <div className="flex flex-wrap gap-4 items-start">
+      <Panel className="flex-[999_1_900px] min-w-0" bodyClass="overflow-auto max-h-[56vh]"
+        title={<>Fills and loans <span className="label">{trades.length}</span></>}
+        right={<>
+          <span className="kbd mr-2">⇧R re-rate · ⇧C return / recall · ⇧M mark</span>
+          <button className="btn btn-sm" onClick={runMarks}>Run marks</button>
+        </>}>
+        {!trades.length ? <Empty>Fills from both venues land here, book to the processor and settle at the custodian.</Empty> : (
+          <table className="w-full">
+            <thead><tr>{["executed", "side", "name", "venue", "quantity", "open", "fee", "notional", "counterparty", "lifecycle", "status", ""].map((h) =>
+              <th key={h} className={`th ${["quantity", "open", "fee", "notional"].includes(h) ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+            <tbody>
+              {rows.map((t) => [
+                <tr key={t.id} onClick={() => setSelId(t.id)} className={`row ${t.id === cur?.id ? "row-sel" : ""}`}>
                   <td className="td text-faint">{time(t.executedAt)}</td>
-                  <td className={`td ${t.side === "BORROW" ? "text-info" : "text-accent"}`}>{t.side.toLowerCase()}</td>
-                  <td className="td">{t.composite}</td>
-                  <td className="td text-faint">{t.venue.replace("VENUE_", "")}</td>
-                  <td className="td text-right">{qty(t.quantity)}</td>
+                  <td className="td text-dim">{t.side === "BORROW" ? "Borrow" : "Lend"}</td>
+                  <td className="td font-semibold">{t.composite}</td>
+                  <td className="td text-dim">{t.venue.replace("VENUE_", "")}</td>
+                  <td className="td text-right">{full(t.quantity)}</td>
                   <td className="td text-right text-dim">{t.openQty !== t.quantity ? qty(t.openQty) : ""}</td>
-                  <td className="td text-right">{bps(t.feeBps)}{t.pendingRerateBps !== null && <span className="text-warm"> → {bps(t.pendingRerateBps)}?</span>}</td>
-                  <td className="td text-right text-dim">{money(t.notional)} {t.ccy}</td>
+                  <td className="td text-right">{bps(t.feeBps)}{t.pendingRerateBps !== null && <span className="text-hot"> → {bps(t.pendingRerateBps)}?</span>}</td>
+                  <td className="td text-right text-dim">{t.ccy === "USD" ? `$${money(t.notional)}` : `${money(t.notional)} ${t.ccy}`}</td>
                   <td className="td text-dim">{t.counterparty}</td>
-                  <td className="td text-faint" title={t.uti ? `UTI ${t.uti}` : ""}>{t.contractId ?? ""}</td>
-                  <td className="td">
-                    <State s={t.compareStatus} />
-                    {!!t.diffs.length && <span className="ml-2 text-faint">{t.diffs.map((d) => `${d.field} ${String(d.ours)}≠${String(d.processor)}`).join(" · ")}</span>}
-                  </td>
-                  <td className="td" title={t.settleRef ?? ""}><State s={t.settleStatus} /></td>
-                  <td className="td" title={last ? `${last.event.toLowerCase()} ${time(last.ts)} by ${actor(last.by)}${last.error ? `: ${last.error}` : ""}` : ""}>
-                    <State s={t.loanStatus} />{last && <span className="ml-2 text-faint">{last.event.toLowerCase().replace("_", " ")}</span>}
-                    {t.recallStatus && <RecallTag t={t} today={today} />}
-                    {!!t.boughtIn && <span className="ml-2 text-down"
-                      title="The lender bought these in on a recall we didn't return in time: off the loan, at our cost (see Shorts)">
-                      {qty(t.boughtIn)} bought in</span>}
-                  </td>
-                  <td className="td text-right whitespace-nowrap space-x-1">
-                    {(t.compareStatus === "UNBOOKED" || t.compareStatus === "FAILED") && <button className="btn-accent h-6" onClick={() => run(t, "book")}>book</button>}
-                    {t.compareStatus === "UNMATCHED" && <button className="btn h-6 text-warm" onClick={() => run(t, "amend")}>fix break</button>}
-                    {t.compareStatus === "MATCHED" && (!t.settleRef) && <button className="btn h-6" onClick={() => run(t, "settle")}>settle</button>}
+                  <td className="td"><Pipeline {...tradeStage(t)} /></td>
+                  <td className="td max-w-[240px] truncate"><Note t={t} today={today} /></td>
+                  <td className="td text-right whitespace-nowrap">
+                    {(t.compareStatus === "UNBOOKED" || t.compareStatus === "FAILED") && <button className="btn-accent btn-sm" onClick={() => run(t, "book")}>Book</button>}
+                    {t.compareStatus === "UNMATCHED" && <button className="btn btn-sm text-down" onClick={() => run(t, "amend")}>Fix break</button>}
+                    {t.compareStatus === "MATCHED" && (!t.settleRef) && <button className="btn btn-sm" onClick={() => run(t, "settle")}>Settle</button>}
                     {live(t) && <>
-                      <button className="btn h-6" onClick={() => close(t)}>{t.side === "BORROW" ? "return" : "recall"}</button>
-                      <button className="btn h-6" onClick={() => rerate(t)}>re-rate</button>
+                      <button className="btn-ghost btn-sm" onClick={() => close(t)}>{t.side === "BORROW" ? "Return" : "Recall"}</button>
+                      <button className="btn-ghost btn-sm" onClick={() => rerate(t)}>Re-rate</button>
                     </>}
                   </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                </tr>,
+                ask?.id === t.id && <AskRow key={t.id + "-ask"} ask={ask} cols={12} onClose={() => setAsk(null)} />,
+              ])}
+            </tbody>
+          </table>
+        )}
+      </Panel>
+      {cur && <Story t={cur} onFix={() => run(cur, "amend")} />}
+    </div>
+  );
+}
+
+const isException = (t: Trade) => t.compareStatus === "UNMATCHED" || t.compareStatus === "FAILED"
+  || t.settleStatus === "FAILING" || t.settleStatus === "FAILED" || !!t.recallStatus || !!t.boughtIn;
+
+/** The one status that matters most for the row, worst first. */
+function Note({ t, today }: { t: Trade; today: string | undefined }) {
+  if (t.compareStatus === "UNMATCHED")
+    return <span className="text-down"><span className="dot bg-down mr-1.5" />Break · {t.diffs.map((d) => `${d.field} ${String(d.ours)} vs ${String(d.processor)}`).join(", ")}</span>;
+  if (t.boughtIn) return <span className="text-down" title="The lender bought these in on a recall we didn't return in time: off the loan, at our cost (see Short list)">
+    <span className="dot bg-down mr-1.5" />{qty(t.boughtIn)} bought in</span>;
+  if (t.recallStatus) return <span><State s="RECALLED" /><RecallTag t={t} today={today} /></span>;
+  if (t.settleStatus === "FAILING" || t.settleStatus === "FAILED") return <State s="FAILING" />;
+  if (t.compareStatus !== "MATCHED") return <State s={t.compareStatus} />;
+  if (t.loanStatus === "CLOSED") return <State s="CLOSED" />;
+  return <State s={t.settleStatus === "SETTLED" ? "SETTLED" : "MATCHED"} />;
+}
+
+/** The trade's story: every step from the venue to the custodian, who did it, and the agent's fix for a break. */
+function Story({ t, onFix }: { t: Trade; onFix: () => void }) {
+  return (
+    <aside aria-label="Trade story" className="panel flex-[1_1_300px] max-w-[360px] min-w-0">
+      <div className="flex items-center h-10 px-4 border-b border-line gap-2">
+        <span className="text-xs font-medium flex-1 truncate">{t.composite} · {t.contractId ?? t.venueTradeId}</span>
+        <State s={t.loanStatus} />
+      </div>
+      <div className="grid grid-cols-3 border-b border-line">
+        {[["Quantity", full(t.quantity)], ["Fee", bps(t.feeBps)], ["Notional", `${money(t.notional)}`]].map(([k, v], i) => (
+          <div key={k} className={`flex flex-col gap-1.5 px-4 py-3 ${i ? "border-l border-line" : ""}`}>
+            <span className="label">{k}</span><span className="text-[16px] font-medium">{v}</span>
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-[44px_1fr_auto] gap-x-2.5 px-4 py-2 border-b border-rule">
+        <span className="label">{time(t.executedAt)}</span>
+        <span className="flex flex-col"><span>Filled</span><span className="text-2xs text-dim">{full(t.quantity)} at {bps(t.feeBps)} with {t.counterparty}</span></span>
+        <span className="label">{t.venue.replace("VENUE_", "Venue ")}</span>
+      </div>
+      {t.lifecycle.map((e, i) => (
+        <div key={i} className="grid grid-cols-[44px_1fr_auto] gap-x-2.5 px-4 py-2 border-b border-rule">
+          <span className="label">{time(e.ts)}</span>
+          <span className="flex flex-col min-w-0">
+            <span className={e.error ? "text-down" : ""}>{e.event[0] + e.event.slice(1).toLowerCase().replace(/_/g, " ")}</span>
+            <span className="text-2xs text-dim truncate">
+              {[e.quantity != null && full(e.quantity), e.fromBps != null && `${bps(e.fromBps)} → ${bps(e.toBps)}`,
+                e.feeBps != null && `${bps(e.feeBps)} bps`, e.callAmount != null && `call ${money(e.callAmount)}`, e.error]
+                .filter(Boolean).join(" · ")}
+            </span>
+          </span>
+          <span className="label">{actor(e.by)}</span>
+        </div>
+      ))}
+      {!!t.diffs.length && (
+        <div className="px-4 py-3.5 flex flex-col gap-2.5">
+          <span className="label">Processor says</span>
+          {t.diffs.map((d) => (
+            <div key={d.field} className="flex items-baseline gap-2.5">
+              <span className="flex-1 text-dim">{d.field}</span>
+              <span className="text-faint line-through">{String(d.ours)}</span><span className="text-faint">→</span>
+              <span className="text-[16px] font-medium">{String(d.processor)}</span>
+            </div>
+          ))}
+          <div><button className="btn-accent btn-sm" onClick={onFix}>Fix break</button></div>
+        </div>
       )}
-    </Panel>
+    </aside>
   );
 }

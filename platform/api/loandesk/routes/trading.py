@@ -42,8 +42,16 @@ class DecisionIn(BaseModel):
     expiresAt: datetime | None = Field(None, description="Default: today's close, or the next business day's")
 
 
+class BatchLineIn(BaseModel):
+    id: str
+    quantity: int | None = Field(None, ge=0, description="This line's quantity; default the batch's, else requested")
+    feeBps: float | None = Field(None, description="This line's fee; default the batch's, else the line's quote")
+
+
 class BatchDecisionIn(DecisionIn):
-    ids: list[str] = Field(..., min_length=1, max_length=5000)
+    ids: list[str] = Field(default_factory=list, max_length=5000)
+    lines: list[BatchLineIn] = Field(default_factory=list, max_length=5000,
+                                     description="Per-line quantity and fee (e.g. each at its suggested size)")
 
 
 @router.post("/locates", tags=["locates"], status_code=201)
@@ -86,18 +94,22 @@ async def decide(loc_id: str, body: DecisionIn, who: str = Depends(trader),
 async def decide_batch(body: BatchDecisionIn, who: str = Depends(trader),
                        s: AsyncSession = Depends(get_session)) -> dict:
     """Batch approve (``Shift+A``). Lines that can't take the decision are reported, not fatal."""
+    lines = body.lines or [BatchLineIn(id=i) for i in body.ids]
+    if not lines:
+        raise HTTPException(422, "no lines: give ids or lines")
     done, failed = [], []
-    for loc_id in body.ids:
-        loc = await s.get(Locate, loc_id)
+    for ln in lines:
+        loc = await s.get(Locate, ln.id)
         if loc is None or loc.status != "RECEIVED":
-            failed.append({"id": loc_id, "error": "not open"})
+            failed.append({"id": ln.id, "error": "not open"})
             continue
         try:
-            await locates.decide(s, loc, body.decision, body.quantity, by=who, rationale=body.rationale, reply=False,
-                                 expires_at=body.expiresAt)
+            await locates.decide(s, loc, body.decision, ln.quantity if ln.quantity is not None else body.quantity,
+                                 by=who, rationale=body.rationale, reply=False, expires_at=body.expiresAt,
+                                 fee_bps=ln.feeBps if ln.feeBps is not None else body.feeBps)
             done.append(loc)
         except locates.DecisionError as e:
-            failed.append({"id": loc_id, "error": str(e)})
+            failed.append({"id": ln.id, "error": str(e)})
     await locates.send_reply(s, done)
     await s.commit()
     return {"decided": [x.id for x in done], "failed": failed}
@@ -184,7 +196,7 @@ async def refresh_short_list(s: AsyncSession = Depends(get_session)) -> dict:
 
 # -- orders ---------------------------------------------------------------------------------------
 class CounterIn(BaseModel):
-    feeBps: float = Field(..., ge=0)
+    feeBps: float | None = Field(None, ge=0, description="counter: our fee (required); accept and cancel take none")
     quantity: int | None = Field(None, gt=0)
 
 
@@ -211,6 +223,32 @@ async def create_order(body: orders.OrderIn, who: str = Depends(trader),
     return orders.order_json(o)
 
 
+_OrderIn = orders.OrderIn  # the field below shadows the module inside the class
+
+
+class OrderBatchIn(BaseModel):
+    orders: list[_OrderIn] = Field(..., min_length=1, max_length=200)
+
+
+@router.post("/orders/batch", tags=["orders"])
+async def create_orders(body: OrderBatchIn, who: str = Depends(trader),
+                        s: AsyncSession = Depends(get_session)) -> dict:
+    """Several orders on one confirm: a bulk borrow, or bids to the best lenders in a name. Each line stands on
+    its own checks; one that fails them is reported with why, and the rest still go."""
+    placed, failed = [], []
+    for i, req in enumerate(body.orders):
+        try:
+            o = await orders.create(s, req, by=who)
+        except orders.OrderError as e:
+            await s.rollback()
+            failed.append({"line": i, "instrument": req.instrument, "counterparty": req.counterparty, "error": str(e),
+                           "checks": e.checks})
+            continue
+        await s.commit()
+        placed.append(orders.order_json(o))
+    return {"placed": placed, "failed": failed}
+
+
 @router.get("/orders", tags=["orders"])
 async def list_orders(status: str | None = None, s: AsyncSession = Depends(get_session)) -> list[dict]:
     return await orders.listing(s, status=status.upper().split(",") if status else None)
@@ -222,6 +260,8 @@ async def order_command(order_id: str, cmd: Literal["accept", "cancel", "counter
     o = await s.get(Order, order_id)
     if o is None:
         raise HTTPException(404, "no such order")
+    if cmd == "counter" and (body is None or body.feeBps is None):
+        raise HTTPException(422, "a counter needs feeBps")
     try:
         await orders.venue_command(s, o, cmd, by=who, fee_bps=body.feeBps if body else None,
                                    quantity=body.quantity if body else None)

@@ -1,48 +1,57 @@
-@import "@fontsource/jetbrains-mono/400.css";
-@import "@fontsource/jetbrains-mono/500.css";
-@import "@fontsource/jetbrains-mono/700.css";
+@import "@fontsource/instrument-sans/400.css";
+@import "@fontsource/instrument-sans/500.css";
+@import "@fontsource/instrument-sans/600.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Soft wireframe: near-black graphite, hairline rules, muted ink, one quiet sage accent. */
+/* The LoanDesk system: dark first, one sans family, near-square corners, faint hairlines, one indigo
+   accent for action. Colour means something (filled, broken, Hot); everything else is neutral. */
 :root,
 [data-theme="dark"] {
-  --bg: 14 15 18;
-  --panel: 19 20 24;
-  --raised: 27 29 34;
-  --line: 44 47 54;
-  --ink: 221 223 228;
-  --dim: 139 144 155;
-  --faint: 86 90 100;
-  --accent: 150 202 186;
-  --up: 136 200 152;
-  --down: 228 136 126;
-  --gc: 150 155 166;
-  --warm: 224 184 112;
-  --hot: 232 128 118;
-  --info: 142 172 230;
-  --dot: 255 255 255;
+  --bg: 15 15 18;          /* canvas: page ground and the sidebar */
+  --panel: 20 20 24;       /* surface: panels and tables */
+  --raised: 27 27 33;      /* row hover, the active nav item, inline editors */
+  --line: 36 36 43;        /* hairlines: panel borders */
+  --rule: 28 28 34;        /* row dividers */
+  --strong: 52 52 61;      /* input and secondary button borders */
+  --ink: 236 236 241;
+  --dim: 161 161 172;      /* ink-secondary */
+  --faint: 138 138 150;    /* ink-muted: never lighter than this */
+  --accent: 143 151 242;
+  --on-accent: 15 15 18;
+  --soft: 29 32 53;        /* accent-soft: the selected row */
+  --up: 85 196 139;        /* positive */
+  --down: 239 125 115;     /* negative: breaks, fails, the kill switch */
+  --hot: 233 154 93;       /* the word Hot and warnings */
+  --warm: 233 154 93;
+  --gc: 138 138 150;
+  --info: 161 161 172;
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
 
 [data-theme="light"] {
-  --bg: 243 243 240;
-  --panel: 251 251 249;
-  --raised: 236 236 232;
-  --line: 216 216 210;
-  --ink: 30 32 36;
-  --dim: 98 102 110;
-  --faint: 152 155 162;
-  --accent: 44 126 108;
-  --up: 38 138 78;
-  --down: 196 72 62;
-  --gc: 108 113 124;
-  --warm: 172 118 28;
-  --hot: 198 70 60;
-  --info: 58 98 178;
-  --dot: 0 0 0;
+  --bg: 250 250 251;
+  --panel: 255 255 255;
+  --raised: 243 243 246;
+  --line: 236 236 240;
+  --rule: 241 241 244;
+  --strong: 210 210 218;
+  --ink: 22 22 29;
+  --dim: 85 85 95;
+  --faint: 107 107 118;
+  --accent: 74 85 194;
+  --on-accent: 255 255 255;
+  --soft: 238 239 251;
+  --up: 30 122 76;
+  --down: 180 56 47;
+  --hot: 168 80 15;
+  --warm: 168 80 15;
+  --gc: 107 107 118;
+  --info: 85 85 95;
+  --shadow-pop: 0 8px 24px rgba(22, 22, 29, 0.1);
   color-scheme: light;
 }
 
@@ -53,11 +62,8 @@ body,
 }
 
 body {
-  @apply bg-bg text-ink font-mono text-base antialiased;
+  @apply bg-bg text-ink font-sans text-base antialiased;
   font-variant-numeric: tabular-nums;
-  font-feature-settings: "zero" 1, "calt" 0;
-  background-image: radial-gradient(rgb(var(--dot) / 0.035) 1px, transparent 1px);
-  background-size: 18px 18px;
 }
 
 ::selection {
@@ -71,44 +77,79 @@ body {
 
 @layer components {
   .panel {
-    @apply bg-panel/90 border border-line/70 rounded-soft;
+    @apply bg-panel border border-line rounded-md;
   }
+  /* Captions: column headers, field labels, timestamps, units. */
   .label {
-    @apply text-2xs uppercase tracking-[0.14em] text-faint;
+    @apply text-2xs text-faint font-normal;
+  }
+  .title {
+    @apply text-[22px] leading-7 font-medium tracking-[-0.01em];
+  }
+  .fig {
+    @apply text-[24px] leading-7 font-medium tracking-[-0.01em];
   }
   .rule {
-    @apply border-line/60 border-dashed;
+    @apply border-line;
   }
   .btn {
-    @apply inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-line text-xs text-dim
-      hover:text-ink hover:border-faint transition-colors disabled:opacity-40 disabled:pointer-events-none;
+    @apply inline-flex items-center gap-2 h-7 px-2.5 rounded border border-strong text-xs font-medium text-ink whitespace-nowrap
+      hover:bg-raised transition-colors disabled:text-faint disabled:border-line disabled:bg-transparent disabled:cursor-not-allowed;
   }
   .btn-accent {
-    @apply btn border-accent/50 text-accent hover:border-accent hover:text-accent bg-accent/[0.06];
+    @apply btn bg-accent border-accent text-on-accent hover:bg-accent/90;
+  }
+  .btn-ghost {
+    @apply btn border-transparent text-dim hover:text-ink;
   }
   .btn-danger {
-    @apply btn border-down/40 text-down hover:border-down hover:text-down;
+    @apply btn text-down border-down/30 hover:bg-down/10;
+  }
+  .btn-sm {
+    @apply h-6 px-2;
   }
   .input {
-    @apply h-7 px-2 rounded-md bg-bg/60 border border-line text-ink text-xs placeholder:text-faint
-      focus:outline-none focus:border-accent/60;
+    @apply h-7 px-2 rounded bg-bg border border-strong text-ink text-xs placeholder:text-faint
+      focus:outline-none focus:border-accent;
   }
+  /* Shortcut hints are plain muted text, not keycaps. */
   .kbd {
-    @apply inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded border border-line/90
-      text-2xs text-dim bg-raised/60;
+    @apply text-2xs text-faint font-normal;
+  }
+  .btn-accent .kbd {
+    @apply text-on-accent/60;
   }
   .row {
-    @apply h-7 border-b border-line/40 hover:bg-raised/50;
+    @apply h-9 border-b border-rule hover:bg-raised;
   }
   .row-sel {
-    @apply bg-accent/[0.07] hover:bg-accent/[0.09];
+    @apply bg-soft hover:bg-soft;
   }
   .th {
-    @apply h-7 px-2 text-left font-normal label whitespace-nowrap sticky top-0 bg-panel z-10 border-b border-line/70;
+    @apply h-8 px-3 text-left text-2xs font-normal text-faint whitespace-nowrap first-letter:uppercase sticky top-0 bg-panel z-10 border-b border-line;
   }
   .td {
-    @apply px-2 whitespace-nowrap;
+    @apply px-3 whitespace-nowrap;
   }
+  .dot {
+    @apply inline-block w-1.5 h-1.5 rounded-full shrink-0;
+  }
+  .shadow-pop {
+    box-shadow: var(--shadow-pop);
+  }
+}
+
+input[type="checkbox"] {
+  accent-color: rgb(var(--accent));
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-up, .flash-down, .pulse { animation: none; }
 }
 
 @keyframes flash-up {

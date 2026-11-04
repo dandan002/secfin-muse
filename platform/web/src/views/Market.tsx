@@ -34,12 +34,12 @@ export function Market() {
 
   return (
     <Panel className="h-full" bodyClass="overflow-auto"
-      title={<>market <span className="text-dim normal-case tracking-normal">{rows.length} names</span></>}
+      title={<>Names <span className="label">{rows.length} names</span></>}
       right={<>
         <span className="text-2xs text-faint flex gap-3 mr-2"><span><Kbd>↵</Kbd> bid</span><span><Kbd>l</Kbd> offer</span><span><Kbd>w</Kbd> pin</span></span>
-        <input value={filter.q ?? ""} onChange={(e) => setFilter({ ...filter, q: e.target.value })} placeholder="filter" className="input w-32 h-6" />
+        <input value={filter.q ?? ""} onChange={(e) => setFilter({ ...filter, q: e.target.value })} placeholder="Filter" className="input w-32 h-6" />
         <Tabs value={tier} onChange={(t) => setFilter({ ...filter, tier: t === "ALL" ? undefined : t })}
-          options={[{ id: "ALL", label: "all" }, { id: "GC", label: "gc" }, { id: "WARM", label: "warm" }, { id: "HOT", label: "hot" },
+          options={[{ id: "ALL", label: "All" }, { id: "GC", label: "GC" }, { id: "WARM", label: "Warm" }, { id: "HOT", label: "Hot" },
             { id: "WATCH", label: `★ ${watch.length}` }]} />
       </>}>
       {error && <Empty>{error}</Empty>}
@@ -62,14 +62,14 @@ export function Market() {
                 <td className="td text-right"><Flash value={r.feeBps}>{bps(r.feeBps)}</Flash></td>
                 <td className="td text-right text-dim">{pct(r.utilPct, 0)}</td>
                 <td className="td text-right" title={r.internal ? `net ${r.internal.qty.toLocaleString()} across ${r.internal.books} book(s); ${r.availableBy.internal.toLocaleString()} free after locates` : "none on our books"}>
-                  {r.internal?.qty ? <span className="text-accent">{qty(r.availableBy.internal)}</span> : <span className="text-faint">—</span>}</td>
+                  {r.internal?.qty ? <span>{qty(r.availableBy.internal)}</span> : <span className="text-faint">—</span>}</td>
                 <td className="td text-right"><Flash value={r.venueA?.qty}>{qty(r.venueA?.qty)}</Flash></td>
                 <td className="td text-right text-faint">{r.venueA?.lenders ?? "—"}</td>
                 <td className="td text-right"><Flash value={r.bestFeeBps}>{bps(r.bestFeeBps)}</Flash></td>
                 <td className="td text-right text-dim">{bps(r.lastFeeBps)}</td>
                 <td className="td"><Sparkline values={r.trend} /></td>
                 <td className="td text-right text-faint">{r.held ? qty(r.held) : ""}</td>
-                <td className="td text-right text-accent">{qty(r.available)}</td>
+                <td className="td text-right font-medium">{qty(r.available)}</td>
               </tr>
             ))}
           </tbody>
