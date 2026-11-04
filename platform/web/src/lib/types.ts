@@ -437,12 +437,10 @@ export interface Limits {
   counterTolerancePct: number;
 }
 
-/** Counterparty codes, first first, for each list; and the margin the desk pays out a day (null: no budget). */
+/** Counterparty codes, first first, for each list. */
 export interface Priority {
   returns: string[];
   recalls: string[];
-  margin: string[];
-  marginBudgetUsd: number | null;
 }
 
 interface Setting<T> { value: T; default: T; set: boolean; by?: string; at?: string }

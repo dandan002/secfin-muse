@@ -35,10 +35,6 @@ class Processor(Client):
         """Mark every open contract to market; margin calls come back in ``calls``."""
         return await self.post("/marks/run")
 
-    async def margin_calls(self, since: str | None = None) -> list[dict[str, Any]]:
-        """Margin calls from the marks (the nightly run included), from mark date ``since``."""
-        return await self.get("/margin-calls", params={"since": since} if since else None)
-
     async def positions(self) -> list[dict[str, Any]]:
         """Open quantity per (instrument, side, booking entity) across our contracts."""
         return await self.get("/positions")

@@ -1,20 +1,17 @@
-"""Desk policy set at run time: the autopilot's limits, and counterparty priority for returns, recalls and margin
-calls (with the day's collateral budget)."""
+"""Desk policy set at run time: the autopilot's limits, and counterparty priority for returns and recalls."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
-from typing import Any
 
 import httpx
 import pytest
 from sqlalchemy import select
 
 from loandesk import autopilot, db, policy, secmaster
-from loandesk.adapters import systems
 from loandesk.models import Action, Event, Instrument, Trade
-from loandesk.services import margin, shortlist
+from loandesk.services import shortlist
 
 
 @pytest.fixture(autouse=True)
@@ -44,12 +41,12 @@ def _trade(tid: str, inst: Instrument, side: str, cp: str, qty: int, fee: float)
 async def test_the_desk_sets_limits_and_they_stick(client: httpx.AsyncClient) -> None:
     got = (await client.get("/policy")).json()
     assert got["autopilot"]["set"] is False and got["autopilot"]["value"]["maxCardUsd"] == 5_000_000
-    assert "margin" in got["kinds"] and got["priority"]["value"]["returns"] == []
-    lim = {**got["autopilot"]["value"], "maxCardUsd": 1_000_000, "kinds": ["order", "margin"]}
+    assert "order" in got["kinds"] and got["priority"]["value"]["returns"] == []
+    lim = {**got["autopilot"]["value"], "maxCardUsd": 1_000_000, "kinds": ["order", "lifecycle"]}
     r = await client.put("/policy/autopilot", json=lim, headers={"x-trader": "sam"})
     assert r.status_code == 200 and r.json()["by"] == "trader:sam" and r.json()["value"]["maxCardUsd"] == 1_000_000
     assert autopilot.envelope("autopilot").max_card_usd == 1_000_000
-    assert autopilot.envelope("autopilot").kinds == frozenset({"order", "margin"})
+    assert autopilot.envelope("autopilot").kinds == frozenset({"order", "lifecycle"})
 
     policy.reset_cache()  # a restart: what the desk set comes back from the database
     async with db.session() as s:
@@ -71,9 +68,9 @@ async def test_the_desk_sets_limits_and_they_stick(client: httpx.AsyncClient) ->
 async def test_counterparty_priority_is_checked(client: httpx.AsyncClient) -> None:
     bad = await client.put("/policy/priority", json={"returns": ["NOSUCHCP"]})
     assert bad.status_code == 422 and "NOSUCHCP" in bad.json()["detail"]
-    dup = await client.put("/policy/priority", json={"margin": ["HARBORAL", "HARBORAL"]})
+    dup = await client.put("/policy/priority", json={"recalls": ["HARBORAL", "HARBORAL"]})
     assert dup.status_code == 422 and "twice" in dup.json()["detail"]
-    ok = await client.put("/policy/priority", json={"returns": ["NORTHAL", "HARBORAL"], "marginBudgetUsd": 1e6})
+    ok = await client.put("/policy/priority", json={"returns": ["NORTHAL", "HARBORAL"]})
     assert ok.json()["value"]["returns"] == ["NORTHAL", "HARBORAL"]
     assert policy.rank("returns", "NORTHAL") == 0 and policy.rank("returns", "MERIDIAL") == 2
 
@@ -121,61 +118,3 @@ async def test_recalls_come_from_the_desks_borrowers_first(setup: None) -> None:
     assert await recalled() == ["trd_rc_cheap"]
     policy._set["priority"] = policy.Priority(recalls=["BASALTHF", "CEDARHF"]).model_dump()
     assert await recalled() == ["trd_rc_cedar"]  # Basalt's loan earns more than a borrow costs: kept out
-
-
-async def test_margin_calls_are_drafted_in_the_desks_order_within_the_budget(
-        client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    inst = await _name("GC", 1)
-    async with db.session() as s:
-        s.add_all([_trade("trd_mc_harbor", inst, "BORROW", "HARBORAL", 10_000, 20.0),
-                   _trade("trd_mc_north", inst, "BORROW", "NORTHAL", 10_000, 20.0),
-                   _trade("trd_mc_kestrel", inst, "LEND", "KESTRELHF", 10_000, 20.0)])
-        await s.commit()
-    policy._set["priority"] = policy.Priority(margin=["NORTHAL"], marginBudgetUsd=60_000).model_dump()
-    calls = [  # as /marks/run gives them: Harbor's call is the bigger, but Northgate is first in the desk's order
-        {"contractId": "SFP-trd_mc_harbor", "markDate": "2026-10-27", "callAmount": 50_000.0, "ccy": "USD",
-         "loanValue": 1e6, "requiredCollateral": 1.02e6, "postedCollateral": 0.97e6,
-         "marginCall": {"direction": "WE_ARE_CALLED"}},
-        {"contractId": "SFP-trd_mc_north", "markDate": "2026-10-27", "callAmount": 40_000.0, "ccy": "USD",
-         "loanValue": 1e6, "requiredCollateral": 1.02e6, "postedCollateral": 0.98e6,
-         "marginCall": {"direction": "WE_ARE_CALLED"}},
-        {"contractId": "SFP-trd_mc_kestrel", "markDate": "2026-10-27", "callAmount": 30_000.0, "ccy": "USD",
-         "marginCall": {"direction": "WE_CALL"}},
-        {"contractId": "SFP-not-ours", "markDate": "2026-10-27", "callAmount": 9.0, "ccy": "USD",
-         "marginCall": {"direction": "WE_CALL"}}]
-    async with db.session() as s:
-        ids = await margin.draft(s, calls, by="rules:margin")
-        await s.commit()
-        cards = [await s.get(Action, i) for i in ids]
-        assert await margin.draft(s, calls, by="rules:margin") == []  # one card per call
-    assert [a.payload["tradeId"] for a in cards] == ["trd_mc_north", "trd_mc_harbor", "trd_mc_kestrel"]
-    north, harbor, kestrel = cards
-    assert north.payload["direction"] == "PAY" and not north.risk_flags and "#1 in the desk's margin order" in \
-        north.rationale
-    assert harbor.risk_flags == [margin.OVER] and "waits for a trader" in harbor.rationale  # 40k + 50k > 60k
-    assert kestrel.payload["direction"] == "RECEIVE" and not kestrel.risk_flags  # owed to us: no budget
-
-    async with db.session() as s:
-        (await s.get(Action, kestrel.id)).status = "FAILED"
-        again = await margin.draft(s, calls, by="rules:margin")  # a failed one comes back on the next mark
-        assert [(await s.get(Action, i)).payload["tradeId"] for i in again] == ["trd_mc_kestrel"]
-        await s.rollback()
-
-    paid: list[dict[str, Any]] = []
-
-    async def pay(p: dict[str, Any]) -> dict[str, Any]:
-        paid.append(p)
-        return {"paymentId": f"CUS-P-{len(paid)}", "status": "ACCEPTED"}
-
-    monkeypatch.setattr(systems().custodian, "pay", pay)
-    r = (await client.post(f"/actions/{north.id}/approve", headers={"x-trader": "sam"})).json()
-    assert r["status"] == "EXECUTED" and r["result"]["paymentId"] == "CUS-P-1"
-    assert paid[0]["direction"] == "PAY" and paid[0]["amount"] == 40_000 and paid[0]["counterpartyBic"]
-    async with db.session() as s:
-        t = await s.get(Trade, "trd_mc_north")
-        assert t.lifecycle[-1]["event"] == "MARGIN_PAID"
-        over = await s.get(Action, harbor.id)
-        assert (await autopilot.verdict(s, over, "danger"))[0] == "over today's collateral budget"  # every mode
-        within = await s.get(Action, kestrel.id)
-        assert "margin cards wait" in (await autopilot.verdict(s, within, "autopilot"))[0]  # not a default kind
-        assert await autopilot.verdict(s, within, "danger") == (None, 30_000)

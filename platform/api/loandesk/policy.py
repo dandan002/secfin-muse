@@ -4,13 +4,11 @@ Settings (``LOANDESK_AUTOPILOT_*``, ``LOANDESK_DANGER_*``) are where a desk star
 wins from then on, survives a restart (one row per key in ``desk_settings``) and is an ``policy`` event in the
 audit trail.
 
-Counterparty priority is three ordered lists of counterparty codes. Those listed go first, in the listed order;
+Counterparty priority is two ordered lists of counterparty codes. Those listed go first, in the listed order;
 the rest follow in the desk's usual order:
 
 * ``returns``: whose borrows we give back first when the box is over the shorts (then the dearest fee).
 * ``recalls``: whose loans of ours we recall first to cover a short (then the cheapest loan).
-* ``margin``: whose margin calls we meet first after a mark (then the largest), within the day's collateral
-  budget; a payment past the budget waits for a trader.
 """
 
 from __future__ import annotations
@@ -25,8 +23,8 @@ from .models import DeskSetting
 from .settings import get_settings
 
 ENTITY = "policy"
-Lists = Literal["returns", "recalls", "margin"]
-LISTS: tuple[Lists, ...] = ("returns", "recalls", "margin")
+Lists = Literal["returns", "recalls"]
+LISTS: tuple[Lists, ...] = ("returns", "recalls")
 
 
 class Limits(BaseModel):
@@ -43,8 +41,6 @@ class Limits(BaseModel):
 class Priority(BaseModel):
     returns: list[str] = []
     recalls: list[str] = []
-    margin: list[str] = []
-    marginBudgetUsd: float | None = Field(None, ge=0, description="Margin we pay out a day; None: no budget")
 
 
 def _defaults() -> dict[str, Any]:

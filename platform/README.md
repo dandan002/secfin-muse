@@ -137,12 +137,8 @@ gather ─► decide ⇄ tools ─► check ─(incomplete answer, once)─► r
   the limits: the desk sets them on the **Policy** screen (sidebar **Limits**).
 * `policy.py`: what the desk sets at run time (`GET /policy`, `PUT|DELETE /policy/{autopilot,danger,breaker,priority}`),
   kept in `desk_settings` and audited as `policy` events: each mode's limits and card kinds, the breaker, and
-  counterparty priority. Three ordered lists: **returns** (whose borrows the short list gives back first, then the
-  dearest), **recalls** (whose loans of ours it recalls first, then the cheapest) and **margin** (whose calls are
-  worked first, then the largest), plus a daily collateral budget.
-* `services/margin.py`: a `margin` card per margin call on our trades, from `POST /marks/run` or the processor's
-  nightly mark (polled), in the desk's margin order; approved, it pays (or expects) the cash at the custodian. A
-  payment past the day's collateral budget is flagged and waits for a trader in every mode.
+  counterparty priority. Two ordered lists: **returns** (whose borrows the short list gives back first, then the
+  dearest) and **recalls** (whose loans of ours it recalls first, then the cheapest).
 * `observe.py`: Langfuse traces, on only with `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (`LANGFUSE_HOST`
   defaults to Langfuse Cloud) and the agent in `record` or `live`; `off`, `replay` and CI never trace. Each model
   call through the gateway is a generation (model, messages, parameters, tokens, the desk's own cost; errors marked);

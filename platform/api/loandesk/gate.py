@@ -220,17 +220,6 @@ async def _payment(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
     return {"buyInId": b.id, "cashStatus": b.cash_status, "paymentId": b.cash_ref}
 
 
-@executor("margin")
-async def _margin(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
-    """A margin call's cash collateral, at the custodian: paid out, or expected in."""
-    from .services import margin
-
-    try:
-        return await margin.settle(s, a, by=f"{a.proposed_by}+{approver}")
-    except margin.MarginError as e:
-        raise GateError(str(e)) from e
-
-
 @executor("charge")
 async def _charge(s: AsyncSession, a: Action, approver: str) -> dict[str, Any]:
     """A CNS buy-in's cost, posted to the client's account at the gateway."""

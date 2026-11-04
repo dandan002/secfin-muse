@@ -123,7 +123,7 @@ async def get_policy() -> dict:
 async def put_policy(key: Literal["autopilot", "danger", "breaker", "priority"], body: dict[str, Any],
                      who: str = Depends(trader), s: AsyncSession = Depends(get_session)) -> dict:
     """Set one policy. ``autopilot`` / ``danger``: the mode's limits; ``breaker``: ``{tripAfter}``; ``priority``:
-    ``{returns, recalls, margin}`` (counterparty codes, first first) and ``marginBudgetUsd``."""
+    ``{returns, recalls}`` (counterparty codes, first first)."""
     try:
         if key in ("autopilot", "danger"):
             v = policy.Limits(**body)

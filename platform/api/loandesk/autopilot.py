@@ -13,8 +13,7 @@ The limits below are the desk's to set (``PUT /policy/{key}``, see ``policy.py``
   Hot names, cards with warnings, Hot-name lines sent to the agent too, and a lender's counter accepted when it is
   within a tolerance of our bid. Wider limits, not none.
 
-What no mode loosens: a card with a ``BLOCKED`` flag (a hard pre-trade check failed) never approves itself, nor
-does a margin payment past the desk's collateral budget; the
+What no mode loosens: a card with a ``BLOCKED`` flag (a hard pre-trade check failed) never approves itself; the
 executors still enforce counterparty limits, fee floors and the restricted list; the kill switch stops everything
 (a card that can't execute stays pending); the model budget still caps spend. A run of failed auto-approvals trips
 the breaker and drops the desk back to ``off``. Every auto-approval is recorded under its policy
@@ -35,7 +34,6 @@ from sqlalchemy import select
 
 from . import clock, db, events, gate, policy, rules, secmaster
 from .models import Action, Event, Locate, Order
-from .services import margin
 from .settings import get_settings
 
 log = logging.getLogger("loandesk.autopilot")
@@ -121,8 +119,6 @@ async def notional(s: Any, a: Action) -> float:
     """What a card puts at stake, in dollars: shares times price. Kinds without a size count zero (and only
     against the day's count)."""
     p = a.payload or {}
-    if a.kind == "margin":  # collateral moved, not shares
-        return float(p.get("amount") or 0) * rules.FX_USD.get(p.get("ccy") or "USD", 1.0)
     if a.kind == "basket":
         total = 0.0
         for ln in p.get("lines") or []:
@@ -158,8 +154,6 @@ async def verdict(s: Any, a: Action, m: Mode) -> tuple[str | None, float]:
     flags = a.risk_flags or []
     if any(f.startswith("BLOCKED") for f in flags):
         return "a hard check failed (BLOCKED)", 0.0
-    if margin.OVER in flags:  # the desk's collateral budget holds in every mode
-        return "over today's collateral budget", 0.0
     if flags and not env.allow_warnings:
         return f"risk flag: {flags[0]}", 0.0
     conf = (a.payload or {}).get("confidence")

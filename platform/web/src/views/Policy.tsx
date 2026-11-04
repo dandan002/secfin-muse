@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
-import { actor, full, money, parseQty, qty, time } from "../lib/format";
+import { actor, full, parseQty, qty, time } from "../lib/format";
 import { useQuery } from "../lib/hooks";
 import { useDesk } from "../lib/store";
 import type { Autopilot, Counterparty, DeskPolicy, Limits, Priority } from "../lib/types";
@@ -102,7 +102,7 @@ function LimitsPanel({ mode, setting, kinds, live, onSaved }: {
           Today: {live.today.count} of {full(d.dayCount)} cards, ${qty(live.today.notionalUsd)} of ${qty(d.dayUsd)}
         </div>
       )}
-      <Field label="Per card" hint="The most one card may put at stake: shares × price, or the cash on a margin call">
+      <Field label="Per card" hint="The most one card may put at stake: shares × price">
         <Amount value={d.maxCardUsd} onChange={(n) => put({ maxCardUsd: n ?? NaN })} />
       </Field>
       <Field label="Per day" hint="Notional the mode may approve in a New York day">
@@ -145,7 +145,7 @@ function LimitsPanel({ mode, setting, kinds, live, onSaved }: {
       </div>
       <div className="px-4 py-2.5 text-2xs text-faint">
         {danger ? "Hot names and cards with warnings may go too." : "Never Hot names, never a card with any flag."}{" "}
-        A failed hard check, or a margin payment past the collateral budget, always waits for a trader.
+        A failed hard check always waits for a trader.
       </div>
       <footer className="flex items-center gap-2 px-4 py-3 border-t border-line">
         <button className="btn-accent btn-sm" disabled={!dirty || !ok || busy} onClick={() => save(d)}>Save</button>
@@ -181,13 +181,11 @@ function BreakerPanel({ setting, onSaved }: { setting: DeskPolicy["breaker"]; on
   );
 }
 
-const LISTS: { id: "returns" | "recalls" | "margin"; title: string; hint: string; after: string }[] = [
+const LISTS: { id: "returns" | "recalls"; title: string; hint: string; after: string }[] = [
   { id: "returns", title: "Returns", hint: "When the box is over the shorts, give back borrows from these lenders first.",
     after: "Everyone else after, dearest fee first." },
   { id: "recalls", title: "Recalls", hint: "To cover a short with shares we lent, recall from these borrowers first.",
     after: "Everyone else after, cheapest loan first. A loan earning more than the borrow would cost is kept out." },
-  { id: "margin", title: "Margin calls", hint: "After a mark, meet these counterparties' calls first.",
-    after: "Everyone else after, largest first. Payments past the day's budget wait for a trader." },
 ];
 
 function PriorityPanel({ setting, cps, onSaved }: { setting: DeskPolicy["priority"]; cps: Counterparty[]; onSaved: () => void }) {
@@ -198,7 +196,7 @@ function PriorityPanel({ setting, cps, onSaved }: { setting: DeskPolicy["priorit
   const dirty = JSON.stringify(d) !== src;
   const name = useMemo(() => Object.fromEntries(cps.map((c) => [c.code, c])), [cps]);
 
-  const move = (k: keyof Omit<Priority, "marginBudgetUsd">, i: number, by: number) => {
+  const move = (k: keyof Priority, i: number, by: number) => {
     const xs = [...d[k]];
     const j = i + by;
     if (j < 0 || j >= xs.length) return;
@@ -238,14 +236,6 @@ function PriorityPanel({ setting, cps, onSaved }: { setting: DeskPolicy["priorit
               </select>
             </div>
             <span className="px-4 pb-3 text-2xs text-faint">{l.after}</span>
-            {l.id === "margin" && (
-              <div className="mt-auto px-4 py-3 border-t border-line flex flex-col gap-1.5">
-                <span className="text-dim">Collateral budget a day</span>
-                <Amount value={d.marginBudgetUsd} onChange={(n) => setD({ ...d, marginBudgetUsd: n })} />
-                <span className="text-2xs text-faint">{d.marginBudgetUsd === null ? "Blank: no budget, every call drafted as usual."
-                  : `Paid out in the order above until $${money(d.marginBudgetUsd)} is committed.`}</span>
-              </div>
-            )}
           </div>
         ))}
       </div>
