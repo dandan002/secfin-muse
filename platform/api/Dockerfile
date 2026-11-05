@@ -1,5 +1,6 @@
 # The desk's API as an image. Build from the repo root: docker build -f platform/api/Dockerfile .
-# Only the reference-data libs (the security-master feed, see pyproject.toml) and this project go in.
+# Only the reference-data libs (the security-master feed, see pyproject.toml) and this project go in, with the agent
+# (LangGraph, the model client) and Langfuse: whether they run is the environment's to say (LOANDESK_AGENT_MODE, LANGFUSE_*).
 FROM python:3.13.1-slim-bookworm
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /usr/local/bin/uv
@@ -8,10 +9,10 @@ WORKDIR /app/platform/api
 
 COPY mocks/libs /app/mocks/libs
 COPY platform/api/pyproject.toml platform/api/uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --extra agent --extra observe --no-install-project
 
 COPY platform/api ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra agent --extra observe
 
 ENV PATH="/app/platform/api/.venv/bin:$PATH" PORT=8100
 EXPOSE 8100

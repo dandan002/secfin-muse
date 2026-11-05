@@ -55,7 +55,8 @@ locals {
       { name = "LOANDESK_TRADER_ROLES", value = jsonencode(var.desk_trader_roles) },
       { name = "LOANDESK_CORS_ORIGINS", value = jsonencode(["https://${local.tunnels.web.hostname}"]) },
       { name = "LOANDESK_SYNC_ENABLED", value = tostring(var.desk_sync) },
-      { name = "LOANDESK_AGENT_MODE", value = "off" },
+      { name = "LOANDESK_AGENT_MODE", value = var.desk_agent_mode },
+      { name = "LOANDESK_BUDGET_USD", value = tostring(var.desk_agent_budget_usd) },
       ] : [
       { name = "MOCK_LLM_MODE", value = var.llm_mode },
     ],
