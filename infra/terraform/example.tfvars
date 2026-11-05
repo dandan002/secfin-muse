@@ -7,6 +7,8 @@ state_bucket = "my-org-terraform-state" # the bucket in backend.hcl; the auto-st
 clerk_issuer          = "https://xyz.clerk.accounts.dev"
 clerk_publishable_key = "pk_test_..."
 # desk_sync           = true               # once the mocks are running
+# desk_agent_mode     = "live"             # the desk's agent; record and live need meta_ai_api_key
+# desk_agent_budget_usd = 0.5          # its model spend a day
 
 # credit_guard_usd = 40                # stop everything once the month's spend (before credits) passes this
 # budget_email    = "you@example.com"  # emails at 80% and 100% of credit_guard_usd

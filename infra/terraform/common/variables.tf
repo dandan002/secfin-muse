@@ -86,6 +86,27 @@ variable "desk_sync" {
   description = "Have the desk poll the mocks. Off while they aren't running, so its logs stay quiet."
 }
 
+variable "desk_agent_mode" {
+  type        = string
+  default     = "off"
+  description = "The desk's agent: off, replay, record or live. record and live call the model with meta_ai_api_key."
+
+  validation {
+    condition     = contains(["off", "replay", "record", "live"], var.desk_agent_mode)
+    error_message = "desk_agent_mode must be off, replay, record or live."
+  }
+  validation {
+    condition     = contains(["off", "replay"], var.desk_agent_mode) || var.meta_ai_api_key != ""
+    error_message = "record and live need meta_ai_api_key."
+  }
+}
+
+variable "desk_agent_budget_usd" {
+  type        = number
+  default     = 0.5
+  description = "The most the desk's agent spends on the model a day (New York time)."
+}
+
 variable "log_retention_days" {
   type    = number
   default = 14
